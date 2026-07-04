@@ -1138,6 +1138,10 @@ async fn cache_cover(
         let p = state.port.lock().await;
         p.ok_or_else(|| "stream server not ready".to_string())?
     };
+    let token = {
+        let t = state.token.lock().await;
+        t.clone().ok_or_else(|| "stream server not ready".to_string())?
+    };
 
     // SSRF guard: cover URLs come from remote metadata (iTunes/mzstatic +
     // YT image hosts). Only fetch https from those known CDNs so a crafted
@@ -1203,7 +1207,7 @@ async fn cache_cover(
             .map_err(|e| format!("rename: {e}"))?;
     }
 
-    Ok(format!("http://127.0.0.1:{port}/cover/{filename}"))
+    Ok(format!("http://127.0.0.1:{port}/{token}/cover/{filename}"))
 }
 
 #[derive(serde::Serialize)]
@@ -1263,15 +1267,24 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Result<u64, String> {
 #[derive(Default)]
 struct StreamServerState {
     port: Arc<Mutex<Option<u16>>>,
+    /// Per-launch secret used as a path prefix on every stream/prefetch/
+    /// cover URL. The frontend gets it baked into the base URL, so it's
+    /// transparent to the webview; a web page in the user's browser that
+    /// guesses the random port still can't form a valid URL — this closes
+    /// the CSRF-spawn and DNS-rebinding-read vectors.
+    token: Arc<Mutex<Option<String>>>,
 }
 
 #[tauri::command]
 async fn get_stream_base_url(
     state: tauri::State<'_, StreamServerState>,
 ) -> Result<String, String> {
-    let port = state.port.lock().await;
-    port.map(|p| format!("http://127.0.0.1:{p}"))
-        .ok_or_else(|| "stream server not ready".to_string())
+    let port = *state.port.lock().await;
+    let token = state.token.lock().await.clone();
+    match (port, token) {
+        (Some(p), Some(t)) => Ok(format!("http://127.0.0.1:{p}/{t}")),
+        _ => Err("stream server not ready".to_string()),
+    }
 }
 
 /// Spawn a yt-dlp downloader that writes into the shared memory buffer
@@ -1656,8 +1669,25 @@ async fn prefetch_handler(
     StatusCode::ACCEPTED
 }
 
+/// Generate an unguessable per-launch token used as a URL path prefix on
+/// the local stream server. Uses OS-seeded RandomState (SipHash keys)
+/// instead of pulling in an RNG crate — 128 bits is ample for a localhost
+/// secret that only needs to resist online guessing by a web page.
+fn generate_stream_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let mut out = String::with_capacity(32);
+    for _ in 0..2 {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u64(0x9E37_79B9_7F4A_7C15);
+        out.push_str(&format!("{:016x}", h.finish()));
+    }
+    out
+}
+
 async fn start_stream_server(
     port_state: Arc<Mutex<Option<u16>>>,
+    token_state: Arc<Mutex<Option<String>>>,
     cache_dir: PathBuf,
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
@@ -1698,11 +1728,20 @@ async fn start_stream_server(
         downloads: Arc::new(Mutex::new(HashMap::new())),
     };
 
-    let app = Router::new()
+    // Per-launch token as an unguessable path prefix. Baked into the base
+    // URL (get_stream_base_url) and cover URLs (cache_cover), so it's
+    // transparent to the webview but blocks blind access from a web page
+    // that only knows the random port.
+    let token = generate_stream_token();
+    *token_state.lock().await = Some(token.clone());
+
+    let routes = Router::new()
         .route("/stream/:video_id", get(stream_handler))
         .route("/prefetch/:video_id", get(prefetch_handler))
         .route("/cover/:filename", get(cover_serve_handler))
-        .with_state(server)
+        .with_state(server);
+    let app = Router::new()
+        .nest(&format!("/{token}"), routes)
         .layer(CorsLayer::permissive());
 
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
@@ -1791,6 +1830,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 pub fn run() {
     let state = StreamServerState::default();
     let port_handle = state.port.clone();
+    let token_handle = state.token.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -1856,6 +1896,7 @@ pub fn run() {
         })
         .setup(move |app| {
             let port = port_handle.clone();
+            let token = token_handle.clone();
             let cache_root = app
                 .path()
                 .app_cache_dir()
@@ -1870,7 +1911,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 migrate_plaintext_cookies(&handle).await;
                 migrate_to_accounts_layout(&handle).await;
-                start_stream_server(port, cache_dir, ephemeral_dir, cover_dir).await;
+                start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir).await;
             });
             if let Err(e) = build_tray(app.handle()) {
                 eprintln!("[tray] build failed: {e}");
