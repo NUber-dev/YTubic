@@ -1,0 +1,299 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Height of the custom title bar (see top-bar.tsx). Used by the
+     floating sidebar / player CSS so they sit *under* the strip
+     instead of overlapping the window-control buttons. */
+  --titlebar-h: 36px;
+
+  /* YouTube brand red */
+  --brand: #FA1F3E;
+  --brand-foreground: oklch(0.985 0 0);
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: var(--brand);
+  --radius: 0.625rem;
+
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: var(--brand);
+
+  /* Translucent surfaces that float over the blurred album art behind
+     the UI (sidebar, player card, active track row). In light mode we
+     tint the cover with white; in dark mode with near-black. The
+     hairline is a faint contrasting outline on the same surface. */
+  --surface: oklch(1 0 0 / 55%);
+  --surface-hover: oklch(1 0 0 / 70%);
+  --surface-active: oklch(1 0 0 / 85%);
+  --hairline: oklch(0 0 0 / 12%);
+  --titlebar-hover: oklch(0 0 0 / 7%);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  /* Translucent white for hover/active states — reads consistently
+     across both solid dark surfaces (popovers, dropdowns) and over
+     the blurred album-art background. */
+  --accent: oklch(1 0 0 / 10%);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: var(--brand);
+
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: oklch(1 0 0 / 10%);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: var(--brand);
+
+  /* Dark-mode surface: near-black tint at 30% alpha — lets more of the
+     blurred album-art bleed through the sidebar / player card. */
+  --surface: oklch(0 0 0 / 30%);
+  --surface-hover: oklch(0 0 0 / 50%);
+  --surface-active: oklch(0 0 0 / 60%);
+  --hairline: oklch(1 0 0 / 10%);
+  --titlebar-hover: oklch(1 0 0 / 10%);
+}
+
+@theme inline {
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-surface-active: var(--surface-active);
+  --color-hairline: var(--hairline);
+  --color-titlebar-hover: var(--titlebar-hover);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    @apply h-full bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+      Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+    overscroll-behavior: none;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply overflow-hidden;
+  }
+
+  /* Push the floating shadcn sidebar below the custom title bar so the
+     sidebar's logo header doesn't overlap the window-control strip.
+     The sidebar component itself uses `fixed inset-y-0`, which we
+     can't easily override via the React API. */
+  [data-slot="sidebar-container"] {
+    top: var(--titlebar-h) !important;
+    height: calc(100svh - var(--titlebar-h)) !important;
+  }
+
+  /* Thin, subtle scrollbars (used in main content area and carousels). */
+  .shelf-scroll,
+  .app-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .shelf-scroll::-webkit-scrollbar,
+  .app-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .shelf-scroll::-webkit-scrollbar-track,
+  .app-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .shelf-scroll::-webkit-scrollbar-thumb,
+  .app-scroll::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 9999px;
+  }
+  .shelf-scroll::-webkit-scrollbar-thumb:hover,
+  .app-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+  }
+}
+
+@layer utilities {
+  /* Soft fade at the left/right edges of a horizontal carousel so
+     covers don't get clipped with a hard edge. Each side is
+     independently toggled via the --fade-l / --fade-r custom
+     properties (set inline by the carousel based on scrollLeft) — at
+     the start/end we want no fade on the dead side. */
+  .shelf-edge-fade {
+    /* Alpha at each edge of the mask gradient. 1 = opaque (no fade),
+       0 = fully transparent (full fade). Ramped by the carousel's
+       scroll listener so the fade fades in/out smoothly as the user
+       scrolls toward and away from each edge, instead of snapping. */
+    --fade-l: 1;
+    --fade-r: 1;
+    mask-image: linear-gradient(
+      to right,
+      rgba(0, 0, 0, var(--fade-l)) 0,
+      black 56px,
+      black calc(100% - 56px),
+      rgba(0, 0, 0, var(--fade-r)) 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to right,
+      rgba(0, 0, 0, var(--fade-l)) 0,
+      black 56px,
+      black calc(100% - 56px),
+      rgba(0, 0, 0, var(--fade-r)) 100%
+    );
+  }
+
+  /* Top/bottom fade for the lyrics column. Applied only once the
+     karaoke has progressed past the first line — before that we want
+     the first line crisp at the top of the column. */
+  .lyrics-mask {
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      black 14%,
+      black 86%,
+      transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      black 14%,
+      black 86%,
+      transparent 100%
+    );
+  }
+
+  /* Hides the native scrollbar without touching mask. Used on every
+     lyrics scroll container regardless of whether the mask is on. */
+  .lyrics-no-scrollbar {
+    scrollbar-width: none;
+  }
+  .lyrics-no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* `translateZ(0)` + `will-change: scale` keeps every line on its
+     own GPU layer so Chromium doesn't re-rasterize text at the
+     start/end of the scale transition (which otherwise produced a
+     visible 1px hop as the element switched between composited and
+     painted rendering). */
+  .lyrics-line {
+    transform: translateZ(0);
+    will-change: scale;
+    backface-visibility: hidden;
+  }
+
+  /* Fine SVG noise overlaid on the heavily-blurred `BackgroundCover` art.
+     Without it, `blur-3xl` produces gradients smooth enough to lose
+     precision through 8-bit channel quantization — especially in the
+     dark regions where the perceptual gap between adjacent values is
+     largest — which reads as concentric color bands. Plain-alpha at
+     ~4% gives a uniform ±5/255 dither in all brightnesses, breaking
+     the bands up without reading as visible grain. */
+  .bg-cover-noise {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.05;
+  }
+
+  /* Top-of-column blur strip. Strongest at the top of the overlay,
+     fades to fully transparent at its bottom edge — so the active line
+     (positioned at ~36% from the top of the viewport) sits just below
+     the strip and stays sharp. Because the overlay is fixed in
+     viewport space (not content space), manually scrolling reveals
+     past lines clearly once they leave the strip. */
+  .lyrics-blur-overlay {
+    backdrop-filter: blur(1.5px);
+    -webkit-backdrop-filter: blur(1.5px);
+    /* Mask reaches `transparent` well before the bottom edge so the
+       last ~20% of the overlay has zero blur effect. That bottom strip
+       acts as a guaranteed safe zone above the active line — even if
+       the line wraps to two visual rows and pushes its top edge up. */
+    mask-image: linear-gradient(
+      to bottom,
+      black 0%,
+      black 20%,
+      transparent 80%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      black 0%,
+      black 20%,
+      transparent 80%
+    );
+  }
+}
