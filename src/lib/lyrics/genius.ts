@@ -57,6 +57,51 @@ export async function fetchGeniusLyrics(
   return { kind: "plain", text, source: "Genius" };
 }
 
+/** Normalize a title/artist for fuzzy comparison: drop parentheticals,
+ *  featurings, and punctuation; lowercase; collapse whitespace. */
+function normalizeForMatch(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\(.*?\)|\[.*?\]/g, " ")
+    .replace(/\bfeat\.?\b.*$/i, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/** Ratio of shared tokens over the smaller token set (0..1). */
+function tokenOverlap(a: string, b: string): number {
+  const A = new Set(a.split(/\s+/).filter(Boolean));
+  const B = new Set(b.split(/\s+/).filter(Boolean));
+  if (A.size === 0 || B.size === 0) return 0;
+  let shared = 0;
+  for (const t of A) if (B.has(t)) shared++;
+  return shared / Math.min(A.size, B.size);
+}
+
+/** Does a Genius hit plausibly match the requested track? Genius search is
+ *  fuzzy and almost always returns *something*, so without this check the
+ *  first hit for a track Genius lacks is a confidently-wrong different song. */
+function hitMatches(
+  reqTitle: string,
+  reqArtist: string,
+  hitTitle: string,
+  hitArtist: string,
+): boolean {
+  if (!hitTitle) return false;
+  const titleOk =
+    hitTitle.includes(reqTitle) ||
+    reqTitle.includes(hitTitle) ||
+    tokenOverlap(reqTitle, hitTitle) >= 0.6;
+  if (!titleOk) return false;
+  // Only enforce artist agreement when both sides are known.
+  if (!reqArtist || !hitArtist) return true;
+  return (
+    hitArtist.includes(reqArtist) ||
+    reqArtist.includes(hitArtist) ||
+    tokenOverlap(reqArtist, hitArtist) >= 0.5
+  );
+}
+
 async function findSongUrl(p: GeniusParams): Promise<string | null> {
   const q = p.artist ? `${p.title} ${p.artist}` : p.title;
   const url = new URL(SEARCH_URL);
@@ -80,7 +125,18 @@ async function findSongUrl(p: GeniusParams): Promise<string | null> {
         h.result?.url &&
         h.result?.lyrics_state !== "unreleased",
     );
-    return usable[0]?.result?.url ?? null;
+    const reqTitle = normalizeForMatch(p.title);
+    const reqArtist = p.artist ? normalizeForMatch(p.artist) : "";
+    for (const h of usable) {
+      const hitTitle = normalizeForMatch(h.result?.title ?? "");
+      const hitArtist = normalizeForMatch(h.result?.primary_artist?.name ?? "");
+      if (hitMatches(reqTitle, reqArtist, hitTitle, hitArtist)) {
+        return h.result?.url ?? null;
+      }
+    }
+    // No hit passed the title/artist check — better no lyrics than a
+    // confidently-wrong different song.
+    return null;
   } catch {
     return null;
   }

@@ -161,7 +161,10 @@ function LikedSongsView() {
     return () => obs.disconnect();
   }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
-  if (query.error) return <ErrorCard message={query.error.message} />;
+  // Only show the full error card before any tracks load; a failed
+  // continuation must not wipe the already-loaded liked-songs list.
+  if (query.error && tracks.length === 0)
+    return <ErrorCard message={query.error.message} />;
   if (query.isLoading) {
     return (
       <div className="flex flex-col gap-2">

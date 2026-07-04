@@ -140,7 +140,12 @@ function PlaylistPageView() {
     query.fetchNextPage,
   ]);
 
-  if (query.error) {
+  // Only take over the whole view on error when nothing is loaded yet.
+  // A failed *continuation* fetch sets query.error while data still holds
+  // the loaded pages — early-returning here would wipe the header and all
+  // loaded tracks on one transient network blip (esp. during the eager
+  // sort/search drain that fires 100+ continuations).
+  if (query.error && !header) {
     return (
       <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm">
         <AlertCircleIcon className="size-5 shrink-0 text-destructive" />

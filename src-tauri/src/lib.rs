@@ -1017,17 +1017,26 @@ fn resolve_stream_ytdlp(video_id: String) -> Result<String, String> {
         return Err(format!("invalid videoId: {video_id}"));
     }
     let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let output = std::process::Command::new("yt-dlp")
-        .args([
-            "-j",
-            "-f",
-            "bestaudio",
-            "--no-playlist",
-            "--no-warnings",
-            "--extractor-args",
-            "youtube:player_client=tv,android_vr",
-            &url,
-        ])
+    let mut command = std::process::Command::new("yt-dlp");
+    command.args([
+        "-j",
+        "-f",
+        "bestaudio",
+        "--no-playlist",
+        "--no-warnings",
+        "--extractor-args",
+        "youtube:player_client=tv,android_vr",
+        &url,
+    ]);
+    // Windows: a console-less GUI process spawning the console-subsystem
+    // yt-dlp.exe with default flags makes Windows flash a console window
+    // on every resolve. CREATE_NO_WINDOW suppresses it.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = command
         .output()
         .map_err(|e| format!("spawn yt-dlp: {e}"))?;
     if !output.status.success() {
@@ -1276,6 +1285,10 @@ fn spawn_downloader(
             "-",
         ]);
         cmd.arg(&url);
+        // Windows: suppress the console window for the child yt-dlp.exe
+        // (see resolve_stream_ytdlp for rationale).
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let mut child = match cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

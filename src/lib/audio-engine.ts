@@ -114,10 +114,10 @@ export function useAudioEngine() {
   }, []);
 
   // React to current-track changes → resolve stream → set src.
-  const { videoId, track } = usePlaybackStore(
+  const { videoId, track, index } = usePlaybackStore(
     useShallow((s) => {
       const t = s.index >= 0 ? s.queue[s.index] : undefined;
-      return { videoId: t?.videoId, track: t };
+      return { videoId: t?.videoId, track: t, index: s.index };
     }),
   );
 
@@ -180,7 +180,11 @@ export function useAudioEngine() {
         usePlaybackStore.getState().setStatus("error", e.message);
         usePlaybackStore.getState().setPlaying(false);
       });
-  }, [streamVideoId, videoId]);
+    // `index` is in the deps so advancing to a different queue slot that
+    // holds the *same* videoId (duplicate in a playlist, radio dupes,
+    // repeat-all on a 1-track queue) still re-resolves and plays instead
+    // of stalling on "loading" — videoId/streamVideoId alone wouldn't change.
+  }, [streamVideoId, videoId, index]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
@@ -224,6 +228,19 @@ export function useAudioEngine() {
       /* seek failed — non-fatal */
     }
     usePlaybackStore.getState().clearPendingSeek();
+    // repeat-one and error auto-advance re-select the same track and set
+    // { pendingSeek: 0, playing: true } without changing `playing` (already
+    // true), so the [playing] effect never re-fires. After an `ended` event
+    // the element is paused, so seeking to 0 alone leaves it silent. Resume
+    // here when the store wants playback but the element is paused.
+    if (usePlaybackStore.getState().playing && el.paused && el.src) {
+      void el.play().catch((e) => {
+        if (e?.name === "AbortError") return;
+        usePlaybackStore
+          .getState()
+          .setStatus("error", e?.message ?? String(e));
+      });
+    }
   }, [pendingSeek]);
 
   // MediaSession metadata (Windows SMTC + macOS Now Playing + keyboard media keys).

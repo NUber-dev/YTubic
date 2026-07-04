@@ -168,7 +168,10 @@ export function useTrackMenuController(item: ShelfItem) {
   const runAddToPlaylist = async (p: UserPlaylist) => {
     try {
       await addToPlaylist(p.id, item.id);
-      await qc.invalidateQueries({ queryKey: ["playlist", p.id] });
+      // The playlist page keys its data as ["playlist-pages", id] (with a
+      // possibly VL-prefixed id), so ["playlist", p.id] never matched and
+      // the invalidation was a no-op. Prefix-match every open playlist page.
+      await qc.invalidateQueries({ queryKey: ["playlist-pages"] });
       toast.success(`Added to ${p.title}`);
     } catch (e) {
       toast.error(`Add failed: ${String(e)}`);
