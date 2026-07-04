@@ -34,5 +34,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: cargo test
+        run: cargo test --lib --manifest-path src-tauri/Cargo.toml

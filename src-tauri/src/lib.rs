@@ -1943,3 +1943,62 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::generate_stream_token;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    #[test]
+    fn stream_token_is_nonempty_hex_and_varies() {
+        let a = generate_stream_token();
+        let b = generate_stream_token();
+        assert_eq!(a.len(), 32, "token should be 128 bits of hex");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "two tokens in a row must differ");
+    }
+
+    // Guards the security fix (review high #1): the stream server nests all
+    // routes under an unguessable per-launch token prefix, so a request that
+    // doesn't carry the exact token can't reach a handler.
+    #[test]
+    fn nested_token_prefix_gates_routes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let token = "deadbeefdeadbeefdeadbeefdeadbeef";
+            let inner = Router::new().route("/ping", get(|| async { "pong" }));
+            let app: Router = Router::new().nest(&format!("/{token}"), inner);
+
+            let status = |uri: &'static str, app: Router| async move {
+                app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status()
+            };
+
+            assert_eq!(
+                status(
+                    "/deadbeefdeadbeefdeadbeefdeadbeef/ping",
+                    app.clone()
+                )
+                .await,
+                StatusCode::OK,
+                "correct token reaches the handler"
+            );
+            assert_eq!(
+                status("/wrongtoken/ping", app.clone()).await,
+                StatusCode::NOT_FOUND,
+                "a wrong token must not reach the handler"
+            );
+            assert_eq!(
+                status("/ping", app).await,
+                StatusCode::NOT_FOUND,
+                "no token must not reach the handler"
+            );
+        });
+    }
+}

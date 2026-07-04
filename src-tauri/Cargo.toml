@@ -42,3 +42,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security_Cryptography",
 ] }
 
+[dev-dependencies]
+# ServiceExt::oneshot for the stream-server routing test.
+tower = { version = "0.5", features = ["util"] }
+
