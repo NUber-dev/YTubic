@@ -186,6 +186,38 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
   const activeIdx = findActiveIdx(lines, position);
   const prevActiveRef = useRef(activeIdx);
 
+  // On mount and whenever the lyric set changes (new track), snap the
+  // active line into view without animation. Without this the animated
+  // effect below never fires on mount (prevActiveRef starts equal to the
+  // initial activeIdx), so opening the panel mid-song — or skipping tracks
+  // while it stays mounted — leaves the active line off-screen / stale.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const idx = findActiveIdx(lines, usePlaybackStore.getState().position);
+    prevActiveRef.current = idx;
+    if (idx < 0) {
+      container.scrollTop = 0;
+      return;
+    }
+    const el = container.querySelector<HTMLElement>(
+      `[data-line-idx="${idx}"]`,
+    );
+    if (!el) {
+      container.scrollTop = 0;
+      return;
+    }
+    const cRect = container.getBoundingClientRect();
+    const eRect = el.getBoundingClientRect();
+    const elTopWithinContent = eRect.top - cRect.top + container.scrollTop;
+    const target =
+      idx === 0
+        ? 0
+        : container.clientHeight * ACTIVE_LINE_VIEWPORT_RATIO -
+          el.clientHeight / 2;
+    container.scrollTop = Math.max(0, elTopWithinContent - target);
+  }, [lines]);
+
   useEffect(() => {
     if (activeIdx === prevActiveRef.current) return;
     prevActiveRef.current = activeIdx;

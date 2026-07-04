@@ -126,6 +126,10 @@ export async function fetchUserPlaylists(): Promise<UserPlaylist[]> {
 function readRun(node: YtNode | undefined): string {
   if (!node) return "";
   if (typeof node === "string") return node;
+  // Some library shelves deliver the title as { simpleText } instead of
+  // { runs }. Without this branch such a playlist reads as "" and is
+  // silently dropped from the "Add to playlist" submenu.
+  if (typeof node.simpleText === "string") return node.simpleText;
   const runs: YtNode[] = node.runs ?? [];
   return runs.map((r) => r.text ?? "").join("");
 }
@@ -134,10 +138,17 @@ export async function addToPlaylist(
   playlistId: string,
   videoId: string,
 ): Promise<void> {
-  await innertubePost("browse/edit_playlist", {
+  const json = await innertubePost("browse/edit_playlist", {
     playlistId,
     actions: [{ action: "ACTION_ADD_VIDEO", addedVideoId: videoId }],
   });
+  // edit_playlist returns HTTP 200 even when it rejects the edit (not the
+  // owner, stale cookies, …) — surface the envelope status so the
+  // optimistic "Added to <playlist>" toast doesn't lie.
+  const status = json?.status as string | undefined;
+  if (status && status !== "STATUS_SUCCEEDED") {
+    throw new Error(`edit_playlist failed: ${status}`);
+  }
 }
 
 /**

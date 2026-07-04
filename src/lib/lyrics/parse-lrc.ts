@@ -16,6 +16,10 @@ import type { TimedLine } from "@/lib/lyrics/types";
 export function parseLRC(lrc: string): TimedLine[] {
   const tsRe = /\[(\d+):(\d+)(?:[.:](\d+))?\]/g;
   const out: TimedLine[] = [];
+  // Optional global shift tag. Per the LRC spec a positive [offset:+ms]
+  // shifts the lyrics earlier, so we subtract it from every timestamp.
+  const offsetMatch = lrc.match(/\[offset:\s*([+-]?\d+)\s*\]/i);
+  const offsetSec = offsetMatch ? parseInt(offsetMatch[1], 10) / 1000 : 0;
   for (const rawLine of lrc.split(/\r?\n/)) {
     const matches = [...rawLine.matchAll(tsRe)];
     if (matches.length === 0) continue;
@@ -28,7 +32,8 @@ export function parseLRC(lrc: string): TimedLine[] {
         ? parseInt(m[3].padEnd(3, "0").slice(0, 3), 10)
         : 0;
       if (Number.isNaN(mm) || Number.isNaN(ss)) continue;
-      out.push({ start: mm * 60 + ss + frac / 1000, text });
+      const start = Math.max(0, mm * 60 + ss + frac / 1000 - offsetSec);
+      out.push({ start, text });
     }
   }
   out.sort((a, b) => a.start - b.start);

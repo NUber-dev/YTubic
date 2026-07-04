@@ -104,9 +104,11 @@ export async function fetchPlaylistFirstPage(
   }
   const subtitleText = readRuns(header.subtitle);
   const secondText = readRuns(header.secondSubtitle);
-  const trackCountMatch = secondText.match(/(\d+)\s+songs?/i);
+  // Allow a thousands separator: "5,000 songs" must parse as 5000, not 0
+  // (the old /(\d+)/ matched only the digits after the last comma).
+  const trackCountMatch = secondText.match(/([\d,]+)\s+songs?/i);
   const trackCount = trackCountMatch
-    ? parseInt(trackCountMatch[1], 10)
+    ? parseInt(trackCountMatch[1].replace(/,/g, ""), 10) || undefined
     : undefined;
 
   const seenIds = new Set<string>();
@@ -130,7 +132,11 @@ export async function fetchPlaylistFirstPage(
           ?.playlistPanelRenderer?.contents ?? [];
       const radioTracks: ShelfItem[] = [];
       for (const c of panelContents) {
-        const row = c.playlistPanelVideoRenderer;
+        // Unwrap playlistPanelVideoWrapperRenderer (song+MV rows) too.
+        const row =
+          c.playlistPanelVideoRenderer ??
+          c.playlistPanelVideoWrapperRenderer?.primaryRenderer
+            ?.playlistPanelVideoRenderer;
         if (!row) continue;
         const mapped = mapPlaylistPanelVideo(row);
         if (mapped) radioTracks.push(mapped);

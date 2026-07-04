@@ -23,7 +23,12 @@ export async function fetchRadio(videoId: string): Promise<ShelfItem[]> {
 
   const tracks: ShelfItem[] = [];
   for (const c of panelContents) {
-    const row = c.playlistPanelVideoRenderer;
+    // YTM wraps rows that have both a song and a music-video version in a
+    // playlistPanelVideoWrapperRenderer; the real row is under primaryRenderer.
+    const row =
+      c.playlistPanelVideoRenderer ??
+      c.playlistPanelVideoWrapperRenderer?.primaryRenderer
+        ?.playlistPanelVideoRenderer;
     if (!row) continue;
     const mapped = mapPlaylistPanelVideo(row);
     if (mapped) tracks.push(mapped);
