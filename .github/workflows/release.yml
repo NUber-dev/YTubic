@@ -1,7 +1,10 @@
-# Builds the Windows installer and publishes a draft GitHub Release
+# Builds the desktop installers and publishes a draft GitHub Release
 # whenever a `v*` tag is pushed. Publish flow:
 #   git tag v0.1.0 && git push origin v0.1.0
 # → wait for this workflow → review the draft on the Releases page → publish.
+#
+# Windows produces the NSIS installer; Linux produces .deb, .rpm and an
+# AppImage (see src-tauri/tauri.linux.conf.json for the bundle targets).
 #
 # The TAURI_SIGNING_* secrets are for tauri-plugin-updater artifact
 # signatures (latest.json + .sig). Until the updater is wired up and the
@@ -16,11 +19,29 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -42,3 +63,4 @@ jobs:
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           prerelease: false
+          args: ${{ matrix.args }}

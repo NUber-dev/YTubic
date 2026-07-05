@@ -5,7 +5,7 @@
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20the%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/nuberr)
 
-A fast, responsive YouTube Music desktop client for Windows.
+A fast, responsive YouTube Music desktop client for Windows and Linux.
 
 Built as a reaction to the sluggish webview-wrapper experience — YTubic talks to YouTube's InnerTube API directly, renders its own UI, and caches aggressively, so navigation and playback feel instant.
 
@@ -19,7 +19,7 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 - **Synced lyrics** — line-by-line synced lyrics from multiple providers (LRCLIB, Musixmatch, Genius)
 - **Hi-res cover art** — upgrades album covers to high-resolution studio art when available
 - **Full library support** — your playlists, likes, albums and artists; search with filters; radio/autoplay queues
-- **Windows integration** — media keys, System Media Transport Controls, tray icon, single instance
+- **Desktop integration** — media keys and Now Playing controls (SMTC on Windows, MPRIS on Linux), tray icon, single instance
 - **Auto-updates** — the app updates itself from GitHub Releases, and keeps its yt-dlp copy fresh automatically
 
 > **Disclaimer:** YTubic is an unofficial client. It is not affiliated with,
@@ -32,7 +32,14 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 
 Download the latest installer from the [Releases](../../releases) page and run it.
 
-- **Windows 10/11 only** for now.
+- **Windows 10/11**: run the `.exe` NSIS installer.
+- **Linux**: install the `.deb` (Debian/Ubuntu), `.rpm` (Fedora/openSUSE), or
+  run the `AppImage` directly. Requires WebKitGTK 4.1 + GTK 3, plus the
+  GStreamer "good" and "base" plugins (and `gst-libav`) — WebKitGTK decodes
+  audio through GStreamer, so without `autoaudiosink` + the WebM/Opus/AAC
+  demuxers there is no sound. These are pulled in automatically by the
+  `.deb`/`.rpm`; for the AppImage install them yourself, e.g. on Arch:
+  `sudo pacman -S webkit2gtk-4.1 gst-plugins-base gst-plugins-good gst-libav`.
 - On first launch the app downloads its own copy of yt-dlp (~12 MB) into its
   data folder and keeps it updated automatically.
 - Signing in is optional: browse and playback work anonymously; sign in to get
