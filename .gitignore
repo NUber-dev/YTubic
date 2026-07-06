@@ -31,3 +31,9 @@ src/routeTree.gen.ts
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
+
+# Auth lab / local debug output (may contain session metadata)
+scripts/auth-lab/last-run.json
+scripts/auth-lab/accounts_list_dump.json
+scripts/auth-lab/switcher_*.json
+scripts/auth-lab/__pycache__/

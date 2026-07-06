@@ -14,6 +14,9 @@ import {
   HeartIcon,
   ImageIcon,
   LockIcon,
+  CookieIcon,
+  UploadIcon,
+  AlertTriangleIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -39,6 +42,9 @@ export const Route = createFileRoute("/settings")({
 
 function SettingsPage() {
   const [signingIn, setSigningIn] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [cookieText, setCookieText] = useState("");
+  const [loginReady, setLoginReady] = useState(false);
 
   const loggedIn = useQuery({
     queryKey: ["auth-logged-in"],
@@ -54,16 +60,87 @@ function SettingsPage() {
     // sidebar dropdown).
     const unlistenSuccess = listen("login-success", () => {
       setSigningIn(false);
+      setLoginReady(false);
       toast.success("Signed in");
     });
     const unlistenCancel = listen("login-cancelled", () => {
       setSigningIn(false);
+      setLoginReady(false);
+    });
+    const unlistenFailed = listen<string>("login-failed", (event) => {
+      setSigningIn(false);
+      setLoginReady(false);
+      toast.error(event.payload, { duration: 14_000 });
+    });
+    const unlistenReady = listen("login-ready", () => {
+      setLoginReady(true);
+    });
+    const unlistenInsecure = listen("login-insecure-browser", () => {
+      toast.error(
+        "Google blocked sign-in in this window. Use Import session from browser below instead.",
+        { duration: 12_000 },
+      );
     });
     return () => {
       unlistenSuccess.then((fn) => fn());
       unlistenCancel.then((fn) => fn());
+      unlistenFailed.then((fn) => fn());
+      unlistenReady.then((fn) => fn());
+      unlistenInsecure.then((fn) => fn());
     };
   }, []);
+
+  const confirmLogin = async () => {
+    try {
+      await invoke("confirm_login");
+      toast.message("Finishing sign-in…", {
+        description: "Stay on music.youtube.com in the login window.",
+      });
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
+
+  const cancelLogin = async () => {
+    try {
+      await invoke("cancel_login");
+    } catch {
+      /* window may already be closed */
+    }
+    setSigningIn(false);
+    setLoginReady(false);
+  };
+
+  const importCookies = async () => {
+    if (!cookieText.trim()) {
+      toast.error("Paste Netscape-format cookies first");
+      return;
+    }
+    setImporting(true);
+    try {
+      await invoke("import_cookies_from_text", { text: cookieText });
+      setCookieText("");
+      toast.success("Session imported");
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const importCookiesFromFile = async () => {
+    setImporting(true);
+    try {
+      await invoke("import_cookies_from_file");
+      toast.success("Session imported from file");
+    } catch (e) {
+      if (!String(e).includes("no file selected")) {
+        toast.error(String(e));
+      }
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const signIn = async () => {
     setSigningIn(true);
@@ -135,15 +212,140 @@ function SettingsPage() {
               Sign out
             </Button>
           ) : (
-            <Button onClick={signIn} disabled={signingIn}>
-              {signingIn ? (
+            <div className="flex flex-col gap-3">
+              <Button onClick={signIn} disabled={signingIn}>
+                {signingIn ? (
+                  <Loader2Icon className="animate-spin" />
+                ) : (
+                  <LogInIcon />
+                )}
+                Sign in with Google
+              </Button>
+              {loginReady ? (
+                <div className="flex flex-col gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
+                  <p>
+                    In the login window, go to <strong>music.youtube.com</strong>{" "}
+                    and make sure you are signed in, then click Continue. YTubic
+                    will save your session and close the window.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => void confirmLogin()}
+                    >
+                      Continue
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void cancelLogin()}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : signingIn ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void cancelLogin()}
+                >
+                  Cancel sign-in
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-1">
+            <CardTitle className="flex items-center gap-2">
+              <CookieIcon className="size-5" />
+              Import session from browser
+            </CardTitle>
+            <CardDescription>
+              If Google blocks the embedded sign-in window, export cookies from
+              Chrome or Edge where you are already signed in to YouTube Music.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm text-muted-foreground">
+            <p className="flex items-start gap-2 font-medium text-amber-700 dark:text-amber-400">
+              <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
+              Security warning
+            </p>
+            <p className="mt-1">
+              Pasted cookies are full account credentials. They stay encrypted
+              on this PC only — never share them or paste them into untrusted
+              sites.
+            </p>
+          </div>
+
+          <div className="text-sm text-muted-foreground">
+            <p className="font-medium text-foreground">How to export</p>
+            <ol className="mt-2 list-decimal space-y-1 ps-5">
+              <li>
+                In Chrome or Edge, sign in at{" "}
+                <a
+                  href="https://music.youtube.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  music.youtube.com
+                </a>
+              </li>
+              <li>
+                Use a Netscape cookie exporter extension (e.g. &quot;Get
+                cookies.txt LOCALLY&quot;) for <code>youtube.com</code> and{" "}
+                <code>google.com</code>
+              </li>
+              <li>Paste the file contents below or choose the exported file</li>
+            </ol>
+            <p className="mt-2">
+              Required: export cookies for both <code>youtube.com</code> and{" "}
+              <code>google.com</code> (e.g. <code>SAPISID</code>,{" "}
+              <code>__Secure-1PSID</code>, <code>LOGIN_INFO</code>).
+            </p>
+          </div>
+
+          <textarea
+            value={cookieText}
+            onChange={(e) => setCookieText(e.target.value)}
+            placeholder={"# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\t..."}
+            rows={8}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs"
+            spellCheck={false}
+          />
+
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() => void importCookies()}
+              disabled={importing || !cookieText.trim()}
+            >
+              {importing ? (
                 <Loader2Icon className="animate-spin" />
               ) : (
-                <LogInIcon />
+                <CookieIcon />
               )}
-              Sign in with Google
+              Import pasted cookies
             </Button>
-          )}
+            <Button
+              variant="outline"
+              onClick={() => void importCookiesFromFile()}
+              disabled={importing}
+            >
+              {importing ? (
+                <Loader2Icon className="animate-spin" />
+              ) : (
+                <UploadIcon />
+              )}
+              Choose file…
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

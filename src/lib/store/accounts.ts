@@ -1,11 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resetInnertube } from "@/lib/innertube/client";
 import { fetchAccountInfo } from "@/lib/innertube/account";
+import { fetchChannelList } from "@/lib/innertube/channels";
 import { clearPrefetchMemo } from "@/lib/stream";
+import { toast } from "sonner";
 import { usePlaybackStore } from "@/lib/store/playback";
 import { usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
 import { usePremiumStore } from "@/lib/store/premium";
@@ -17,6 +19,9 @@ export type AccountSummary = {
   email: string;
   name: string;
   photoUrl: string | null;
+  brandId?: string | null;
+  channelName?: string | null;
+  channelHandle?: string | null;
   isActive: boolean;
 };
 
@@ -78,6 +83,75 @@ export function useLoginSuccessListener(): void {
       void qc.invalidateQueries({ queryKey: ["active-account-id"] });
       void qc.invalidateQueries({ queryKey: ["auth-logged-in"] });
       void qc.invalidateQueries({ queryKey: ["account-info"] });
+    }).then((un) => {
+      if (cancelled) un();
+      else dispose = un;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [qc]);
+}
+
+/** Global toasts for embedded login polish (insecure browser, Continue). */
+export function useLoginPolishListener(): void {
+  useEffect(() => {
+    let cancelled = false;
+    const disposers: Array<() => void> = [];
+    void listen("login-insecure-browser", () => {
+      toast.error(
+        "Google blocked sign-in in the embedded window. Use Settings → Import session from browser instead.",
+        { duration: 12_000 },
+      );
+    }).then((un) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    });
+    void listen("login-ready", () => {
+      toast("Sign-in cookies detected", {
+        description:
+          "Open music.youtube.com in the login window, then click Continue.",
+        action: {
+          label: "Continue",
+          onClick: () => {
+            void invoke("confirm_login").catch((e) => toast.error(String(e)));
+          },
+        },
+        duration: 20_000,
+      });
+    }).then((un) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    });
+    void listen<string>("login-failed", (event) => {
+      toast.error(event.payload, { duration: 14_000 });
+    }).then((un) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    });
+    return () => {
+      cancelled = true;
+      for (const d of disposers) d();
+    };
+  }, []);
+}
+
+export function useBrandChangedListener(): void {
+  const qc = useQueryClient();
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void listen("brand-changed", () => {
+      resetInnertube();
+      void qc.invalidateQueries({ queryKey: ["accounts"] });
+      void qc.invalidateQueries({ queryKey: ["account-info"] });
+      void qc.invalidateQueries({ queryKey: ["home"] });
+      void qc.invalidateQueries({ queryKey: ["library"] });
+      void qc.invalidateQueries({ queryKey: ["liked-songs"] });
+      void qc.invalidateQueries({ queryKey: ["playlist-pages"] });
+      void qc.invalidateQueries({ queryKey: ["user-playlists"] });
+      void qc.invalidateQueries({ queryKey: ["premium-status"] });
     }).then((un) => {
       if (cancelled) un();
       else dispose = un;
@@ -221,4 +295,72 @@ export function switchAccount(id: string): Promise<void> {
 
 export function removeAccount(id: string): Promise<void> {
   return invoke<void>("remove_account", { id });
+}
+
+export function setActiveBrand(
+  id: string,
+  brandId: string | null,
+  channelName: string,
+  channelHandle?: string | null,
+): Promise<void> {
+  return invoke<void>("set_active_brand", {
+    id,
+    brandId,
+    channelName,
+    channelHandle: channelHandle ?? null,
+  });
+}
+
+/**
+ * After login or cookie import, offer a channel picker when the Google
+ * account has multiple YouTube channels (primary + brand).
+ */
+export function useChannelPickerAfterAuth(): {
+  channelPickerOpen: boolean;
+  setChannelPickerOpen: (open: boolean) => void;
+  channelPickerAccountId: string | null;
+} {
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
+  const [channelPickerAccountId, setChannelPickerAccountId] = useState<
+    string | null
+  >(null);
+  const pendingCheck = useRef(false);
+
+  const maybeShowPicker = async (accountId: string) => {
+    if (pendingCheck.current) return;
+    pendingCheck.current = true;
+    try {
+      const channels = await fetchChannelList();
+      if (channels.length >= 2) {
+        setChannelPickerAccountId(accountId);
+        setChannelPickerOpen(true);
+      }
+    } catch (e) {
+      console.warn("[accounts] channel list check failed:", e);
+    } finally {
+      pendingCheck.current = false;
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void listen<string>("login-success", (event) => {
+      const accountId = event.payload;
+      if (!accountId || cancelled) return;
+      // Brief delay so cookies + InnerTube client are ready.
+      window.setTimeout(() => {
+        if (!cancelled) void maybeShowPicker(accountId);
+      }, 800);
+    }).then((un) => {
+      if (cancelled) un();
+      else dispose = un;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+
+  return { channelPickerOpen, setChannelPickerOpen, channelPickerAccountId };
 }
