@@ -1,4 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -18,6 +19,7 @@ import {
   LogOutIcon,
   ExternalLinkIcon,
   CheckIcon,
+  TvIcon,
 } from "lucide-react";
 import {
   Sidebar,
@@ -49,11 +51,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePinned, usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
 import { fetchAccountInfo } from "@/lib/innertube/account";
+import { fetchChannelList, type BrandChannel } from "@/lib/innertube/channels";
 import { resetInnertube } from "@/lib/innertube/client";
 import { usePremiumStore } from "@/lib/store/premium";
 import {
   removeAccount,
   switchAccount,
+  setActiveBrand,
   useAccounts,
   type AccountSummary,
 } from "@/lib/store/accounts";
@@ -209,6 +213,9 @@ const MANAGE_SUBSCRIPTION_URL =
   "https://music.youtube.com/paid_memberships";
 
 function UserProfile() {
+  const [channels, setChannels] = useState<BrandChannel[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(false);
+
   const loggedIn = useQuery({
     queryKey: ["auth-logged-in"],
     queryFn: () => invoke<boolean>("is_logged_in"),
@@ -225,14 +232,55 @@ function UserProfile() {
   const premiumStatus = usePremiumStore((s) => s.status);
   const override = usePremiumStore((s) => s.override);
 
-  if (!loggedIn.data || !account.data) return null;
+  if (!loggedIn.data) return null;
 
-  const { name, email, photoUrl } = account.data;
-  const initial = (name || email || "?").trim().charAt(0).toUpperCase();
-  const isPremium = premiumStatus === "premium" || override;
-  const tierLabel = isPremium ? "Premium" : "Free";
+  const { name, email, photoUrl } = account.data ?? {
+    name: "",
+    email: "",
+    photoUrl: undefined as string | undefined,
+  };
   const allAccounts = accounts.data ?? [];
   const activeAccount = allAccounts.find((a) => a.isActive);
+  const initial = (name || email || activeAccount?.id || "?")
+    .trim()
+    .charAt(0)
+    .toUpperCase();
+  const isPremium = premiumStatus === "premium" || override;
+  const tierLabel = isPremium ? "Premium" : "Free";
+  const displayName =
+    activeAccount?.channelName || account.data?.name || "Account";
+  const displaySubtitle =
+    activeAccount?.channelHandle ||
+    (activeAccount?.channelName && account.data?.name
+      ? account.data.name
+      : null);
+
+  const loadChannels = async () => {
+    setChannelsLoading(true);
+    try {
+      const list = await fetchChannelList();
+      setChannels(list);
+    } catch (e) {
+      toast.error(String(e));
+    } finally {
+      setChannelsLoading(false);
+    }
+  };
+
+  const onSwitchChannel = (channel: BrandChannel) => async () => {
+    if (!activeAccount) return;
+    try {
+      await setActiveBrand(
+        activeAccount.id,
+        channel.brandId,
+        channel.channelName,
+        channel.channelHandle ?? null,
+      );
+      toast.success(`Switched to ${channel.channelName}`);
+    } catch (e) {
+      toast.error(String(e));
+    }
+  };
 
   const signOut = async () => {
     if (!activeAccount) {
@@ -291,19 +339,25 @@ function UserProfile() {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
-        <DropdownMenu>
+        <DropdownMenu onOpenChange={(open) => open && void loadChannels()}>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
-              tooltip={email ? `${name} — ${email}` : name}
+              tooltip={
+                displaySubtitle
+                  ? `${displayName} — ${displaySubtitle}`
+                  : email
+                    ? `${displayName} — ${email}`
+                    : displayName
+              }
               className={MENU_BTN_CLS}
             >
               <Avatar className="size-4 shrink-0">
-                {photoUrl ? <AvatarImage src={photoUrl} alt={name} /> : null}
+                {photoUrl ? <AvatarImage src={photoUrl} alt={displayName} /> : null}
                 <AvatarFallback className="text-[9px] leading-none">
                   {initial}
                 </AvatarFallback>
               </Avatar>
-              <span className="truncate">{name}</span>
+              <span className="truncate">{displayName}</span>
               <Badge
                 variant="outline"
                 className={cn(
@@ -384,6 +438,47 @@ function UserProfile() {
               <UserPlusIcon />
               Add another account
             </DropdownMenuItem>
+            <>
+              <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Switch channel
+              </DropdownMenuLabel>
+              {channelsLoading ? (
+                <DropdownMenuItem disabled>Loading channels…</DropdownMenuItem>
+              ) : channels.length >= 2 ? (
+                channels.map((ch) => {
+                  const activeBrand = activeAccount?.brandId ?? null;
+                  const isActive =
+                    (ch.brandId ?? null) === activeBrand ||
+                    (!activeBrand && !ch.brandId);
+                  return (
+                    <DropdownMenuItem
+                      key={ch.brandId ?? "primary"}
+                      onSelect={onSwitchChannel(ch)}
+                    >
+                      <TvIcon />
+                      <div className="flex min-w-0 flex-col leading-tight">
+                        <span className="truncate">{ch.channelName}</span>
+                        {ch.channelHandle ? (
+                          <span className="truncate text-[10px] text-muted-foreground">
+                            {ch.channelHandle}
+                          </span>
+                        ) : null}
+                      </div>
+                      {isActive ? (
+                        <CheckIcon className="ms-auto text-emerald-500" />
+                      ) : null}
+                    </DropdownMenuItem>
+                  );
+                })
+              ) : (
+                <DropdownMenuItem disabled>
+                  {channels.length === 0
+                    ? "No channels found"
+                    : "Only one channel on this account"}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+            </>
             <DropdownMenuItem onSelect={openExternal(MANAGE_GOOGLE_URL)}>
               <UserCogIcon />
               Manage Google Account

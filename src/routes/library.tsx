@@ -220,12 +220,21 @@ function SectionsSkeleton() {
 }
 
 function ErrorCard({ message }: { message: string }) {
+  const is404 = message.includes("404") || message.includes("NOT_FOUND");
   return (
     <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm">
       <AlertCircleIcon className="size-5 shrink-0 text-destructive" />
       <div className="flex flex-col gap-1">
         <span className="font-medium">Couldn't load library</span>
         <span className="text-muted-foreground">{message}</span>
+        {is404 ? (
+          <span className="mt-2 text-muted-foreground">
+            If you use a brand YouTube channel, open the profile menu in the
+            sidebar and use <strong>Switch channel</strong> to pick the right
+            one. Otherwise try re-importing cookies from Chrome/Edge (include
+            both google.com and youtube.com).
+          </span>
+        ) : null}
       </div>
     </div>
   );

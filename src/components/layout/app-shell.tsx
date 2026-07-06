@@ -23,8 +23,11 @@ import { usePremiumStatusSync } from "@/lib/store/premium";
 import {
   useAccountMetaBackfill,
   useAccountsChangedListener,
+  useBrandChangedListener,
   useLoginSuccessListener,
+  useLoginPolishListener,
 } from "@/lib/store/accounts";
+import { ChannelPickerHost } from "@/components/auth/channel-picker-dialog";
 import { cn } from "@/lib/utils";
 
 function isEditableTarget(el: EventTarget | null): boolean {
@@ -74,7 +77,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   useUpdateStartupCheck();
   usePremiumStatusSync();
   useLoginSuccessListener();
+  useLoginPolishListener();
   useAccountsChangedListener();
+  useBrandChangedListener();
   useAccountMetaBackfill();
   useGlobalShortcuts();
   const mode = useLayoutStore((s) => s.mode);
@@ -224,6 +229,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </SidebarProvider>
       <Toaster />
+      <ChannelPickerHost />
     </TooltipProvider>
   );
 }

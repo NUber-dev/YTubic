@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -23,6 +23,8 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
+
+mod dev_server;
 
 mod ytdlp;
 
@@ -149,6 +151,13 @@ struct Account {
     name: String,
     #[serde(default, rename = "photoUrl")]
     photo_url: Option<String>,
+    /// YouTube brand-channel id (`onBehalfOfUser`). `None` = primary channel.
+    #[serde(default, rename = "brandId")]
+    brand_id: Option<String>,
+    #[serde(default, rename = "channelName")]
+    channel_name: Option<String>,
+    #[serde(default, rename = "channelHandle")]
+    channel_handle: Option<String>,
     /// Unix seconds when this account was first added.
     #[serde(default, rename = "addedAt")]
     added_at: i64,
@@ -175,8 +184,120 @@ struct AccountSummary {
     name: String,
     #[serde(rename = "photoUrl")]
     photo_url: Option<String>,
+    #[serde(rename = "brandId")]
+    brand_id: Option<String>,
+    #[serde(rename = "channelName")]
+    channel_name: Option<String>,
+    #[serde(rename = "channelHandle")]
+    channel_handle: Option<String>,
     #[serde(rename = "isActive")]
     is_active: bool,
+}
+
+/// InnerTube WEB_REMIX client version — keep in sync with shared.ts.
+const INNERTUBE_CLIENT_VERSION: &str = "1.20260510.02.00";
+const INNERTUBE_ORIGIN: &str = "https://music.youtube.com";
+
+/// Matches [`src/lib/innertube/shared.ts`] `DESKTOP_UA` — keep in sync.
+const INNERTUBE_USER_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/// Build a `Cookie:` header for InnerTube. **YouTube-only** — sending
+/// google.com cookies together with youtube.com breaks `account_menu`
+/// (verified in scripts/auth-lab). SAPISIDHASH still uses youtube SAPISID.
+fn cookie_header_from_netscape(content: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        let bare = fields[0].trim_start_matches('.');
+        if !bare.ends_with("youtube.com") {
+            continue;
+        }
+        let name = fields[5];
+        let value = fields[6];
+        if !seen.insert(name.to_string()) {
+            continue;
+        }
+        parts.push(format!("{name}={value}"));
+    }
+    parts.join("; ")
+}
+
+fn sapisid_for_hash_from_netscape(content: &str) -> Option<String> {
+    let mut yt_3p = None;
+    let mut yt_s = None;
+    for line in content.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        let bare = fields[0].trim_start_matches('.');
+        if !bare.ends_with("youtube.com") {
+            continue;
+        }
+        let name = fields[5];
+        let value = fields[6];
+        match name {
+            "__Secure-3PAPISID" => yt_3p = Some(value.to_string()),
+            "SAPISID" => yt_s = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    yt_3p.or(yt_s)
+}
+
+fn sapisid_hash_value(sapisid: &str, origin: &str) -> Option<String> {
+    let ts = time::OffsetDateTime::now_utc().unix_timestamp();
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(format!("{ts} {sapisid} {origin}"));
+    let hash = format!("{:x}", hasher.finalize());
+    Some(format!("SAPISIDHASH {ts}_{hash}"))
+}
+
+#[derive(serde::Serialize)]
+struct InnertubeAuthHeaders {
+    #[serde(rename = "cookieHeader")]
+    cookie_header: String,
+    authorization: String,
+}
+
+fn build_innertube_auth_from_netscape(content: &str) -> Option<InnertubeAuthHeaders> {
+    let cookie_header = cookie_header_from_netscape(content);
+    if cookie_header.is_empty() {
+        return None;
+    }
+    let sapisid = sapisid_for_hash_from_netscape(content)?;
+    let authorization = sapisid_hash_value(&sapisid, INNERTUBE_ORIGIN)?;
+    Some(InnertubeAuthHeaders {
+        cookie_header,
+        authorization,
+    })
+}
+
+#[derive(Default)]
+struct LoginConfirm(StdMutex<Option<Arc<AtomicBool>>>);
+
+/// One parsed line from a Netscape cookie-jar export.
+#[derive(Clone, Debug)]
+struct NetscapeLine {
+    domain: String,
+    path: String,
+    secure: bool,
+    expiry: i64,
+    name: String,
+    value: String,
 }
 
 fn accounts_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -310,6 +431,213 @@ fn generate_account_id() -> String {
     format!("acct-{:x}", nanos)
 }
 
+/// Parse a Netscape cookie-jar export. Supports `#HttpOnly_` prefix lines
+/// and skips comment / header lines.
+fn parse_netscape_cookies(text: &str) -> Result<Vec<NetscapeLine>, String> {
+    let mut out = Vec::new();
+    for raw_line in text.lines() {
+        let line = raw_line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let line = if let Some(rest) = line.strip_prefix("#HttpOnly_") {
+            rest
+        } else if line.starts_with('#') {
+            continue;
+        } else {
+            line
+        };
+        let fields: Vec<&str> = line.splitn(7, '\t').collect();
+        if fields.len() < 7 {
+            return Err(format!(
+                "invalid cookie line (expected 7 tab-separated fields): {}",
+                line.chars().take(80).collect::<String>()
+            ));
+        }
+        out.push(NetscapeLine {
+            domain: fields[0].to_string(),
+            path: fields[2].to_string(),
+            secure: fields[3] == "TRUE",
+            expiry: fields[4].parse().unwrap_or(0),
+            name: fields[5].to_string(),
+            value: fields[6].to_string(),
+        });
+    }
+    if out.is_empty() {
+        return Err("no cookies found in input".into());
+    }
+    Ok(out)
+}
+
+/// Require at least one auth cookie InnerTube can use (youtube or google).
+fn validate_yt_auth_cookies(lines: &[NetscapeLine]) -> Result<(), String> {
+    let auth_names = [
+        "SAPISID",
+        "__Secure-1PSID",
+        "__Secure-3PAPISID",
+        "SID",
+        "LOGIN_INFO",
+    ];
+    let ok = lines.iter().any(|c| {
+        let bare = c.domain.trim_start_matches('.');
+        let is_google = bare == "google.com" || bare.ends_with(".google.com");
+        let is_yt = bare == "youtube.com" || bare.ends_with(".youtube.com");
+        (is_google || is_yt) && auth_names.contains(&c.name.as_str())
+    });
+    if ok {
+        Ok(())
+    } else {
+        Err(
+            "missing required auth cookies — export cookies for both youtube.com and google.com \
+             (need SAPISID, __Secure-1PSID, or LOGIN_INFO)"
+                .into(),
+        )
+    }
+}
+
+/// Serialize parsed lines back to Netscape format, keeping only
+/// google/youtube domains (same filter as `cookies_to_netscape`).
+/// Normalizes every line to `.{domain}\tTRUE` so `read_innertube_cookie_header`
+/// can match `music.youtube.com` — browser exporters often emit
+/// `youtube.com\tFALSE`, which would silently drop SAPISID / PSID.
+fn netscape_lines_to_text(lines: &[NetscapeLine]) -> String {
+    let mut out = String::from("# Netscape HTTP Cookie File\n");
+    for c in lines {
+        let bare = c.domain.trim_start_matches('.');
+        let allowed = bare == "youtube.com"
+            || bare.ends_with(".youtube.com")
+            || bare == "google.com"
+            || bare.ends_with(".google.com");
+        if !allowed {
+            continue;
+        }
+        let dom_out = format!(".{bare}");
+        let secure = if c.secure { "TRUE" } else { "FALSE" };
+        out.push_str(&format!(
+            "{}\tTRUE\t{}\t{}\t{}\t{}\t{}\n",
+            dom_out, c.path, secure, c.expiry, c.name, c.value
+        ));
+    }
+    out
+}
+
+/// Shared path for cookie import and WebView login: encrypt the jar,
+/// register a new account row, flip it active, emit `login-success`.
+async fn register_account_from_netscape(
+    app: &tauri::AppHandle,
+    netscape: String,
+) -> Result<String, String> {
+    let lines = parse_netscape_cookies(&netscape)?;
+    validate_yt_auth_cookies(&lines)?;
+    let filtered = netscape_lines_to_text(&lines);
+    if filtered.lines().count() <= 1 {
+        return Err("no google/youtube cookies found after filtering".into());
+    }
+
+    let new_id = generate_account_id();
+    let cookies_path = account_cookies_path(app, &new_id);
+    if let Some(dir) = cookies_path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| format!("mkdir account dir: {e}"))?;
+    }
+    let plain = filtered.into_bytes();
+    let encrypted = tokio::task::spawn_blocking(move || secure_store::encrypt(&plain))
+        .await
+        .map_err(|e| format!("encrypt join: {e}"))?
+        .map_err(|e| format!("encrypt cookies: {e}"))?;
+    tokio::fs::write(&cookies_path, &encrypted)
+        .await
+        .map_err(|e| format!("write account cookies: {e}"))?;
+
+    let mut idx = read_index(app).await;
+    let now_s = time::OffsetDateTime::now_utc().unix_timestamp();
+    idx.accounts.push(Account {
+        id: new_id.clone(),
+        added_at: now_s,
+        ..Default::default()
+    });
+    idx.active = Some(new_id.clone());
+    write_index(app, &idx).await?;
+    let _ = app.emit("login-success", &new_id);
+    Ok(new_id)
+}
+
+#[tauri::command]
+async fn import_cookies_from_text(
+    app: tauri::AppHandle,
+    text: String,
+) -> Result<String, String> {
+    register_account_from_netscape(&app, text).await
+}
+
+#[tauri::command]
+async fn import_cookies_from_file(app: tauri::AppHandle) -> Result<String, String> {
+    let path = rfd::FileDialog::new()
+        .add_filter("Cookie files", &["txt"])
+        .add_filter("All files", &["*"])
+        .set_title("Import Netscape cookie file")
+        .pick_file()
+        .ok_or_else(|| "no file selected".to_string())?;
+    let text = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("read file: {e}"))?;
+    register_account_from_netscape(&app, text).await
+}
+
+#[tauri::command]
+async fn get_active_brand_id(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let idx = read_index(&app).await;
+    let active = idx.active.as_deref();
+    Ok(idx
+        .accounts
+        .iter()
+        .find(|a| active == Some(a.id.as_str()))
+        .and_then(|a| a.brand_id.clone()))
+}
+
+#[tauri::command]
+async fn set_active_brand(
+    app: tauri::AppHandle,
+    id: String,
+    #[allow(non_snake_case)] brandId: Option<String>,
+    #[allow(non_snake_case)] channelName: Option<String>,
+    #[allow(non_snake_case)] channelHandle: Option<String>,
+) -> Result<(), String> {
+    let brand_id = brandId;
+    let channel_name = channelName;
+    let channel_handle = channelHandle;
+    let mut idx = read_index(&app).await;
+    let acct = idx
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("no such account: {id}"))?;
+    acct.brand_id = brand_id;
+    acct.channel_name = channel_name;
+    acct.channel_handle = channel_handle;
+    write_index(&app, &idx).await?;
+    // Brand switches stay on the same Google account — don't fire
+    // `accounts-changed`, which nukes the query cache and navigates
+    // home (can crash/reload the WebView on Windows).
+    let _ = app.emit("brand-changed", ());
+    Ok(())
+}
+
+/// User clicked "Continue" in the login window after cookies were detected.
+#[tauri::command]
+fn confirm_login(state: tauri::State<'_, LoginConfirm>) -> Result<(), String> {
+    let guard = state
+        .0
+        .lock()
+        .map_err(|e| format!("lock: {e}"))?;
+    let Some(flag) = guard.as_ref() else {
+        return Err("no login in progress".into());
+    };
+    flag.store(true, Ordering::Release);
+    Ok(())
+}
+
 /// Read the encrypted cookie jar for the active account and decrypt
 /// it in memory. Returns `None` when nobody is signed in or
 /// decryption fails (treat as logged-out).
@@ -421,10 +749,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         .min_inner_size(420.0, 560.0)
         .center()
         .data_directory(webview_data.clone())
-        .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-        )
+        .user_agent(INNERTUBE_USER_AGENT)
         // Surface the current origin in the title so the user can spot
         // a redirect to an unexpected host (anti-phishing).
         .on_page_load(|win, payload| {
@@ -436,19 +761,46 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
 
     let app_poll = app.clone();
     let cleanup_dir = webview_data.clone();
+    let confirm_flag = Arc::new(AtomicBool::new(false));
+    if let Ok(mut guard) = app.state::<LoginConfirm>().0.lock() {
+        *guard = Some(confirm_flag.clone());
+    }
     tauri::async_runtime::spawn(async move {
         // Set to true once we've redirected the webview to YT ourselves.
         // Guards against thrashing if YT auto-sign-in is slow and we
         // catch a Google-auth-only state on multiple ticks.
         let mut nudged_to_yt = false;
+        let mut insecure_emitted = false;
+        let mut login_ready_emitted = false;
+        let mut confirm_ticks: u32 = 0;
         loop {
             tokio::time::sleep(Duration::from_millis(1500)).await;
 
             let Some(win) = app_poll.get_webview_window("login") else {
                 let _ = app_poll.emit("login-cancelled", ());
+                if let Ok(mut guard) = app_poll.state::<LoginConfirm>().0.lock() {
+                    *guard = None;
+                }
                 let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
                 return;
             };
+
+            let user_confirmed = confirm_flag.load(Ordering::Acquire);
+            if user_confirmed {
+                confirm_ticks += 1;
+            }
+
+            let current_url = win.url().map(|u| u.to_string()).unwrap_or_default();
+            let url_lower = current_url.to_lowercase();
+            if !insecure_emitted
+                && (url_lower.contains("signin/rejected")
+                    || url_lower.contains("browsernotsecure")
+                    || url_lower.contains("couldn"))
+            {
+                let _ = app_poll.emit("login-insecure-browser", ());
+                insecure_emitted = true;
+                let _ = win.set_title("Sign in — Google blocked this browser");
+            }
 
             let cookies = match win.cookies() {
                 Ok(c) => c,
@@ -460,13 +812,32 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
 
             let has_yt_auth = cookies.iter().any(|c| {
                 let name = c.name();
-                (name == "__Secure-1PSID" || name == "SAPISID")
-                    && c.domain()
-                        .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                        .unwrap_or(false)
+                let is_auth = name == "__Secure-1PSID"
+                    || name == "__Secure-3PSID"
+                    || name == "SAPISID"
+                    || name == "SID";
+                is_auth
+                    && c.domain().map(|d| {
+                        let bare = d.trim_start_matches('.');
+                        bare.ends_with("youtube.com") || bare.ends_with("google.com")
+                    }).unwrap_or(false)
             });
 
+            let on_music_yt = url_lower.contains("music.youtube.com");
+
             if !has_yt_auth {
+                if user_confirmed && confirm_ticks >= 20 {
+                    let _ = app_poll.emit(
+                        "login-failed",
+                        "No YouTube session found. In the login window, open music.youtube.com and sign in there, then click Continue — or use Import cookies below.",
+                    );
+                    let _ = win.close();
+                    if let Ok(mut guard) = app_poll.state::<LoginConfirm>().0.lock() {
+                        *guard = None;
+                    }
+                    let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
+                    return;
+                }
                 // YT cookies aren't set yet. Two ways to land here:
                 //   1) User hasn't completed Google sign-in. Keep waiting.
                 //   2) Google sign-in succeeded but Google parked the
@@ -509,6 +880,28 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                     }
                 }
                 continue;
+            }
+
+            if !on_music_yt && !user_confirmed {
+                if !login_ready_emitted {
+                    let _ = app_poll.emit("login-ready", ());
+                    let _ = win.set_title("Sign in — open music.youtube.com, then Continue");
+                    login_ready_emitted = true;
+                }
+                continue;
+            }
+
+            if user_confirmed && confirm_ticks >= 120 {
+                let _ = app_poll.emit(
+                    "login-failed",
+                    "Sign-in timed out. Try Import cookies from Chrome/Edge (export google.com + youtube.com).",
+                );
+                let _ = win.close();
+                if let Ok(mut guard) = app_poll.state::<LoginConfirm>().0.lock() {
+                    *guard = None;
+                }
+                let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
+                return;
             }
 
             let new_id = generate_account_id();
@@ -574,6 +967,9 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             // single source of truth for "an account flipped" so we
             // never run the full reset twice for one login flow.
             let _ = app_poll.emit("login-success", &new_id);
+            if let Ok(mut guard) = app_poll.state::<LoginConfirm>().0.lock() {
+                *guard = None;
+            }
             let _ = win.close();
             let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
             return;
@@ -584,10 +980,38 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a cookie line's domain covers `host`. Leading-dot domains and
+/// `include_subdomains=TRUE` both imply subdomain coverage (Netscape
+/// convention + what browser exporters usually intend).
+fn cookie_domain_matches(host: &str, cookie_domain: &str, include_subdomains: bool) -> bool {
+    let domain = cookie_domain.trim_start_matches('.');
+    let host_bare = host.trim_start_matches('.');
+    if host_bare == domain {
+        return true;
+    }
+    let covers_subdomains = include_subdomains || cookie_domain.starts_with('.');
+    covers_subdomains && host_bare.ends_with(&format!(".{domain}"))
+}
+
+/// Build the full `Cookie:` header InnerTube expects: every google.com and
+/// youtube.com cookie in the jar. SAPISID / PSID often live on different
+/// domains; filtering to `music.youtube.com` only drops auth tokens and
+/// yields 404s on library browse despite `is_logged_in` passing.
+async fn read_innertube_cookie_header(app: &tauri::AppHandle) -> String {
+    let Some(content) = read_cookies_plain(app).await else {
+        return String::new();
+    };
+    cookie_header_from_netscape(&content)
+}
+
 /// Parse a Netscape cookie jar and return a `Cookie:` header value
 /// containing all cookies that match the given domain (honoring the
 /// `include_subdomains` flag). Empty string if no jar or no matches.
 async fn read_cookie_header(app: &tauri::AppHandle, host: &str) -> String {
+    // InnerTube auth needs the full google+youtube jar, not host-filtered.
+    if host.contains("youtube") || host.contains("google") {
+        return read_innertube_cookie_header(app).await;
+    }
     let Some(content) = read_cookies_plain(app).await else {
         return String::new();
     };
@@ -596,21 +1020,34 @@ async fn read_cookie_header(app: &tauri::AppHandle, host: &str) -> String {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
         }
-        // domain \t include_subdomains \t path \t secure \t expiry \t name \t value
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() < 7 {
             continue;
         }
-        let domain = fields[0].trim_start_matches('.');
         let include_sub = fields[1] == "TRUE";
-        let matches = host == domain
-            || (include_sub && host.ends_with(&format!(".{domain}")));
-        if !matches {
+        if !cookie_domain_matches(host, fields[0], include_sub) {
             continue;
         }
         parts.push(format!("{}={}", fields[5], fields[6]));
     }
     parts.join("; ")
+}
+
+#[tauri::command]
+fn cancel_login(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("login") {
+        win.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_innertube_auth(app: tauri::AppHandle) -> Result<InnertubeAuthHeaders, String> {
+    let content = read_cookies_plain(&app)
+        .await
+        .ok_or_else(|| "not signed in".to_string())?;
+    build_innertube_auth_from_netscape(&content)
+        .ok_or_else(|| "missing SAPISID / PSID auth cookies".to_string())
 }
 
 #[tauri::command]
@@ -623,8 +1060,10 @@ async fn get_cookie_header(
 
 #[tauri::command]
 async fn is_logged_in(app: tauri::AppHandle) -> Result<bool, String> {
-    let header = read_cookie_header(&app, "music.youtube.com").await;
-    Ok(header.contains("SAPISID") || header.contains("__Secure-1PSID"))
+    let Some(content) = read_cookies_plain(&app).await else {
+        return Ok(false);
+    };
+    Ok(build_innertube_auth_from_netscape(&content).is_some())
 }
 
 /// Hard-exit the process. The window's close button hides into the tray
@@ -771,6 +1210,9 @@ async fn list_accounts(app: tauri::AppHandle) -> Result<Vec<AccountSummary>, Str
                 email: a.email,
                 name: a.name,
                 photo_url: a.photo_url,
+                brand_id: a.brand_id,
+                channel_name: a.channel_name,
+                channel_handle: a.channel_handle,
                 is_active,
             }
         })
@@ -1924,12 +2366,18 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(state)
+        .manage(LoginConfirm::default())
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
             resolve_stream_ytdlp,
             get_stream_base_url,
             start_login,
+            confirm_login,
+            cancel_login,
+            import_cookies_from_text,
+            import_cookies_from_file,
             get_cookie_header,
+            get_innertube_auth,
             is_logged_in,
             clear_cookies,
             list_accounts,
@@ -1937,6 +2385,8 @@ pub fn run() {
             remove_account,
             update_account_meta,
             get_active_account_id,
+            get_active_brand_id,
+            set_active_brand,
             list_cache,
             delete_cache_entries,
             cache_cover,
@@ -1968,6 +2418,7 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            dev_server::ensure_vite_for_dev_build();
             let port = port_handle.clone();
             let token = token_handle.clone();
             let cache_root = app

@@ -18,6 +18,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Enabled automatically by `pnpm tauri build`. Without it the app loads
+# `devUrl` (localhost:1420) even from a release binary.
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
@@ -28,7 +33,7 @@ serde_json = "1"
 tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
 tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
 urlencoding = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "process", "sync", "net"] }
 axum = "0.7"
@@ -36,8 +41,10 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 tower = "0.5"
 cookie = "0.18"
 time = "0.3"
+rfd = "0.15"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+sha1 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
