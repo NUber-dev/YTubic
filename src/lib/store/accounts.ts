@@ -111,12 +111,11 @@ export function useAccountsChangedListener(): void {
       //    index = -1 which strips the audio element's src.
       usePlaybackStore.getState().clearQueue();
 
-      // 3. Other per-account local state — typed search history,
-      //    per-track Song↔Video preferences, user-set "I have
-      //    Premium" override.
+      // 3. Other per-account local state: typed search history,
+      //    per-track Song↔Video preferences, cached Premium status.
       useSearchHistory.getState().clear();
       useTrackSourceStore.setState({ byVideoId: {} });
-      usePremiumStore.setState({ status: null, override: false });
+      usePremiumStore.setState({ status: null });
 
       // 4. In-memory caches that wrap network state.
       resetInnertube();

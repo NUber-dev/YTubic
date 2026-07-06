@@ -226,13 +226,12 @@ function UserProfile() {
   });
   const accounts = useAccounts();
   const premiumStatus = usePremiumStore((s) => s.status);
-  const override = usePremiumStore((s) => s.override);
 
   if (!loggedIn.data || !account.data) return null;
 
   const { name, email, photoUrl } = account.data;
   const initial = (name || email || "?").trim().charAt(0).toUpperCase();
-  const isPremium = premiumStatus === "premium" || override;
+  const isPremium = premiumStatus === "premium";
   const tierLabel = isPremium ? "Premium" : "Free";
   const allAccounts = accounts.data ?? [];
   const activeAccount = allAccounts.find((a) => a.isActive);

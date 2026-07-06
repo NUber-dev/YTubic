@@ -17,7 +17,6 @@ import {
   LockIcon,
   MusicIcon,
   Trash2Icon,
-  TriangleAlertIcon,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -227,20 +226,14 @@ function CacheFolderGroup() {
 
 function CacheGroupGate({ loggedIn }: { loggedIn: boolean }) {
   const premium = usePremiumStore((s) => s.status);
-  const override = usePremiumStore((s) => s.override);
-  if (premium !== "premium" && !override) {
+  if (premium !== "premium") {
     return <PremiumGatedCacheGroup loggedIn={loggedIn} />;
   }
-  return (
-    <CacheGroup
-      loggedIn={loggedIn}
-      overridden={override && premium !== "premium"}
-    />
-  );
+  return <CacheGroup loggedIn={loggedIn} />;
 }
 
 function PremiumGatedCacheGroup({ loggedIn }: { loggedIn: boolean }) {
-  const setOverride = usePremiumStore((s) => s.setOverride);
+  const qc = useQueryClient();
   return (
     <Group>
       <SettingRow
@@ -249,29 +242,24 @@ function PremiumGatedCacheGroup({ loggedIn }: { loggedIn: boolean }) {
         title="Track caching is Premium-only"
         description={
           loggedIn
-            ? "No active Premium subscription found on this account — streams play through without being saved to disk."
+            ? "No active Premium subscription found on this account. Detection reads YT Music's account menu; if it got you wrong, re-check after a moment."
             : "Sign in with a Google account that has YouTube Premium to keep played tracks on disk."
         }
-      />
-      {loggedIn ? (
-        <SettingRow
-          icon={TriangleAlertIcon}
-          title="Already on Premium?"
-          description="Detection reads YT Music's account menu and can misfire on some locales. Enable caching manually if you're sure."
-          control={
+        control={
+          loggedIn ? (
             <Button
               variant="outline"
               size="sm"
               onClick={() => {
-                setOverride(true);
-                toast.success("Caching enabled");
+                void qc.invalidateQueries({ queryKey: ["premium-status"] });
+                toast.info("Re-checking your subscription");
               }}
             >
-              Enable caching
+              Re-check
             </Button>
-          }
-        />
-      ) : null}
+          ) : undefined
+        }
+      />
     </Group>
   );
 }
@@ -318,15 +306,8 @@ function AutoCleanRow({ loggedIn }: { loggedIn: boolean }) {
   );
 }
 
-function CacheGroup({
-  loggedIn,
-  overridden,
-}: {
-  loggedIn: boolean;
-  overridden: boolean;
-}) {
+function CacheGroup({ loggedIn }: { loggedIn: boolean }) {
   const qc = useQueryClient();
-  const setOverride = usePremiumStore((s) => s.setOverride);
   const [filter, setFilter] = useState<FilterMode>("all");
   const [sort, setSort] = useState<SortMode>("newest");
   const [pending, setPending] = useState<Set<string>>(new Set());
@@ -577,27 +558,6 @@ function CacheGroup({
 
   return (
     <Group>
-      {overridden ? (
-        <SettingRow
-          icon={TriangleAlertIcon}
-          iconClassName="text-amber-600 dark:text-amber-400"
-          title="Manual Premium override is on"
-          description="Caching is enabled by hand. Turn it off if this account isn't actually on Premium."
-          control={
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setOverride(false);
-                toast.info("Manual Premium override turned off");
-              }}
-            >
-              Turn off
-            </Button>
-          }
-        />
-      ) : null}
-
       {/* Toolbar + list share one wrapper so Group's divider doesn't
           draw a line between them. While pinned, the toolbar teleports
           into the pane's slot above the scroller (see the effect

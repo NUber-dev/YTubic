@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import { fetchPremiumStatus, type PremiumStatus } from "@/lib/innertube/account";
 
 type State = {
@@ -11,59 +10,45 @@ type State = {
    * haven't checked yet *or* when the user is not signed in.
    */
   status: PremiumStatus;
-  /**
-   * User-set override. When `true`, `isPremium()` returns true even if
-   * auto-detection says otherwise. Exists because Premium detection
-   * walks an undocumented endpoint and can misfire on locales / layouts
-   * we haven't seen — a paying user must always have an escape hatch.
-   * Cleared automatically on sign-out via `usePremiumStatusSync`.
-   */
-  override: boolean;
   setStatus: (status: PremiumStatus) => void;
-  setOverride: (v: boolean) => void;
 };
 
 /**
  * Premium-status state shared across React and non-React code. The
  * `audio-engine` + `stream.ts` modules consult this synchronously via
- * `usePremiumStore.getState()` to decide whether to fire prefetches and
- * whether to ask Rust for an ephemeral (no-disk) stream.
+ * `usePremiumStore.getState()` to decide whether playback is allowed
+ * and whether to fire prefetches.
  *
  * The actual fetching/refresh is owned by the `usePremiumStatusSync`
- * hook mounted in AppShell — keeping the store dumb means anyone with a
+ * hook mounted in AppShell. Keeping the store dumb means anyone with a
  * cached value (e.g. a freshly opened floating-player window) starts
  * from the conservative `null` and only flips to "premium" once the
  * authoritative check completes.
  *
- * Only `override` is persisted: `status` is rederived on every launch
- * so a Premium → Free downgrade outside the app takes effect on the
- * next start without us serving a stale "premium" flag.
+ * Nothing is persisted: `status` is rederived on every launch so a
+ * Premium → Free downgrade outside the app takes effect on the next
+ * start. There is deliberately NO user-facing override: playback
+ * itself is Premium-gated, so a manual "I have Premium" switch would
+ * be a one-click bypass of the gate. Misdetection is covered by
+ * fetchPremiumStatus failing open to "premium" when its patterns
+ * don't match, plus the Re-check button on the Storage tab. (An
+ * override used to exist and was persisted under the "ytm-premium"
+ * localStorage key; that key is now simply ignored.)
  */
-export const usePremiumStore = create<State>()(
-  persist(
-    (set) => ({
-      status: null,
-      override: false,
-      setStatus: (status) => set({ status }),
-      setOverride: (override) => set({ override }),
-    }),
-    {
-      name: "ytm-premium",
-      partialize: (s) => ({ override: s.override }),
-    },
-  ),
-);
+export const usePremiumStore = create<State>()((set) => ({
+  status: null,
+  setStatus: (status) => set({ status }),
+}));
 
 /** Synchronous read for non-React callers (stream.ts, audio-engine). */
 export function isPremium(): boolean {
-  const s = usePremiumStore.getState();
-  return s.status === "premium" || s.override;
+  return usePremiumStore.getState().status === "premium";
 }
 
 /**
- * Mount once near the app root (AppShell). Watches the login state and
- * — when authenticated — fetches Premium status from YT Music, then
- * mirrors both into the Zustand store. Signed-out users get `null`
+ * Mount once near the app root (AppShell). Watches the login state
+ * and, when authenticated, fetches Premium status from YT Music, then
+ * mirrors it into the Zustand store. Signed-out users get `null`
  * immediately so stream URLs flip to ephemeral mode without waiting on
  * a network round-trip.
  */
@@ -86,10 +71,7 @@ export function usePremiumStatusSync(): void {
 
   useEffect(() => {
     if (loggedIn.data === false) {
-      // Sign-out also drops the manual override — the override is a
-      // claim about the *current* account, and the next sign-in might
-      // be a different account that doesn't have Premium.
-      usePremiumStore.setState({ status: null, override: false });
+      usePremiumStore.setState({ status: null });
       return;
     }
     if (premium.data === undefined) return;
