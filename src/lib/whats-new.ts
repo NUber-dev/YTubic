@@ -32,6 +32,16 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.2.1",
+    date: "July 2026",
+    sections: [
+      {
+        heading: "Bug fix",
+        body: "Version 0.2.0 had a bug where your session quietly dropped after a couple of hours of use: your library, playlists, and Premium status would suddenly disappear until you signed in again. This update fixes the cause, so your account stays signed in the way it should. Thanks to everyone who reported it.",
+      },
+    ],
+  },
+  {
     version: "0.2.0",
     date: "July 2026",
     image: "/whats-new/0.2.0.png",
