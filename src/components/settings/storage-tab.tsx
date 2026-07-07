@@ -34,7 +34,7 @@ import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
 import { formatBytes, formatRelative } from "@/lib/format";
 import { fetchLibraryTracks } from "@/lib/innertube/library";
 import { clearPrefetchMemo } from "@/lib/stream";
-import { usePremiumStore } from "@/lib/store/premium";
+import { usePremiumAccess } from "@/lib/store/premium";
 import {
   useSettingsStore,
   type CacheAutoCleanPeriod,
@@ -225,8 +225,8 @@ function CacheFolderGroup() {
 /* ------------------------------------------------------------------ */
 
 function CacheGroupGate({ loggedIn }: { loggedIn: boolean }) {
-  const premium = usePremiumStore((s) => s.status);
-  if (premium !== "premium") {
+  const premium = usePremiumAccess();
+  if (!premium) {
     return <PremiumGatedCacheGroup loggedIn={loggedIn} />;
   }
   return <CacheGroup loggedIn={loggedIn} />;

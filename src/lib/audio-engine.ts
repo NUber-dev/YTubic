@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { fetchRadio } from "@/lib/innertube/radio";
 import { prefetchStream, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
-import { usePremiumStore } from "@/lib/store/premium";
+import { usePremiumAccess } from "@/lib/store/premium";
 import { openPremiumGate } from "@/lib/store/premium-gate";
 import {
   resolveStreamId,
@@ -136,7 +136,7 @@ export function useAudioEngine() {
   // re-run when the status lands after sign-in / the launch-time probe.
   // Without this, a track gated during the "still checking" window would
   // sit silent until the user re-picked it.
-  const premiumOk = usePremiumStore((s) => s.status === "premium");
+  const premiumOk = usePremiumAccess();
 
   useEffect(() => {
     const el = audioRef.current;

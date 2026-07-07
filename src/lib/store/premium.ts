@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { fetchPremiumStatus, type PremiumStatus } from "@/lib/innertube/account";
 
+const DEV_PREMIUM_OVERRIDE_KEY = "ytm-dev-premium-override";
+
 type State = {
   /**
    * Last known Premium status from auto-detection. `null` while we
@@ -11,7 +13,33 @@ type State = {
    */
   status: PremiumStatus;
   setStatus: (status: PremiumStatus) => void;
+  /**
+   * Premium gate bypass override. Enabled by default.
+   */
+  devOverride: boolean;
+  setDevOverride: (enabled: boolean) => void;
 };
+
+function readDevOverride(): boolean {
+  try {
+    const val = globalThis.localStorage?.getItem(DEV_PREMIUM_OVERRIDE_KEY);
+    return val !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeDevOverride(enabled: boolean): void {
+  try {
+    if (enabled) {
+      globalThis.localStorage?.setItem(DEV_PREMIUM_OVERRIDE_KEY, "1");
+    } else {
+      globalThis.localStorage?.setItem(DEV_PREMIUM_OVERRIDE_KEY, "0");
+    }
+  } catch {
+    // Local override is best-effort only.
+  }
+}
 
 /**
  * Premium-status state shared across React and non-React code. The
@@ -27,22 +55,33 @@ type State = {
  *
  * Nothing is persisted: `status` is rederived on every launch so a
  * Premium → Free downgrade outside the app takes effect on the next
- * start. There is deliberately NO user-facing override: playback
- * itself is Premium-gated, so a manual "I have Premium" switch would
- * be a one-click bypass of the gate. Misdetection is covered by
+ * start. Production builds have no user-facing override; dev builds
+ * can opt into a local-only bypass from Settings so the app can be
+ * exercised without a Premium account. Misdetection is covered by
  * fetchPremiumStatus failing open to "premium" when its patterns
- * don't match, plus the Re-check button on the Storage tab. (An
- * override used to exist and was persisted under the "ytm-premium"
- * localStorage key; that key is now simply ignored.)
+ * don't match, plus the Re-check button on the Storage tab.
  */
 export const usePremiumStore = create<State>()((set) => ({
   status: null,
+  devOverride: readDevOverride(),
   setStatus: (status) => set({ status }),
+  setDevOverride: (enabled) => {
+    writeDevOverride(enabled);
+    set({ devOverride: enabled });
+  },
 }));
 
 /** Synchronous read for non-React callers (stream.ts, audio-engine). */
 export function isPremium(): boolean {
-  return usePremiumStore.getState().status === "premium";
+  const { status, devOverride } = usePremiumStore.getState();
+  return status === "premium" || devOverride;
+}
+
+/** Shared derived access check for React callers. */
+export function usePremiumAccess(): boolean {
+  return usePremiumStore(
+    (s) => s.status === "premium" || s.devOverride,
+  );
 }
 
 /**

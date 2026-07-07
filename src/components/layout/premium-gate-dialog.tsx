@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { usePremiumGateDialog } from "@/lib/store/premium-gate";
-import { usePremiumStore } from "@/lib/store/premium";
+import { usePremiumAccess, usePremiumStore } from "@/lib/store/premium";
 
 const PREMIUM_URL = "https://music.youtube.com/music_premium";
 const YTM_URL = "https://music.youtube.com";
@@ -32,7 +32,7 @@ export function PremiumGateDialog() {
   const open = usePremiumGateDialog((s) => s.open);
   const setOpen = usePremiumGateDialog((s) => s.setOpen);
   const status = usePremiumStore((s) => s.status);
-  const premiumOk = status === "premium";
+  const premiumOk = usePremiumAccess();
 
   // Same key as usePremiumStatusSync, so it's served from the query
   // cache with no extra invoke round-trip in the common case.

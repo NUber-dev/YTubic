@@ -5,6 +5,9 @@
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20the%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/nuberr)
 
+> [!WARNING]
+> **Disclaimer:** The "Force Premium access" feature is provided solely for educational, research, and local testing purposes. Activating this toggle may violate YouTube's Terms of Service. The developer of YTubic assumes no responsibility for any account actions, restrictions, or legal consequences resulting from the use of this feature.
+
 A fast, responsive YouTube Music desktop client for Windows.
 
 Built as a reaction to the sluggish webview-wrapper experience — YTubic talks to YouTube's InnerTube API directly, renders its own UI, and caches aggressively, so navigation and playback feel instant.
@@ -82,13 +85,23 @@ pnpm tauri dev
 
 Frontend-only dev (no Tauri window): `pnpm dev`.
 
+## Production Build
+
+To build the native desktop application (production installer):
+
+```bash
+pnpm tauri build
+```
+
+The resulting `.exe` installer will be generated in `src-tauri/target/release/bundle/nsis/`.
+
 ## Quality checks
 
 ```bash
 pnpm test         # vitest unit tests (pure parsers/matchers)
 pnpm lint         # eslint
 pnpm format       # prettier --write
-pnpm build        # tsc + vite production build
+pnpm build        # tsc + vite production frontend build
 ```
 
 CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests, build and

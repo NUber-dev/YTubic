@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   BellIcon,
+  LockIcon,
   Loader2Icon,
   LogInIcon,
   RocketIcon,
@@ -16,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
 import { useSettingsStore } from "@/lib/store/settings";
+import { usePremiumStore } from "@/lib/store/premium";
 
 export function GeneralTab() {
   return (
@@ -120,6 +122,8 @@ function BehaviorGroup() {
   const setPlaybackNotifications = useSettingsStore(
     (s) => s.setPlaybackNotifications,
   );
+  const devPremiumOverride = usePremiumStore((s) => s.devOverride);
+  const setDevPremiumOverride = usePremiumStore((s) => s.setDevOverride);
 
   const qc = useQueryClient();
   const autostart = useQuery({
@@ -176,6 +180,18 @@ function BehaviorGroup() {
             checked={closeAction === "tray"}
             onCheckedChange={(v) => setCloseAction(v ? "tray" : "quit")}
             aria-label="Close to tray"
+          />
+        }
+      />
+      <SettingRow
+        icon={LockIcon}
+        title="Force Premium access"
+        description="Bypasses the Premium gate on this machine."
+        control={
+          <Switch
+            checked={devPremiumOverride}
+            onCheckedChange={setDevPremiumOverride}
+            aria-label="Force Premium access"
           />
         }
       />
