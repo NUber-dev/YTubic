@@ -28,6 +28,7 @@ type LrclibRecord = {
 
 export async function fetchLrclibLyrics(
   p: LrclibParams,
+  signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
 
@@ -44,14 +45,17 @@ export async function fetchLrclibLyrics(
   // match on the same track, while /search may have picked a
   // re-master / live version. `get ?? search` enforces that order.
   const [get, search] = await Promise.all([
-    p.artist ? lrclibGet(p) : Promise.resolve(null),
-    lrclibSearch(p),
+    p.artist ? lrclibGet(p, signal) : Promise.resolve(null),
+    lrclibSearch(p, signal),
   ]);
   const rec = get ?? search;
   return rec ? mapRecord(rec) : null;
 }
 
-async function lrclibGet(p: LrclibParams): Promise<LrclibRecord | null> {
+async function lrclibGet(
+  p: LrclibParams,
+  signal?: AbortSignal,
+): Promise<LrclibRecord | null> {
   const url = new URL("https://lrclib.net/api/get");
   url.searchParams.set("track_name", p.title);
   if (p.artist) url.searchParams.set("artist_name", p.artist);
@@ -59,22 +63,26 @@ async function lrclibGet(p: LrclibParams): Promise<LrclibRecord | null> {
   if (p.duration) {
     url.searchParams.set("duration", String(Math.round(p.duration)));
   }
-  // Let network errors / 5xx propagate so react-query retries them instead
-  // of caching a transient failure as a permanent "no lyrics" for an hour.
-  // A 404 is a genuine miss and correctly resolves to null.
-  const r = await fetch(url.toString());
+  // Let network errors / 5xx / timeouts propagate so react-query retries
+  // them instead of caching a transient failure as a permanent "no
+  // lyrics" for an hour. A 404 is a genuine miss and correctly resolves
+  // to null.
+  const r = await fetch(url.toString(), { signal });
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(`LRCLIB /get ${r.status}`);
   return (await r.json()) as LrclibRecord;
 }
 
-async function lrclibSearch(p: LrclibParams): Promise<LrclibRecord | null> {
+async function lrclibSearch(
+  p: LrclibParams,
+  signal?: AbortSignal,
+): Promise<LrclibRecord | null> {
   const url = new URL("https://lrclib.net/api/search");
   url.searchParams.set("track_name", p.title);
   if (p.artist) url.searchParams.set("artist_name", p.artist);
   // As in lrclibGet: propagate transient failures for retry; only an empty
   // result set is a genuine "not found".
-  const r = await fetch(url.toString());
+  const r = await fetch(url.toString(), { signal });
   if (!r.ok) throw new Error(`LRCLIB /search ${r.status}`);
   const results = (await r.json()) as LrclibRecord[];
   if (!Array.isArray(results) || results.length === 0) return null;

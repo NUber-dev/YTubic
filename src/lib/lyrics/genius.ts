@@ -46,19 +46,30 @@ type GeniusSearchResponse = {
 
 export async function fetchGeniusLyrics(
   p: GeniusParams,
+  signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
 
-  const url = await findSongUrl(p);
-  if (!url) return null;
+  const url = await findSongUrl(p, signal);
+  const text = url ? await scrapeLyrics(url, signal) : null;
 
-  const text = await scrapeLyrics(url);
+  // Both steps swallow their own fetch errors into null, which would
+  // cache a timeout as a permanent "no lyrics" for an hour. Rethrow so
+  // react-query treats it as the transient failure it is.
+  if (!text && signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Genius timed out");
+  }
   if (!text) return null;
 
   return { kind: "plain", text, source: "Genius" };
 }
 
-async function findSongUrl(p: GeniusParams): Promise<string | null> {
+async function findSongUrl(
+  p: GeniusParams,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const q = p.artist ? `${p.title} ${p.artist}` : p.title;
   const url = new URL(SEARCH_URL);
   url.searchParams.set("q", q);
@@ -67,6 +78,7 @@ async function findSongUrl(p: GeniusParams): Promise<string | null> {
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (!r.ok) return null;
     const json = (await r.json()) as GeniusSearchResponse;
@@ -98,11 +110,15 @@ async function findSongUrl(p: GeniusParams): Promise<string | null> {
   }
 }
 
-async function scrapeLyrics(songUrl: string): Promise<string | null> {
+async function scrapeLyrics(
+  songUrl: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
   try {
     const r = await tauriFetch(songUrl, {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "text/html" },
+      signal,
     });
     if (!r.ok) return null;
     const html = await r.text();
