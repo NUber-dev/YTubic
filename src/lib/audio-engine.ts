@@ -73,6 +73,32 @@ export function useAudioEngine() {
             mediaErr.message ? `: ${mediaErr.message}` : ""
           }`
         : "Unknown audio error";
+
+      // A music-video stream the webview can't decode (MEDIA_ERR_DECODE /
+      // MEDIA_ERR_SRC_NOT_SUPPORTED) shouldn't surface a raw error banner
+      // or skip the track. While the video source is the selected one,
+      // drop it back to audio and let the resolve effect retry with the
+      // song stream, which every track has. The selected-source check
+      // keeps this from looping: once we're on audio a repeat failure
+      // falls through to the normal error path below.
+      const errored = store();
+      const cur =
+        errored.index >= 0 ? errored.queue[errored.index] : undefined;
+      if (cur && (mediaErr?.code === 3 || mediaErr?.code === 4)) {
+        const ts = useTrackSourceStore.getState();
+        const selected = ts.byVideoId[cur.videoId]?.selected ?? "song";
+        if (selected === "video") {
+          if (import.meta.env.DEV) {
+            console.warn(
+              "[audio] video stream failed to decode, falling back to audio:",
+              cur.videoId,
+            );
+          }
+          ts.setSelected(cur.videoId, "song");
+          return;
+        }
+      }
+
       if (import.meta.env.DEV) {
         console.error("[audio] element error:", msg, "src=", el.currentSrc);
       }
