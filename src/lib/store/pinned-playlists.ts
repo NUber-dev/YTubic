@@ -36,9 +36,19 @@ type State = {
    * `setActiveAccount`).
    */
   byAccount: Record<string, PinnedPlaylist[]>;
+  /**
+   * Hidden playlist ids keyed by account. A hidden playlist is dropped
+   * from the sidebar entirely; it still appears in the Library, which is
+   * where it gets un-hidden. Hiding and pinning are mutually exclusive —
+   * `hide` drops any pin and `pin` clears any hide — so a playlist is
+   * always in exactly one of {pinned, normal, hidden}.
+   */
+  hiddenByAccount: Record<string, string[]>;
   setActiveAccount: (id: string | null) => void;
   pin: (p: PinnedPlaylist) => void;
   unpin: (id: string) => void;
+  hide: (id: string) => void;
+  unhide: (id: string) => void;
   reorder: (from: number, to: number) => void;
 };
 
@@ -54,6 +64,7 @@ export const usePinnedPlaylistsStore = create<State>()(
     (set) => ({
       activeAccountId: null,
       byAccount: {},
+      hiddenByAccount: {},
       setActiveAccount: (id) =>
         set((s) => {
           const next = { ...s.byAccount };
@@ -81,8 +92,53 @@ export const usePinnedPlaylistsStore = create<State>()(
           if (s.activeAccountId === null) return s;
           const key = s.activeAccountId;
           const list = s.byAccount[key] ?? [];
-          if (list.some((x) => x.id === p.id)) return s;
-          return { byAccount: { ...s.byAccount, [key]: [...list, p] } };
+          const hidden = s.hiddenByAccount[key] ?? [];
+          const wasHidden = hidden.includes(p.id);
+          const alreadyPinned = list.some((x) => x.id === p.id);
+          // No-op only when there's genuinely nothing to change.
+          if (alreadyPinned && !wasHidden) return s;
+          return {
+            byAccount: alreadyPinned
+              ? s.byAccount
+              : { ...s.byAccount, [key]: [...list, p] },
+            // Pinning implies visible, so it supersedes any hide.
+            hiddenByAccount: wasHidden
+              ? { ...s.hiddenByAccount, [key]: hidden.filter((x) => x !== p.id) }
+              : s.hiddenByAccount,
+          };
+        }),
+      hide: (id) =>
+        set((s) => {
+          if (s.activeAccountId === null) return s;
+          const key = s.activeAccountId;
+          const hidden = s.hiddenByAccount[key] ?? [];
+          const list = s.byAccount[key] ?? [];
+          const alreadyHidden = hidden.includes(id);
+          const wasPinned = list.some((x) => x.id === id);
+          if (alreadyHidden && !wasPinned) return s;
+          return {
+            hiddenByAccount: alreadyHidden
+              ? s.hiddenByAccount
+              : { ...s.hiddenByAccount, [key]: [...hidden, id] },
+            // Hiding supersedes pinning — drop any pin so the two never
+            // coexist (an invisible-but-pinned playlist is meaningless).
+            byAccount: wasPinned
+              ? { ...s.byAccount, [key]: list.filter((x) => x.id !== id) }
+              : s.byAccount,
+          };
+        }),
+      unhide: (id) =>
+        set((s) => {
+          if (s.activeAccountId === null) return s;
+          const key = s.activeAccountId;
+          const hidden = s.hiddenByAccount[key] ?? [];
+          if (!hidden.includes(id)) return s;
+          return {
+            hiddenByAccount: {
+              ...s.hiddenByAccount,
+              [key]: hidden.filter((x) => x !== id),
+            },
+          };
         }),
       unpin: (id) =>
         set((s) => {
@@ -112,13 +168,20 @@ export const usePinnedPlaylistsStore = create<State>()(
     {
       name: "ytm-pinned-playlists",
       version: 2,
-      // Persist only the per-account map. `activeAccountId` lives in
+      // Persist only the per-account maps. `activeAccountId` lives in
       // RAM and is re-derived from Rust on every launch.
-      partialize: (s) => ({ byAccount: s.byAccount }),
+      partialize: (s) => ({
+        byAccount: s.byAccount,
+        hiddenByAccount: s.hiddenByAccount,
+      }),
       // v0/v1: `{ pinned: [...] }` (no version field, the absence
       //         counts as version 0). Promote the list into the
       //         `__legacy__` bucket so the first sign-in claims it.
       // v2:    `{ byAccount: { ... } }` (current).
+      // `hiddenByAccount` (added after v2) is an additive field: older
+      // persisted blobs simply omit it and the store's initial `{}`
+      // fills the gap via persist's shallow merge — no version bump
+      // needed.
       migrate: (persistedState, version) => {
         if (version < 2) {
           const legacy =
@@ -128,9 +191,13 @@ export const usePinnedPlaylistsStore = create<State>()(
               Array.isArray(legacy) && legacy.length > 0
                 ? { [LEGACY_KEY]: legacy }
                 : {},
+            hiddenByAccount: {},
           };
         }
-        return persistedState as { byAccount: Record<string, PinnedPlaylist[]> };
+        return persistedState as {
+          byAccount: Record<string, PinnedPlaylist[]>;
+          hiddenByAccount?: Record<string, string[]>;
+        };
       },
     },
   ),
@@ -152,7 +219,23 @@ export function useIsPinned(id: string): boolean {
   });
 }
 
-// Stable reference for the empty list — avoids forcing re-renders of
-// `usePinned()` consumers when the lookup misses (zustand uses
-// referential equality on selector returns by default).
+/** Current account's hidden playlist ids. `[]` when signed out. */
+export function useHidden(): string[] {
+  return usePinnedPlaylistsStore((s) => {
+    if (s.activeAccountId === null) return EMPTY_IDS;
+    return s.hiddenByAccount[s.activeAccountId] ?? EMPTY_IDS;
+  });
+}
+
+export function useIsHidden(id: string): boolean {
+  return usePinnedPlaylistsStore((s) => {
+    if (s.activeAccountId === null) return false;
+    return (s.hiddenByAccount[s.activeAccountId] ?? []).includes(id);
+  });
+}
+
+// Stable references for the empty lists — avoids forcing re-renders of
+// `usePinned()` / `useHidden()` consumers when the lookup misses (zustand
+// uses referential equality on selector returns by default).
 const EMPTY: PinnedPlaylist[] = [];
+const EMPTY_IDS: string[] = [];

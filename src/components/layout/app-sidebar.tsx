@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,7 +12,9 @@ import {
   SettingsIcon,
   HeartIcon,
   ListMusicIcon,
+  PinIcon,
   PinOffIcon,
+  EyeOffIcon,
   UserPlusIcon,
   UserCogIcon,
   UsersRoundIcon,
@@ -50,11 +53,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePinned, usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
+import {
+  useHidden,
+  usePinned,
+  usePinnedPlaylistsStore,
+} from "@/lib/store/pinned-playlists";
 import { openChannelPicker } from "@/lib/store/channel-picker";
 import { openSettings } from "@/lib/store/settings-dialog";
 import { UpdateBanner } from "@/components/layout/update-banner";
 import { fetchAccountInfo } from "@/lib/innertube/account";
+import { fetchLibraryPlaylists } from "@/lib/innertube/library";
+import type { ShelfItem } from "@/lib/innertube/types";
 import { resetInnertube } from "@/lib/innertube/client";
 import { usePremiumStore } from "@/lib/store/premium";
 import {
@@ -81,8 +90,6 @@ const MENU_BTN_CLS = "group-data-[collapsible=icon]:mx-auto";
 
 export function AppSidebar() {
   const { location } = useRouterState();
-  const pinned = usePinned();
-  const unpin = usePinnedPlaylistsStore((s) => s.unpin);
 
   const isOn = (to: string) => location.pathname === to;
   const isPlaylistOn = (id: string) =>
@@ -133,61 +140,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup className="py-1">
-          <SidebarGroupLabel>Playlists</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  asChild
-                  isActive={isPlaylistOn(LIKED_ID)}
-                  tooltip="Liked songs"
-                  className={MENU_BTN_CLS}
-                >
-                  <Link to="/playlist/$id" params={{ id: LIKED_ID }}>
-                    <HeartIcon className="fill-rose-500 text-rose-500" />
-                    <span>Liked songs</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-
-              {pinned.map((p) => (
-                <SidebarMenuItem key={p.id}>
-                  <ContextMenu>
-                    <ContextMenuTrigger asChild>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={isPlaylistOn(p.id)}
-                        tooltip={p.title}
-                        className={MENU_BTN_CLS}
-                      >
-                        <Link to="/playlist/$id" params={{ id: p.id }}>
-                          {p.thumbnailUrl ? (
-                            <img
-                              src={p.thumbnailUrl}
-                              alt=""
-                              className="size-4 shrink-0 rounded-sm object-cover"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <ListMusicIcon />
-                          )}
-                          <span>{p.title}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent>
-                      <ContextMenuItem onSelect={() => unpin(p.id)}>
-                        <PinOffIcon />
-                        Unpin from sidebar
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  </ContextMenu>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        <SidebarPlaylists isPlaylistOn={isPlaylistOn} />
       </SidebarContent>
 
       <SidebarFooter>
@@ -207,6 +160,179 @@ export function AppSidebar() {
         <UserProfile />
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+type PlaylistRow = {
+  id: string;
+  title: string;
+  thumbnailUrl?: string;
+  pinned: boolean;
+};
+
+// Sidebar thumbnails render at 16px, so the largest source (last in the
+// list) is fine — the browser downscales it.
+function pickThumb(item: ShelfItem): string | undefined {
+  return item.thumbnails[item.thumbnails.length - 1]?.url;
+}
+
+/**
+ * The "Playlists" section. Shows Liked Songs, then every playlist in the
+ * user's library. Pinning doesn't gate visibility any more — it only
+ * floats a playlist to the top of the list (right under Liked Songs).
+ *
+ * Shares the `["library", "playlists"]` query cache with the Library
+ * page, so opening the sidebar costs no extra fetch once either has
+ * loaded. Pinned rows come from local storage and paint instantly, even
+ * before the library browse resolves.
+ */
+function SidebarPlaylists({
+  isPlaylistOn,
+}: {
+  isPlaylistOn: (id: string) => boolean;
+}) {
+  const loggedIn = useQuery({
+    queryKey: ["auth-logged-in"],
+    queryFn: () => invoke<boolean>("is_logged_in"),
+    staleTime: 30_000,
+  });
+  const library = useQuery({
+    queryKey: ["library", "playlists"],
+    queryFn: fetchLibraryPlaylists,
+    enabled: loggedIn.data === true,
+    staleTime: 5 * 60_000,
+  });
+
+  const pinned = usePinned();
+  const hidden = useHidden();
+  const pin = usePinnedPlaylistsStore((s) => s.pin);
+  const unpin = usePinnedPlaylistsStore((s) => s.unpin);
+  const hide = usePinnedPlaylistsStore((s) => s.hide);
+
+  const rows = useMemo<PlaylistRow[]>(() => {
+    const hiddenIds = new Set(hidden);
+    // Liked Songs (`VLLM`) ships in the playlists shelf too; drop it —
+    // it's always rendered as the hard-coded first row below. Hidden
+    // playlists are dropped entirely (un-hidden from the Library).
+    const libItems = (library.data ?? [])
+      .flatMap((s) => s.items)
+      .filter((it) => it.id !== LIKED_ID && !hiddenIds.has(it.id));
+    const libById = new Map(libItems.map((it) => [it.id, it]));
+    const pinnedIds = new Set(pinned.map((p) => p.id));
+
+    // Pinned first, in stored order. Prefer fresh library data for
+    // title/thumbnail, but keep a pin visible even when it isn't in the
+    // current library fetch (e.g. pinned from search results). A hidden
+    // id can't be pinned (the store keeps them exclusive), but filter
+    // defensively so a stale pin can never leak a hidden playlist back in.
+    const pinnedRows: PlaylistRow[] = pinned
+      .filter((p) => p.id !== LIKED_ID && !hiddenIds.has(p.id))
+      .map((p) => {
+        const lib = libById.get(p.id);
+        return {
+          id: p.id,
+          title: lib?.title ?? p.title,
+          thumbnailUrl: lib ? pickThumb(lib) : p.thumbnailUrl,
+          pinned: true,
+        };
+      });
+
+    // Everything else, in library order.
+    const restRows: PlaylistRow[] = libItems
+      .filter((it) => !pinnedIds.has(it.id))
+      .map((it) => ({
+        id: it.id,
+        title: it.title,
+        thumbnailUrl: pickThumb(it),
+        pinned: false,
+      }));
+
+    return [...pinnedRows, ...restRows];
+  }, [library.data, pinned, hidden]);
+
+  return (
+    <SidebarGroup className="py-1">
+      <SidebarGroupLabel>Playlists</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              asChild
+              isActive={isPlaylistOn(LIKED_ID)}
+              tooltip="Liked songs"
+              className={MENU_BTN_CLS}
+            >
+              <Link to="/playlist/$id" params={{ id: LIKED_ID }}>
+                <HeartIcon className="fill-rose-500 text-rose-500" />
+                <span>Liked songs</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+
+          {rows.map((p) => (
+            <SidebarMenuItem key={p.id}>
+              <ContextMenu>
+                <ContextMenuTrigger asChild>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={isPlaylistOn(p.id)}
+                    tooltip={p.title}
+                    className={MENU_BTN_CLS}
+                  >
+                    <Link to="/playlist/$id" params={{ id: p.id }}>
+                      {p.thumbnailUrl ? (
+                        <img
+                          src={p.thumbnailUrl}
+                          alt=""
+                          className="size-4 shrink-0 rounded-sm object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <ListMusicIcon />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">
+                        {p.title}
+                      </span>
+                      {/* Subtle marker so the pinned/unpinned boundary is
+                          legible — pinning's only visible effect is the
+                          reorder, this just explains it. */}
+                      {p.pinned ? (
+                        <PinIcon className="size-3! shrink-0 text-muted-foreground/70 group-data-[collapsible=icon]:hidden" />
+                      ) : null}
+                    </Link>
+                  </SidebarMenuButton>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  {p.pinned ? (
+                    <ContextMenuItem onSelect={() => unpin(p.id)}>
+                      <PinOffIcon />
+                      Unpin from sidebar
+                    </ContextMenuItem>
+                  ) : (
+                    <ContextMenuItem
+                      onSelect={() =>
+                        pin({
+                          id: p.id,
+                          title: p.title,
+                          thumbnailUrl: p.thumbnailUrl,
+                        })
+                      }
+                    >
+                      <PinIcon />
+                      Pin to sidebar
+                    </ContextMenuItem>
+                  )}
+                  <ContextMenuItem onSelect={() => hide(p.id)}>
+                    <EyeOffIcon />
+                    Hide from sidebar
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 }
 
