@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { fetchRadio } from "@/lib/innertube/radio";
 import { prefetchStream, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
@@ -273,6 +274,13 @@ export function useAudioEngine() {
       /* seek failed — non-fatal */
     }
     usePlaybackStore.getState().clearPendingSeek();
+    {
+      // Keep the system Now Playing clock in step with the new playhead.
+      const s = usePlaybackStore.getState();
+      const cur = s.index >= 0 ? s.queue[s.index] : undefined;
+      const dur = s.duration > 0 ? s.duration : (cur?.duration ?? 0);
+      pushNowPlaying(cur, s.playing, pendingSeek, dur);
+    }
     // repeat-one and error auto-advance re-select the same track and set
     // { pendingSeek: 0, playing: true } without changing `playing` (already
     // true), so the [playing] effect never re-fires. After an `ended` event
@@ -317,6 +325,17 @@ export function useAudioEngine() {
     navigator.mediaSession.playbackState = playing ? "playing" : "paused";
   }, [playing]);
 
+  // Mirror metadata + play state into the macOS system Now Playing panel
+  // (Control Center / Touch Bar / media keys / AirPods). A WKWebView only
+  // bridges navigator.mediaSession to Windows SMTC, not to macOS, so the
+  // native side handles it. Fires on track change and play/pause; the
+  // seek effect below pushes the new elapsed time.
+  useEffect(() => {
+    const s = usePlaybackStore.getState();
+    const dur = s.duration > 0 ? s.duration : (track?.duration ?? 0);
+    pushNowPlaying(track, playing, s.position, dur);
+  }, [track, playing]);
+
   // Tray menu commands come via a Tauri event. `cancelled` flag
   // protects against StrictMode's mount→unmount→mount race that
   // would otherwise leak duplicate listeners and double-call
@@ -336,6 +355,47 @@ export function useAudioEngine() {
     return () => {
       cancelled = true;
       dispose?.();
+    };
+  }, []);
+
+  // macOS remote-command events from MPRemoteCommandCenter (Control
+  // Center, media keys, AirPods). The native side emits these; drive the
+  // same store the in-app transport uses. Never fires off macOS.
+  useEffect(() => {
+    let cancelled = false;
+    const disposers: Array<() => void> = [];
+    const keep = (un: () => void) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    };
+    void listen<string>("media-remote", (e) => {
+      const store = usePlaybackStore.getState();
+      switch (e.payload) {
+        case "play":
+          store.setPlaying(true);
+          break;
+        case "pause":
+          store.setPlaying(false);
+          break;
+        case "toggle":
+          store.toggle();
+          break;
+        case "next":
+          store.next();
+          break;
+        case "prev":
+          store.prev();
+          break;
+      }
+    }).then(keep);
+    void listen<number>("media-remote-seek", (e) => {
+      if (typeof e.payload === "number") {
+        usePlaybackStore.getState().seek(e.payload);
+      }
+    }).then(keep);
+    return () => {
+      cancelled = true;
+      disposers.forEach((d) => d());
     };
   }, []);
 
@@ -461,4 +521,34 @@ export function useAudioEngine() {
 function buildArtistLabel(track: QueueTrack): string {
   if (track.artists?.length) return track.artists.map((a) => a.name).join(", ");
   return track.subtitle ?? "";
+}
+
+/**
+ * Push the current track into the macOS system Now Playing panel. The
+ * Rust command is a no-op off macOS, and the invoke is swallowed if the
+ * command isn't registered, so this is safe to call unconditionally.
+ *
+ * MPNowPlayingInfoCenter extrapolates the playhead from `elapsed` +
+ * `playbackRate`, so we only push on track change, play/pause, and seek
+ * rather than on every timeupdate.
+ */
+function pushNowPlaying(
+  track: QueueTrack | undefined,
+  playing: boolean,
+  elapsed: number,
+  duration: number,
+): void {
+  const info = track
+    ? {
+        title: track.title,
+        artist: buildArtistLabel(track),
+        album: track.album ?? "",
+        duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+        elapsed: Math.max(0, elapsed),
+        playbackRate: playing ? 1 : 0,
+      }
+    : { title: "", artist: "", album: "", duration: 0, elapsed: 0, playbackRate: 0 };
+  void invoke("set_now_playing", { info }).catch(() => {
+    /* command only present on the desktop build; ignore otherwise */
+  });
 }
