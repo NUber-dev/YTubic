@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon, MicVocalIcon } from "lucide-react";
+import { CheckIcon, MicVocalIcon, MinusIcon, PlusIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,6 +55,64 @@ function savePref(p: Pref) {
   }
 }
 
+/**
+ * Per-track lyric sync nudge, persisted as a videoId to seconds map.
+ * Needed because the streamed audio is sometimes a different edit than
+ * the one the lyric timings were cut to (a music video vs the album
+ * track), so the lines run ahead of or behind the vocal by a constant
+ * per-song amount that no global setting can fix. Positive = lyrics
+ * fire later.
+ */
+const OFFSETS_KEY = "ytm:lyrics-offsets";
+const OFFSET_STEP_S = 0.25;
+const OFFSET_LIMIT_S = 15;
+/** Soft cap on stored offsets; oldest-touched entries get trimmed
+ *  first (JS objects iterate in insertion order, same trick the
+ *  track-source store uses for its byVideoId map). */
+const MAX_OFFSET_ENTRIES = 500;
+
+function loadOffsetMap(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(OFFSETS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, number>;
+    }
+  } catch {
+    /* corrupted entry, start fresh */
+  }
+  return {};
+}
+
+function loadOffset(videoId: string): number {
+  const v = loadOffsetMap()[videoId];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function saveOffset(videoId: string, seconds: number): void {
+  try {
+    const map = loadOffsetMap();
+    // Delete-then-set moves the key to the end of insertion order, so
+    // the cap below always evicts the least recently adjusted tracks.
+    delete map[videoId];
+    if (seconds !== 0) map[videoId] = seconds;
+    const keys = Object.keys(map);
+    for (const k of keys.slice(0, Math.max(0, keys.length - MAX_OFFSET_ENTRIES))) {
+      delete map[k];
+    }
+    localStorage.setItem(OFFSETS_KEY, JSON.stringify(map));
+  } catch {
+    /* noop */
+  }
+}
+
+function formatOffset(seconds: number): string {
+  if (seconds === 0) return "0s";
+  const trimmed = seconds.toFixed(2).replace(/\.?0+$/, "");
+  return `${seconds > 0 ? "+" : ""}${trimmed}s`;
+}
+
 export type LyricsViewState = {
   active: Lyrics | null;
   isLoading: boolean;
@@ -63,6 +121,10 @@ export type LyricsViewState = {
   setPref: (p: Pref) => void;
   best: LyricsSource | null;
   availability: Record<LyricsSource, Availability>;
+  /** Per-track sync nudge in seconds; positive = lyrics fire later. */
+  offset: number;
+  nudgeOffset: (deltaSeconds: number) => void;
+  resetOffset: () => void;
 };
 
 /**
@@ -80,6 +142,34 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
   const setPref = (p: Pref) => {
     setPrefState(p);
     savePref(p);
+  };
+
+  const videoId = track?.videoId;
+  const [offset, setOffsetState] = useState<number>(() =>
+    videoId ? loadOffset(videoId) : 0,
+  );
+  useEffect(() => {
+    setOffsetState(videoId ? loadOffset(videoId) : 0);
+  }, [videoId]);
+  const nudgeOffset = (deltaSeconds: number) => {
+    if (!videoId) return;
+    // Round to the step grid so repeated float adds can't drift into
+    // 0.7500000000000001-style labels.
+    const raw = offset + deltaSeconds;
+    const next = Math.max(
+      -OFFSET_LIMIT_S,
+      Math.min(
+        OFFSET_LIMIT_S,
+        Math.round(raw / OFFSET_STEP_S) * OFFSET_STEP_S,
+      ),
+    );
+    setOffsetState(next);
+    saveOffset(videoId, next);
+  };
+  const resetOffset = () => {
+    if (!videoId) return;
+    setOffsetState(0);
+    saveOffset(videoId, 0);
   };
 
   const { queries, best, isLoading } = useLyricsSources(track, !!track);
@@ -110,6 +200,9 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
     setPref,
     best,
     availability,
+    offset,
+    nudgeOffset,
+    resetOffset,
   };
 }
 
@@ -130,7 +223,14 @@ export function LyricsBody({ state }: { state: LyricsViewState }) {
     );
   }
   if (state.active.kind === "timed") {
-    return <TimedLyrics lines={state.active.lines} />;
+    return (
+      <TimedLyrics
+        lines={state.active.lines}
+        offset={state.offset}
+        onNudge={state.nudgeOffset}
+        onReset={state.resetOffset}
+      />
+    );
   }
   return <PlainLyrics text={state.active.text} />;
 }
@@ -177,13 +277,29 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-function TimedLyrics({ lines }: { lines: TimedLine[] }) {
+function TimedLyrics({
+  lines,
+  offset,
+  onNudge,
+  onReset,
+}: {
+  lines: TimedLine[];
+  offset: number;
+  onNudge: (deltaSeconds: number) => void;
+  onReset: () => void;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
   const position = usePlaybackStore((s) => s.position);
   const seek = usePlaybackStore((s) => s.seek);
 
-  const activeIdx = findActiveIdx(lines, position);
+  // Positive offset = lyrics fire later, i.e. the playhead is treated
+  // as being earlier in the song. Kept in a ref too so the mount-snap
+  // effect below (deps: [lines]) reads the current value without
+  // re-snapping on every nudge.
+  const activeIdx = findActiveIdx(lines, position - offset);
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
   const prevActiveRef = useRef(activeIdx);
 
   // On mount and whenever the lyric set changes (new track), snap the
@@ -194,7 +310,10 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const idx = findActiveIdx(lines, usePlaybackStore.getState().position);
+    const idx = findActiveIdx(
+      lines,
+      usePlaybackStore.getState().position - offsetRef.current,
+    );
     prevActiveRef.current = idx;
     if (idx < 0) {
       container.scrollTop = 0;
@@ -289,7 +408,7 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
               key={i}
               type="button"
               data-line-idx={i}
-              onClick={() => seek(line.start)}
+              onClick={() => seek(line.start + offset)}
               className={cn(
                 // Same font-size on every line so the active line can't
                 // grow into a second row and shove neighbours around.
@@ -332,6 +451,51 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
         className="lyrics-blur-overlay pointer-events-none absolute inset-x-0 top-0 h-[26%] transition-opacity duration-500 ease-in-out"
         style={{ opacity: activeIdx <= 0 ? 0 : 1 }}
       />
+      {/* Sync nudge, floats over the faded bottom edge of the column.
+          Nudges the highlight in 0.25s steps for tracks whose audio is
+          a different edit than the lyric timings (music video vs album
+          cut). Clicking the readout resets to 0. */}
+      <div className="absolute bottom-2 right-1 z-10 flex items-center gap-0.5 rounded-full border border-hairline bg-surface-active/70 px-1 py-0.5 opacity-60 backdrop-blur-md transition-opacity hover:opacity-100">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Lyrics earlier"
+              onClick={() => onNudge(-OFFSET_STEP_S)}
+              className="flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+            >
+              <MinusIcon className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Lyrics earlier</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Reset lyrics offset"
+              onClick={onReset}
+              className="min-w-11 text-center text-xs font-medium tabular-nums text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {formatOffset(offset)}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Sync offset (click to reset)</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Lyrics later"
+              onClick={() => onNudge(OFFSET_STEP_S)}
+              className="flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/10 hover:text-foreground"
+            >
+              <PlusIcon className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Lyrics later</TooltipContent>
+        </Tooltip>
+      </div>
     </div>
   );
 }
