@@ -13,6 +13,18 @@ export type QueueTrack = {
   thumbnails: Thumbnail[];
   /** Original duration from browse responses, may be undefined until /player resolves. */
   duration?: number;
+  /**
+   * Whether this row is a plain song (audio-track version) or a music
+   * video, when known. Lets the Source toggle keep a video-native track
+   * on its own id instead of searching for a different clip.
+   */
+  kind?: "song" | "video";
+  /**
+   * videoId of the song<->video counterpart from InnerTube's /next
+   * pairing, when exposed. Used to seed the Source toggle with the real
+   * other version rather than a fuzzy search.
+   */
+  counterpartId?: string;
 };
 
 export type RepeatMode = "off" | "all" | "one";
@@ -92,6 +104,8 @@ function shelfItemToTrack(item: ShelfItem | QueueTrack): QueueTrack | null {
     album: item.album,
     thumbnails: item.thumbnails,
     duration: item.duration,
+    kind: item.kind,
+    counterpartId: item.counterpartId,
   };
 }
 

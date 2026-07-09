@@ -121,6 +121,16 @@ export function SourceToggle({ track }: { track: QueueTrack }) {
       setSelected(track.videoId, target);
       return;
     }
+    // A video-native track already IS the video: its own stream carries
+    // the audio too, so song mode plays its own id's audio and video mode
+    // its own mp4. Never blind-search for a different clip, which used to
+    // return an unrelated video. Genuine song<->video counterparts are
+    // seeded from InnerTube data and taken by the cachedAlt path above.
+    if (track.kind === "video") {
+      setAlternate(track.videoId, target, track.videoId);
+      setSelected(track.videoId, target);
+      return;
+    }
     setBusy(target);
     try {
       const artistsLine = track.artists?.map((a) => a.name).join(" ") ?? "";

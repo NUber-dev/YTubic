@@ -138,6 +138,22 @@ export function useAudioEngine() {
   // sit silent until the user re-picked it.
   const premiumOk = usePremiumStore((s) => s.status === "premium");
 
+  // Seed the song<->video pairing from InnerTube's own counterpart data
+  // (from a /next `playlistPanelVideoWrapperRenderer`) so the Source
+  // toggle flips to the real other version instead of a fuzzy search that
+  // can land on an unrelated clip. Only when we have a pairing and no
+  // record yet; `selected` lands on whichever kind was queued, so the
+  // default stream doesn't change and no wasteful re-resolve fires.
+  const counterpartId = track?.counterpartId;
+  const trackKind = track?.kind;
+  useEffect(() => {
+    if (!videoId || !counterpartId || !trackKind) return;
+    const ts = useTrackSourceStore.getState();
+    if (ts.byVideoId[videoId]) return;
+    const counterpartKind = trackKind === "video" ? "song" : "video";
+    ts.setAlternate(videoId, counterpartKind, counterpartId);
+  }, [videoId, counterpartId, trackKind]);
+
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;

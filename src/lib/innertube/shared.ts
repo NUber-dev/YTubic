@@ -367,8 +367,19 @@ export function mapPlaylistPanelVideo(raw: YtNode): ShelfItem | null {
   const thumbnails = readThumbnails(raw.thumbnail);
   const explicit = readExplicit(raw);
 
+  // MUSIC_VIDEO_TYPE_ATV is the plain audio-track version (a "song");
+  // OMV / UGC / OFFICIAL_SOURCE and friends are music videos. Absent the
+  // field, treat the row as a song (the historical default).
+  const musicVideoType = raw.navigationEndpoint?.watchEndpoint
+    ?.watchEndpointMusicSupportedConfigs?.watchEndpointMusicConfig
+    ?.musicVideoType as string | undefined;
+  const kind: ShelfItem["kind"] =
+    musicVideoType && musicVideoType !== "MUSIC_VIDEO_TYPE_ATV"
+      ? "video"
+      : "song";
+
   return {
-    kind: "song",
+    kind,
     id: videoId,
     title,
     subtitle: artists.map((a) => a.name).join(", ") || undefined,

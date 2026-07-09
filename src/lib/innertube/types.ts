@@ -26,6 +26,14 @@ export type ShelfItem = {
   albumId?: string;
   /** For songs/videos: duration in seconds */
   duration?: number;
+  /**
+   * videoId of this row's song<->video counterpart, when YT Music paired
+   * them in a /next `playlistPanelVideoWrapperRenderer`. Always the
+   * opposite `kind` (an audio-track version for a music video, or the
+   * music video for a song), so the Source toggle can switch to the real
+   * other version instead of a fuzzy search.
+   */
+  counterpartId?: string;
   /** Explicit-content badge present on the row */
   explicit?: boolean;
   /** Pre-formatted play count text from YT Music ("1.2M plays"). Album rows. */
