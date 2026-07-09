@@ -19,14 +19,26 @@ function parsePanelTracks(json: YtNode): ShelfItem[] {
   const tracks: ShelfItem[] = [];
   for (const c of panelContents) {
     // YTM wraps rows that have both a song and a music-video version in a
-    // playlistPanelVideoWrapperRenderer; the real row is under primaryRenderer.
+    // playlistPanelVideoWrapperRenderer; the shown row is under
+    // primaryRenderer and the other version rides along under
+    // counterpart[].counterpartRenderer.
+    const wrapper = c.playlistPanelVideoWrapperRenderer;
     const row =
       c.playlistPanelVideoRenderer ??
-      c.playlistPanelVideoWrapperRenderer?.primaryRenderer
-        ?.playlistPanelVideoRenderer;
+      wrapper?.primaryRenderer?.playlistPanelVideoRenderer;
     if (!row) continue;
     const mapped = mapPlaylistPanelVideo(row);
-    if (mapped) tracks.push(mapped);
+    if (!mapped) continue;
+    // Pull the counterpart's id so the Source toggle can flip to the real
+    // other version. This is YT's own song<->video pairing, so it's the
+    // same track, unlike a fuzzy search which can land on a different one.
+    const counterpartId: string | undefined =
+      wrapper?.counterpart?.[0]?.counterpartRenderer?.playlistPanelVideoRenderer
+        ?.navigationEndpoint?.watchEndpoint?.videoId;
+    if (counterpartId && counterpartId !== mapped.id) {
+      mapped.counterpartId = counterpartId;
+    }
+    tracks.push(mapped);
   }
   return tracks;
 }
