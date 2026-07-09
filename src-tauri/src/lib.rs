@@ -24,6 +24,7 @@ use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
+mod now_playing;
 mod ytdlp;
 
 fn sanitize_video_id(id: &str) -> bool {
@@ -2231,6 +2232,14 @@ async fn dominant_accent_color(url: String) -> Result<String, String> {
     Ok(color.unwrap_or_else(|| ACCENT_FALLBACK.to_string()))
 }
 
+/// Push the current track into the macOS system Now Playing panel
+/// (title / artist / album / times / play state). A no-op off macOS
+/// (see `now_playing`).
+#[tauri::command]
+fn set_now_playing(info: now_playing::NowPlayingInfo) {
+    now_playing::apply(&info);
+}
+
 #[derive(Default)]
 struct StreamServerState {
     port: Arc<Mutex<Option<u16>>>,
@@ -2922,6 +2931,7 @@ pub fn run() {
             focus_main_window,
             open_player_window,
             close_player_window,
+            set_now_playing,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -2968,6 +2978,9 @@ pub fn run() {
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
             let handle = app.handle().clone();
+            // Register macOS system Now Playing remote-command handlers
+            // (Control Center / media keys / AirPods). No-op off macOS.
+            now_playing::init(app.handle());
             eprintln!("[stream-server] cache dir: {cache_dir:?}");
             eprintln!("[stream-server] ephemeral dir: {ephemeral_dir:?}");
             eprintln!("[stream-server] cover dir: {cover_dir:?}");
