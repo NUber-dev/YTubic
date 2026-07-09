@@ -2076,6 +2076,161 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Result<u64, String> {
     Ok(freed)
 }
 
+/// Fetch image bytes with the same SSRF allowlist `cache_cover` uses:
+/// https only, and only from the known art CDNs, so a crafted metadata
+/// URL can't point the server-side fetch at an internal service.
+/// Redirects are disabled so a CDN-looking host can't 302 out of the
+/// allowlist.
+async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("bad url: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("blocked scheme: {}", parsed.scheme()));
+    }
+    const ALLOWED_HOST_SUFFIXES: &[&str] = &[
+        "mzstatic.com",
+        "ytimg.com",
+        "ggpht.com",
+        "googleusercontent.com",
+    ];
+    let host = parsed.host_str().unwrap_or("");
+    let host_ok = ALLOWED_HOST_SUFFIXES
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+    if !host_ok {
+        return Err(format!("blocked image host: {host}"));
+    }
+    let resp = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("client: {e}"))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read body: {e}"))?
+        .to_vec())
+}
+
+/// Fallback accent when the art is near-monochrome or otherwise doesn't
+/// yield a legible color: the app's YouTube-red brand color.
+const ACCENT_FALLBACK: &str = "#FA1F3E";
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d.abs() < f64::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - r).abs() < f64::EPSILON {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if (max - g).abs() < f64::EPSILON {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } * 60.0;
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    if s.abs() < f64::EPSILON {
+        let v = (l * 255.0).round() as u8;
+        return (v, v, v);
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let hk = h / 360.0;
+    let tc = |mut t: f64| {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 1.0 / 2.0 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    (
+        (tc(hk + 1.0 / 3.0) * 255.0).round() as u8,
+        (tc(hk) * 255.0).round() as u8,
+        (tc(hk - 1.0 / 3.0) * 255.0).round() as u8,
+    )
+}
+
+/// Downscale the art and pick a vibrant dominant color. Pixels outside a
+/// legible lightness band or below a saturation floor are dropped so the
+/// accent reads as white-on-color over the dark ambient backdrop; the
+/// survivors are bucketed by hue and the saturation-weighted average of
+/// the heaviest bucket wins. Returns `None` for near-monochrome art so
+/// the caller can fall back to the brand red.
+fn accent_from_bytes(bytes: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let small = img.thumbnail(64, 64).to_rgb8();
+    let mut sum = [[0f64; 3]; 12];
+    let mut weight = [0f64; 12];
+    for p in small.pixels() {
+        let (h, s, l) = rgb_to_hsl(p[0], p[1], p[2]);
+        if !(0.20..=0.75).contains(&l) || s < 0.35 {
+            continue;
+        }
+        let bucket = ((h / 30.0).floor() as usize) % 12;
+        sum[bucket][0] += p[0] as f64 * s;
+        sum[bucket][1] += p[1] as f64 * s;
+        sum[bucket][2] += p[2] as f64 * s;
+        weight[bucket] += s;
+    }
+    let best = weight
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)?;
+    if weight[best] <= 0.0 {
+        return None;
+    }
+    let r = (sum[best][0] / weight[best]).round() as u8;
+    let g = (sum[best][1] / weight[best]).round() as u8;
+    let b = (sum[best][2] / weight[best]).round() as u8;
+    // Force the winner into the legible band: floor the saturation so a
+    // muted average still shows as a color, and clamp lightness so it's
+    // neither lost on black nor washed out under white text.
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    let (rr, gg, bb) = hsl_to_rgb(h, s.max(0.5), l.clamp(0.45, 0.70));
+    Some(format!("#{rr:02X}{gg:02X}{bb:02X}"))
+}
+
+/// Album-art accent color for the fullscreen player. Fetches the art and
+/// computes a vibrant dominant color off-thread. Always resolves (falls
+/// back to brand red) so the frontend can set it unconditionally.
+#[tauri::command]
+async fn dominant_accent_color(url: String) -> Result<String, String> {
+    let bytes = fetch_image_bytes(&url).await?;
+    let color = tokio::task::spawn_blocking(move || accent_from_bytes(&bytes))
+        .await
+        .map_err(|e| format!("join: {e}"))?;
+    Ok(color.unwrap_or_else(|| ACCENT_FALLBACK.to_string()))
+}
+
 #[derive(Default)]
 struct StreamServerState {
     port: Arc<Mutex<Option<u16>>>,
@@ -2755,6 +2910,7 @@ pub fn run() {
             cache_cover,
             cover_cache_stats,
             clear_cover_cache,
+            dominant_accent_color,
             quit_app,
             set_close_behavior,
             autostart_set,

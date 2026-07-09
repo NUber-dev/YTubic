@@ -206,7 +206,16 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
   };
 }
 
-export function LyricsBody({ state }: { state: LyricsViewState }) {
+export function LyricsBody({
+  state,
+  viewportRatio,
+}: {
+  state: LyricsViewState;
+  /** Where the active line rests, as a fraction of viewport height.
+   *  Defaults to the inline-panel value; the fullscreen player passes a
+   *  lower-center ratio for its taller canvas. */
+  viewportRatio?: number;
+}) {
   if (!state.hasTrack) return null;
   if (state.isLoading && !state.active) {
     return (
@@ -229,6 +238,7 @@ export function LyricsBody({ state }: { state: LyricsViewState }) {
         offset={state.offset}
         onNudge={state.nudgeOffset}
         onReset={state.resetOffset}
+        viewportRatio={viewportRatio}
       />
     );
   }
@@ -284,11 +294,13 @@ function TimedLyrics({
   offset,
   onNudge,
   onReset,
+  viewportRatio = ACTIVE_LINE_VIEWPORT_RATIO,
 }: {
   lines: TimedLine[];
   offset: number;
   onNudge: (deltaSeconds: number) => void;
   onReset: () => void;
+  viewportRatio?: number;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
@@ -334,8 +346,7 @@ function TimedLyrics({
     const target =
       idx === 0
         ? 0
-        : container.clientHeight * ACTIVE_LINE_VIEWPORT_RATIO -
-          el.clientHeight / 2;
+        : container.clientHeight * viewportRatio - el.clientHeight / 2;
     container.scrollTop = Math.max(0, elTopWithinContent - target);
   }, [lines]);
 
@@ -361,8 +372,7 @@ function TimedLyrics({
     const target =
       activeIdx === 0
         ? 0
-        : container.clientHeight * ACTIVE_LINE_VIEWPORT_RATIO -
-          el.clientHeight / 2;
+        : container.clientHeight * viewportRatio - el.clientHeight / 2;
     const targetTop = Math.max(0, elTopWithinContent - target);
 
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);

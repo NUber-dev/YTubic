@@ -55,6 +55,12 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+# Already in the dependency tree via tauri's `image-png` feature; declared
+# here so we can decode album art server-side and pull a vibrant accent
+# color for the fullscreen player (a client-side <canvas> read taints on
+# the CORS-less art CDNs and throws in WKWebView). jpeg is what the art
+# hosts serve; other formats ride in through feature unification.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
