@@ -10,6 +10,7 @@ import { PlayerBar } from "@/components/layout/player-bar";
 import { PlayerBarBottom } from "@/components/layout/player-bar-bottom";
 import { FloatingPlayerSync } from "@/components/layout/floating-player-sync";
 import { DragSnapOverlay } from "@/components/layout/drag-snap-overlay";
+import { WindowResizeHandles } from "@/components/layout/window-resize-handles";
 import { EntityPageHeader } from "@/components/layout/entity-page-header";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { PremiumGateDialog } from "@/components/layout/premium-gate-dialog";
@@ -234,6 +235,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {mode === "floating" && hasTrack && <FloatingPlayerSync />}
           </div>
           <DragSnapOverlay />
+          <WindowResizeHandles />
           <SettingsDialog />
           <PremiumGateDialog />
           <ChannelPickerDialog />
