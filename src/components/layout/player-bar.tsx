@@ -444,6 +444,12 @@ export function PlayerBar({
   });
 
   const hasTrack = !!track;
+  // The <audio> element reports its own duration late (and sometimes as
+  // Infinity) for the progressive yt-dlp stream, so `duration` sits at 0
+  // for the first seconds of a track. Fall back to the browse metadata
+  // duration so the seek bar scales correctly and the total time isn't
+  // stuck at 0:00 with a stray played-fill dot pinned at the far left.
+  const knownDuration = duration > 0 ? duration : (track?.duration ?? 0);
   // Only treat "loading" as user-facing when the user has actually
   // requested playback. The audio engine eagerly resolves the stream
   // URL for the queued track on mount (so the first click on Play is
@@ -572,15 +578,15 @@ export function PlayerBar({
         <div className="mt-2 flex flex-col gap-2.5">
           <ProgressSlider
             position={position}
-            duration={duration}
+            duration={knownDuration}
             scrub={scrub}
             setScrub={setScrub}
             seek={seek}
-            disabled={!hasTrack || duration <= 0}
+            disabled={!hasTrack || knownDuration <= 0}
           />
           <div className="flex justify-between text-xs tabular-nums text-muted-foreground">
             <span>{formatTime(scrub ?? position)}</span>
-            <span>{formatTime(duration)}</span>
+            <span>{formatTime(knownDuration)}</span>
           </div>
         </div>
 
