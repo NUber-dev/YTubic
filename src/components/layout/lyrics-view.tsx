@@ -136,12 +136,13 @@ export function LyricsBody({ state }: { state: LyricsViewState }) {
 }
 
 /** How long before a line's actual start time we flip it to active.
- *  At this moment the previous line's CSS transition begins fading it
- *  out and the new line's transition begins fading it in. The
- *  `duration-*` value on the line element controls how long that
- *  cross-fade takes — set a touch longer than the lookahead so the
- *  handoff feels smooth rather than crisp. */
-const ACTIVE_LOOKAHEAD_S = 0.72;
+ *  Kept small so the highlight lands almost on the vocal instead of
+ *  jumping ahead by the better part of a second. At the flip the
+ *  previous line's CSS transition starts fading it out and the new
+ *  line's starts fading in; the `duration-*` value on the line element
+ *  sets that cross-fade a touch longer than this lookahead so the
+ *  handoff still feels smooth rather than crisp. */
+const ACTIVE_LOOKAHEAD_S = 0.2;
 
 function findActiveIdx(lines: TimedLine[], position: number): number {
   let active = -1;
@@ -164,8 +165,9 @@ function findActiveIdx(lines: TimedLine[], position: number): number {
 
 /** How far from the top of the viewport the active line should sit,
  *  as a fraction of the visible height. 0.5 = perfectly centered;
- *  smaller pushes the active line up and reveals more upcoming text. */
-const ACTIVE_LINE_VIEWPORT_RATIO = 0.36;
+ *  0.45 keeps it just above dead center so a little more upcoming text
+ *  stays in view while the active line still reads as centered. */
+const ACTIVE_LINE_VIEWPORT_RATIO = 0.45;
 
 /** Duration of the auto-scroll that re-centers the active line.
  *  Native `scrollTo({ behavior: "smooth" })` is non-configurable in
@@ -235,7 +237,7 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
     const elTopWithinContent =
       eRect.top - cRect.top + container.scrollTop;
     // The very first line is treated as a special case: we pin it to
-    // the top of the viewport instead of the usual ~36% position. For
+    // the top of the viewport instead of the usual ~45% position. For
     // any later line, the active-line-above-center rule applies.
     const target =
       activeIdx === 0
