@@ -149,6 +149,17 @@ struct Account {
     name: String,
     #[serde(default, rename = "photoUrl")]
     photo_url: Option<String>,
+    /// Brand-channel identity within this Google account. `None` means
+    /// the personal (default) channel. Sent as `X-Goog-PageId` on
+    /// InnerTube requests; library, likes and home are scoped to it.
+    #[serde(default, rename = "pageId")]
+    page_id: Option<String>,
+    /// Display meta for the selected channel so the UI can show it
+    /// without a network round-trip.
+    #[serde(default, rename = "channelName")]
+    channel_name: Option<String>,
+    #[serde(default, rename = "channelPhotoUrl")]
+    channel_photo_url: Option<String>,
     /// Unix seconds when this account was first added.
     #[serde(default, rename = "addedAt")]
     added_at: i64,
@@ -175,6 +186,12 @@ struct AccountSummary {
     name: String,
     #[serde(rename = "photoUrl")]
     photo_url: Option<String>,
+    #[serde(rename = "pageId")]
+    page_id: Option<String>,
+    #[serde(rename = "channelName")]
+    channel_name: Option<String>,
+    #[serde(rename = "channelPhotoUrl")]
+    channel_photo_url: Option<String>,
     #[serde(rename = "isActive")]
     is_active: bool,
 }
@@ -366,6 +383,311 @@ fn cookies_to_netscape(cookies: &[cookie::Cookie<'static>]) -> String {
     out
 }
 
+/// One line of a Netscape jar, kept as stored so a rewrite preserves
+/// entries we don't touch byte-for-byte.
+struct JarEntry {
+    domain: String,
+    include_sub: String,
+    path: String,
+    secure: String,
+    expiry: i64,
+    name: String,
+    value: String,
+}
+
+/// Apply `Set-Cookie` response headers to a Netscape jar, the way a
+/// browser would: update the value/expiry of a cookie we already hold,
+/// add cookies we don't, and drop cookies the server expires
+/// (`Max-Age=0` / past `Expires`). Only google/youtube domains are
+/// accepted — same filter as the login capture.
+///
+/// Returns `(new_jar, value_changed, needs_write)`:
+/// `value_changed` — a cookie value was replaced, added or removed, so
+/// cached Cookie headers are stale; `needs_write` additionally covers
+/// attribute-only refreshes (expiry bumps) that should persist but
+/// don't invalidate caches.
+fn merge_set_cookies_into_jar(
+    jar: &str,
+    set_cookies: &[String],
+    host: &str,
+    now_ts: i64,
+) -> (String, bool, bool) {
+    let mut entries: Vec<JarEntry> = Vec::new();
+    for line in jar.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 7 {
+            continue;
+        }
+        entries.push(JarEntry {
+            domain: f[0].to_string(),
+            include_sub: f[1].to_string(),
+            path: f[2].to_string(),
+            secure: f[3].to_string(),
+            expiry: f[4].parse().unwrap_or(0),
+            name: f[5].to_string(),
+            value: f[6].to_string(),
+        });
+    }
+
+    let mut value_changed = false;
+    let mut needs_write = false;
+
+    for raw in set_cookies {
+        let Ok(c) = cookie::Cookie::parse(raw.trim()) else {
+            continue;
+        };
+        // Host-only cookies (no Domain attribute) belong to the
+        // responding host.
+        let bare = c
+            .domain()
+            .unwrap_or(host)
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
+        let allowed = bare == "youtube.com"
+            || bare.ends_with(".youtube.com")
+            || bare == "google.com"
+            || bare.ends_with(".google.com");
+        if !allowed {
+            continue;
+        }
+
+        // Max-Age wins over Expires (RFC 6265 §4.1.2.2); either in the
+        // past is a deletion.
+        let (remove, expiry) = if let Some(ma) = c.max_age() {
+            let secs = ma.whole_seconds();
+            (secs <= 0, now_ts.saturating_add(secs))
+        } else if let Some(cookie::Expiration::DateTime(dt)) = c.expires() {
+            let ts = dt.unix_timestamp();
+            (ts <= now_ts, ts)
+        } else {
+            (false, 0) // session cookie
+        };
+
+        let pos = entries
+            .iter()
+            .position(|e| e.name == c.name() && e.domain.trim_start_matches('.') == bare);
+
+        if remove {
+            if let Some(i) = pos {
+                entries.remove(i);
+                value_changed = true;
+            }
+            continue;
+        }
+
+        match pos {
+            Some(i) => {
+                let e = &mut entries[i];
+                if e.value != c.value() {
+                    e.value = c.value().to_string();
+                    value_changed = true;
+                }
+                if e.expiry != expiry {
+                    e.expiry = expiry;
+                    needs_write = true;
+                }
+            }
+            None => {
+                entries.push(JarEntry {
+                    domain: format!(".{bare}"),
+                    include_sub: "TRUE".to_string(),
+                    path: c.path().unwrap_or("/").to_string(),
+                    secure: if c.secure().unwrap_or(false) { "TRUE" } else { "FALSE" }
+                        .to_string(),
+                    expiry,
+                    name: c.name().to_string(),
+                    value: c.value().to_string(),
+                });
+                value_changed = true;
+            }
+        }
+    }
+
+    needs_write |= value_changed;
+    let mut out = String::from("# Netscape HTTP Cookie File\n");
+    for e in &entries {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            e.domain, e.include_sub, e.path, e.secure, e.expiry, e.name, e.value
+        ));
+    }
+    (out, value_changed, needs_write)
+}
+
+/// Stable "same account" key derived from an account's backfilled meta.
+/// Prefers the email; when that's empty (brand-channel identities, and
+/// some accounts, omit it from `/account_menu`) it falls back to the
+/// avatar URL, whose `yt3.ggpht.com/-<token>` base is stable per
+/// account. Returns `None` when neither is known, so two accounts we
+/// can't tell apart are never merged.
+///
+/// Cookie values can't serve as the key: every login runs in an
+/// isolated WebView profile, so Google mints a fresh SAPISID/SID
+/// session each time and the same account lands a different value on
+/// each add.
+fn meta_identity(email: &str, photo_url: Option<&str>) -> Option<String> {
+    let email = email.trim();
+    if !email.is_empty() {
+        return Some(format!("email:{}", email.to_ascii_lowercase()));
+    }
+    if let Some(p) = photo_url {
+        // Drop the "=s108-c-k-..." sizing suffix so the same avatar at
+        // different requested sizes still compares equal.
+        let base = p.split('=').next().unwrap_or(p).trim();
+        if !base.is_empty() {
+            return Some(format!("photo:{base}"));
+        }
+    }
+    None
+}
+
+/// Collapse duplicate account rows that are the same Google account.
+/// Re-adding an account you already have (or a stale/expired re-login)
+/// used to append a fresh row that never merged, because dedup keyed on
+/// an email that `/account_menu` often leaves empty. This heals that
+/// state from the stored meta: within each set of rows sharing an
+/// identity (see `meta_identity`) it keeps the earliest-added one
+/// (stable id, so pinned-playlist buckets survive), copies the freshest
+/// cookies into it, and drops the rest off disk. A row we can't identify
+/// (no email, no avatar) is left untouched rather than risk merging two
+/// real accounts.
+///
+/// Does not emit `accounts-changed`: callers either run it before the
+/// UI reads the list (startup) or emit the event themselves.
+async fn dedup_accounts_by_identity(app: &tauri::AppHandle) {
+    let mut idx = read_index(app).await;
+    if idx.accounts.len() < 2 {
+        return;
+    }
+
+    // Identity per row from its stored meta, same order as idx.accounts.
+    let identities: Vec<Option<String>> = idx
+        .accounts
+        .iter()
+        .map(|a| meta_identity(&a.email, a.photo_url.as_deref()))
+        .collect();
+
+    // Group row indices by identity.
+    let mut groups: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, ident) in identities.iter().enumerate() {
+        if let Some(key) = ident {
+            groups.entry(key.clone()).or_default().push(i);
+        }
+    }
+
+    // removed id -> keeper id, so `active` can follow its keeper.
+    let mut remap: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    // (source id, keeper id) jars to copy before deleting the source.
+    let mut fresh_copies: Vec<(String, String)> = Vec::new();
+
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        // Keep the earliest-added row: its id is the one pins are keyed
+        // to, and it's the account the user has had the longest.
+        let keeper = *members
+            .iter()
+            .min_by_key(|&&i| idx.accounts[i].added_at)
+            .unwrap();
+        let keeper_id = idx.accounts[keeper].id.clone();
+
+        // Freshest cookies: the jar written most recently. After a
+        // re-login that's the keeper itself (login-time dedup refreshed
+        // it in place, so no copy happens); when healing a pile of
+        // legacy dups it's whichever login was most recent, the one
+        // most likely to still authenticate. Falls back to the keeper
+        // if no jar's mtime can be read.
+        let mut freshest = keeper;
+        let mut best_mtime: Option<std::time::SystemTime> = None;
+        for &i in members {
+            let p = account_cookies_path(app, &idx.accounts[i].id);
+            let mtime = tokio::fs::metadata(&p)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok());
+            if let Some(t) = mtime {
+                if best_mtime.map_or(true, |b| t > b) {
+                    best_mtime = Some(t);
+                    freshest = i;
+                }
+            }
+        }
+        let fresh_id = idx.accounts[freshest].id.clone();
+        if fresh_id != keeper_id {
+            fresh_copies.push((fresh_id, keeper_id.clone()));
+        }
+
+        for &i in members {
+            if i != keeper {
+                remap.insert(idx.accounts[i].id.clone(), keeper_id.clone());
+            }
+        }
+    }
+
+    if remap.is_empty() {
+        return;
+    }
+
+    for (from_id, keeper_id) in &fresh_copies {
+        let from_path = account_cookies_path(app, from_id);
+        let keep_path = account_cookies_path(app, keeper_id);
+        if let Ok(bytes) = tokio::fs::read(&from_path).await {
+            let _ = tokio::fs::write(&keep_path, bytes).await;
+        }
+    }
+
+    if let Some(active) = idx.active.clone() {
+        if let Some(keeper) = remap.get(&active) {
+            idx.active = Some(keeper.clone());
+        }
+    }
+
+    idx.accounts.retain(|a| !remap.contains_key(&a.id));
+
+    // Persist the collapsed index BEFORE deleting the losers' jars. If
+    // the app dies in between, an orphan dir is invisible litter; the
+    // reverse order could leave the index pointing at deleted jars and
+    // boot the app signed out.
+    let removed = remap.len();
+    if let Err(e) = write_index(app, &idx).await {
+        eprintln!("[accounts] dedup write index: {e}");
+        return;
+    }
+    for rid in remap.keys() {
+        let _ = tokio::fs::remove_dir_all(accounts_dir(app).join(rid)).await;
+    }
+    eprintln!("[accounts] collapsed {removed} duplicate account row(s) by identity");
+}
+
+/// Best-effort cleanup of transient login artifacts, run once per boot:
+///
+/// - leftover per-login WebView profiles under `login-sessions/`. The
+///   post-login `remove_dir_all` regularly loses to WebView2 file locks
+///   (the browser subprocess outlives the window for a beat), and each
+///   stranded profile holds a signed-in Google session on disk. At boot
+///   no login window exists, so the locks are gone and deletion sticks.
+/// - the http plugin's `.cookies` store from builds where its `cookies`
+///   feature was still on: plaintext session-security cookies, and the
+///   shadow copy that fed the rotation-divergence bug.
+async fn cleanup_login_artifacts(app: &tauri::AppHandle) {
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    if let Ok(mut sessions) = tokio::fs::read_dir(cache.join("login-sessions")).await {
+        while let Ok(Some(entry)) = sessions.next_entry().await {
+            let _ = tokio::fs::remove_dir_all(entry.path()).await;
+        }
+    }
+    let _ = tokio::fs::remove_file(cache.join(".cookies")).await;
+}
+
 /// Open an in-app Google sign-in window in an isolated WebView profile
 /// and add the resulting cookies as a new account. Polls the (fresh)
 /// webview cookie store until YouTube auth cookies appear, encrypts
@@ -384,8 +706,9 @@ fn cookies_to_netscape(cookies: &[cookie::Cookie<'static>]) -> String {
 /// We deliberately do NOT emit `accounts-changed` here. The newly-
 /// added account has empty meta and may not even survive the next
 /// step: the frontend's meta backfill calls `update_account_meta`,
-/// which is when we find out via the email lookup whether this is
-/// genuinely a new account or a re-sign-in of an existing one. That
+/// which is when we find out via an identity lookup (email, or avatar
+/// when the email is empty) whether this is genuinely a new account or
+/// a re-sign-in of an existing one. That
 /// command emits `accounts-changed` for both cases, and the global
 /// listener does its full reset there. Firing the event twice was the
 /// "double-reset on dedup" UX bug.
@@ -441,6 +764,9 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         // Guards against thrashing if YT auto-sign-in is slow and we
         // catch a Google-auth-only state on multiple ticks.
         let mut nudged_to_yt = false;
+        // Ticks spent waiting for the handshake to finish after auth
+        // cookies first appear (see below).
+        let mut full_set_grace: u8 = 0;
         loop {
             tokio::time::sleep(Duration::from_millis(1500)).await;
 
@@ -511,6 +837,23 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 continue;
             }
 
+            // SAPISID shows up before YouTube finishes its handshake;
+            // capturing at first sight used to miss LOGIN_INFO /
+            // VISITOR_INFO1_LIVE / YSC. Those make our replayed traffic
+            // look like the browser session Google issued it to, so
+            // give the handshake a few ticks to complete. Capture
+            // anyway after ~6 s in case the cookie set changes shape.
+            let has_login_info = cookies.iter().any(|c| {
+                c.name() == "LOGIN_INFO"
+                    && c.domain()
+                        .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
+                        .unwrap_or(false)
+            });
+            if !has_login_info && full_set_grace < 4 {
+                full_set_grace += 1;
+                continue;
+            }
+
             let new_id = generate_account_id();
             let cookies_path = account_cookies_path(&app_poll, &new_id);
             if let Some(dir) = cookies_path.parent() {
@@ -567,12 +910,12 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 return;
             }
 
-            // `login-success` is the soft signal: frontend invalidates
-            // its auth queries so the meta backfill can fire with the
-            // new cookies. The follow-up `update_account_meta` call
-            // is where `accounts-changed` actually fires — that's the
-            // single source of truth for "an account flipped" so we
-            // never run the full reset twice for one login flow.
+            // `login-success` is the soft signal: the frontend invalidates
+            // its auth queries so the meta backfill runs with the new
+            // cookies. The follow-up `update_account_meta` call is where
+            // dedup happens (by identity, email or avatar) and where
+            // `accounts-changed` fires, so we never run the full reset
+            // twice for one login flow.
             let _ = app_poll.emit("login-success", &new_id);
             let _ = win.close();
             let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
@@ -628,11 +971,81 @@ async fn is_logged_in(app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 /// Hard-exit the process. The window's close button hides into the tray
-/// (see `WindowEvent::CloseRequested` below); this command is the
-/// frontend's equivalent of the tray's Quit menu item.
+/// by default (see `WindowEvent::CloseRequested` below); this command is
+/// the frontend's equivalent of the tray's Quit menu item.
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+/// What the title-bar ✕ does, mirrored from the frontend settings store
+/// (`useCloseBehaviorSync`). Lives in Rust rather than only in
+/// localStorage because the decision point is the `CloseRequested`
+/// window event, which must also cover Alt+F4 and the taskbar's Close.
+/// Defaults to hide-to-tray until the frontend pushes a value shortly
+/// after the webview boots.
+#[derive(Default)]
+struct CloseBehavior {
+    quit_on_close: AtomicBool,
+}
+
+#[tauri::command]
+fn set_close_behavior(
+    state: tauri::State<'_, CloseBehavior>,
+    quit_on_close: bool,
+) {
+    state.quit_on_close.store(quit_on_close, Ordering::Relaxed);
+}
+
+/// Register / unregister the app for launch at OS startup. Uses the
+/// autostart plugin's Rust API from our own command so the frontend
+/// needs no extra capability grants.
+#[tauri::command]
+fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    let currently = autolaunch.is_enabled().unwrap_or(false);
+    if enabled == currently {
+        return Ok(());
+    }
+    if enabled {
+        autolaunch.enable().map_err(|e| e.to_string())
+    } else {
+        autolaunch.disable().map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn autostart_is_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// Track-change toast (Settings → General → Playback notifications).
+/// The focus check lives here rather than in JS so it covers every
+/// window at once: a toast is only useful when the user isn't already
+/// looking at the app (main window hidden to tray, or another app in
+/// the foreground).
+#[tauri::command]
+fn notify_track(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let any_focused = app
+        .webview_windows()
+        .values()
+        .any(|w| w.is_focused().unwrap_or(false));
+    if any_focused {
+        return Ok(());
+    }
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
 }
 
 /// Bring the main window to the front. Called from the floating
@@ -771,6 +1184,9 @@ async fn list_accounts(app: tauri::AppHandle) -> Result<Vec<AccountSummary>, Str
                 email: a.email,
                 name: a.name,
                 photo_url: a.photo_url,
+                page_id: a.page_id,
+                channel_name: a.channel_name,
+                channel_photo_url: a.channel_photo_url,
                 is_active,
             }
         })
@@ -824,11 +1240,11 @@ async fn remove_account(app: tauri::AppHandle, id: String) -> Result<(), String>
 /// per session after `/account_menu` returns the active user's name
 /// + email + avatar.
 ///
-/// Dedup: if the supplied email matches a *different* account that
-/// already exists, this is a re-login of an account we've seen
-/// before. Replace the older account's cookies with the freshly-
-/// captured ones, drop this account's just-created entry, and pin
-/// the older id as active.
+/// Dedup: if the supplied identity (email, or avatar when the email is
+/// empty) matches a *different* existing account, this is a re-login of
+/// an account we've seen before. Replace the older account's cookies
+/// with the freshly-captured ones, drop this account's just-created
+/// entry, and pin the older id as active.
 #[tauri::command]
 async fn update_account_meta(
     app: tauri::AppHandle,
@@ -839,13 +1255,43 @@ async fn update_account_meta(
 ) -> Result<(), String> {
     let photo_url = photoUrl;
     let mut idx = read_index(&app).await;
-    let dup_pos = if !email.is_empty() {
-        idx.accounts
-            .iter()
-            .position(|a| a.id != id && a.email == email)
-    } else {
+
+    // Meta from /account_menu always describes the ACTIVE account: the
+    // fetch runs with the active jar. A caller that pairs a stale id
+    // with fresh meta (or a fresh id with stale meta) must not relabel
+    // some other row; with identity dedup that could merge two real
+    // accounts. Drop the write and let the backfill re-run with a
+    // consistent pair.
+    if idx.active.as_deref() != Some(id.as_str()) {
+        return Ok(());
+    }
+
+    // When the account acts as a brand channel, /account_menu describes
+    // the channel, not the Google account, so its meta can't identify a
+    // duplicate row.
+    let acting_as_brand = idx
+        .accounts
+        .iter()
+        .find(|a| a.id == id)
+        .map(|a| a.page_id.is_some())
+        .unwrap_or(false);
+
+    // Re-login of an existing account? Match a *different* row by
+    // identity (email, or avatar when the email is empty; see
+    // `meta_identity`). Keying on email alone missed brand-channel and
+    // no-email accounts, which is how duplicate rows used to pile up.
+    let incoming = if acting_as_brand {
         None
+    } else {
+        meta_identity(&email, photo_url.as_deref())
     };
+    let dup_pos = incoming.as_ref().and_then(|key| {
+        idx.accounts.iter().position(|a| {
+            a.id != id
+                && meta_identity(&a.email, a.photo_url.as_deref()).as_deref()
+                    == Some(key.as_str())
+        })
+    });
 
     // A "fresh add" is the very first meta backfill after
     // `start_login` — the account row exists but its name + email
@@ -885,17 +1331,49 @@ async fn update_account_meta(
         }
         if let Some(other) = idx.accounts.iter_mut().find(|a| a.id == other_id) {
             other.name = name;
-            other.email = email;
-            other.photo_url = photo_url;
+            // Don't let an empty backfill (some accounts' /account_menu
+            // carries no email) wipe a good stored email.
+            if !email.is_empty() {
+                other.email = email;
+            }
+            // The avatar can be the dedup identity when the email is
+            // empty; never wipe it with a photo-less response.
+            if photo_url.is_some() {
+                other.photo_url = photo_url;
+            }
         }
         if idx.active.as_deref() != Some(other_id.as_str()) {
             active_changed = true;
         }
         idx.active = Some(other_id);
     } else if let Some(acct) = idx.accounts.iter_mut().find(|a| a.id == id) {
-        acct.name = name;
-        acct.email = email;
-        acct.photo_url = photo_url;
+        if acting_as_brand {
+            // Route brand-channel meta into the channel fields and leave
+            // the account-level identity (name / email / photo captured
+            // on the personal channel) untouched: re-login dedup keys on
+            // it, and overwriting the account photo with the brand one
+            // made a later re-login of the same account look like a new
+            // identity.
+            if !name.is_empty() {
+                acct.channel_name = Some(name);
+            }
+            if photo_url.is_some() {
+                acct.channel_photo_url = photo_url;
+            }
+        } else {
+            acct.name = name;
+            // Some accounts' /account_menu carries no email; don't let
+            // that backfill wipe the stored one (it drives the re-login
+            // dedup above).
+            if !email.is_empty() {
+                acct.email = email;
+            }
+            // The avatar can be the dedup identity when the email is
+            // empty; never wipe it with a photo-less response.
+            if photo_url.is_some() {
+                acct.photo_url = photo_url;
+            }
+        }
     } else {
         return Err(format!("no such account: {id}"));
     }
@@ -915,11 +1393,252 @@ async fn get_active_account_id(app: tauri::AppHandle) -> Result<Option<String>, 
     Ok(read_index(&app).await.active)
 }
 
-fn stream_cache_dir(app: &tauri::AppHandle) -> PathBuf {
+/// Select which YouTube channel (personal or brand) an account acts
+/// as. `pageId: None` selects the personal channel. When the choice on
+/// the ACTIVE account actually changes we emit `accounts-changed`:
+/// library, likes and home are channel-scoped, so the frontend must
+/// run the same full reset as an account switch.
+#[tauri::command]
+async fn set_account_channel(
+    app: tauri::AppHandle,
+    id: String,
+    #[allow(non_snake_case)] pageId: Option<String>,
+    #[allow(non_snake_case)] channelName: Option<String>,
+    #[allow(non_snake_case)] channelPhotoUrl: Option<String>,
+) -> Result<(), String> {
+    let mut idx = read_index(&app).await;
+    let is_active = idx.active.as_deref() == Some(id.as_str());
+    let acct = idx
+        .accounts
+        .iter_mut()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("no such account: {id}"))?;
+    let changed = acct.page_id != pageId;
+    acct.page_id = pageId;
+    acct.channel_name = channelName;
+    acct.channel_photo_url = channelPhotoUrl;
+    write_index(&app, &idx).await?;
+    if changed && is_active {
+        let _ = app.emit("accounts-changed", ());
+    }
+    Ok(())
+}
+
+/// Cookie header plus the active account's brand-channel page id in a
+/// single call. The InnerTube client sends the page id back as the
+/// `X-Goog-PageId` header. Bundling it with the cookie read (instead
+/// of a second command) means a cold start can't pair fresh cookies
+/// with a stale page id, or vice versa.
+#[derive(Clone, Debug, serde::Serialize)]
+struct AuthContext {
+    cookie: String,
+    #[serde(rename = "pageId")]
+    page_id: Option<String>,
+}
+
+#[tauri::command]
+async fn get_auth_context(
+    app: tauri::AppHandle,
+    host: String,
+) -> Result<AuthContext, String> {
+    let cookie = read_cookie_header(&app, &host).await;
+    let page_id = if cookie.is_empty() {
+        None
+    } else {
+        let idx = read_index(&app).await;
+        idx.accounts
+            .iter()
+            .find(|a| idx.active.as_deref() == Some(a.id.as_str()))
+            .and_then(|a| a.page_id.clone())
+    };
+    Ok(AuthContext { cookie, page_id })
+}
+
+/// Serializes read-modify-write cycles on the active cookie jar.
+/// Parallel InnerTube responses can each carry Set-Cookie rotations;
+/// without the lock two merges could interleave and drop one.
+#[derive(Default)]
+struct JarWriteLock(tokio::sync::Mutex<()>);
+
+/// Merge `Set-Cookie` headers from an InnerTube response into the
+/// active account's jar, mirroring what a browser would do. Google
+/// rotates session-security cookies (SIDCC / __Secure-*PSIDCC /
+/// LOGIN_INFO) right after sign-in and expects the client to echo the
+/// fresh values from then on; a client that keeps replaying the
+/// pre-rotation snapshot matches the stolen-cookie heuristic and the
+/// whole session gets revoked within hours (the v0.2.0 "library and
+/// Premium vanish" bug).
+///
+/// Returns `true` when a cookie VALUE changed — the frontend drops its
+/// cached Cookie header then. Missing jar / dead decrypt are quiet
+/// no-ops: rotation echo is best-effort and must never break the data
+/// call that triggered it.
+#[tauri::command]
+async fn merge_response_cookies(
+    app: tauri::AppHandle,
+    lock: tauri::State<'_, JarWriteLock>,
+    host: String,
+    set_cookies: Vec<String>,
+) -> Result<bool, String> {
+    if set_cookies.is_empty() {
+        return Ok(false);
+    }
+    let _guard = lock.0.lock().await;
+    let Some(path) = active_cookies_path(&app).await else {
+        return Ok(false);
+    };
+    let Ok(encrypted) = tokio::fs::read(&path).await else {
+        return Ok(false);
+    };
+    let Ok(Ok(plain)) =
+        tokio::task::spawn_blocking(move || secure_store::decrypt(&encrypted)).await
+    else {
+        return Ok(false);
+    };
+    let Ok(jar) = String::from_utf8(plain) else {
+        return Ok(false);
+    };
+
+    let now_ts = time::OffsetDateTime::now_utc().unix_timestamp();
+    let (merged, value_changed, needs_write) =
+        merge_set_cookies_into_jar(&jar, &set_cookies, &host, now_ts);
+    if !needs_write {
+        return Ok(false);
+    }
+
+    let bytes = merged.into_bytes();
+    let encrypted = tokio::task::spawn_blocking(move || secure_store::encrypt(&bytes))
+        .await
+        .map_err(|e| format!("encrypt join: {e}"))?
+        .map_err(|e| format!("encrypt cookies: {e}"))?;
+    // Write-then-rename: this path now runs on live rotations, not just
+    // at login, and a torn cookies.enc reads as "signed out".
+    let tmp = path.with_extension("enc.tmp");
+    tokio::fs::write(&tmp, &encrypted)
+        .await
+        .map_err(|e| format!("write jar tmp: {e}"))?;
+    tokio::fs::rename(&tmp, &path)
+        .await
+        .map_err(|e| format!("swap jar: {e}"))?;
+    if value_changed {
+        eprintln!("[auth] echoed rotated session cookie(s) into the active jar");
+    }
+    Ok(value_changed)
+}
+
+/// File (under the store plugin's default dir) + key holding the
+/// user-chosen cache root. Written by `set_cache_dir`, read once at
+/// startup — the stream server captures its directories when it
+/// spawns, so a change only applies on the next launch.
+const SETTINGS_STORE_FILE: &str = "settings.json";
+const CACHE_DIR_KEY: &str = "cacheDir";
+
+/// The cache root this process actually started with (managed state,
+/// set in `setup`). All track/cover cache paths derive from it so the
+/// commands and the running stream server always agree, even when the
+/// stored preference already points somewhere new.
+struct ActiveCacheRoot(PathBuf);
+
+fn default_cache_root(app: &tauri::AppHandle) -> PathBuf {
     app.path()
         .app_cache_dir()
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join("stream")
+}
+
+/// User-chosen cache root from the settings store, if any.
+fn stored_cache_root(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store(SETTINGS_STORE_FILE).ok()?;
+    let value = store.get(CACHE_DIR_KEY)?;
+    let s = value.as_str()?.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(s))
+    }
+}
+
+fn stream_cache_dir(app: &tauri::AppHandle) -> PathBuf {
+    app.state::<ActiveCacheRoot>().0.join("stream")
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CacheDirInfo {
+    /// Root that will be used from the next launch on.
+    path: String,
+    default_path: String,
+    is_custom: bool,
+    /// True when the stored preference differs from what this process
+    /// is running with — i.e. a restart is pending.
+    needs_restart: bool,
+}
+
+#[tauri::command]
+fn get_cache_dir(app: tauri::AppHandle) -> CacheDirInfo {
+    let default = default_cache_root(&app);
+    let stored = stored_cache_root(&app);
+    let active = app.state::<ActiveCacheRoot>().0.clone();
+    let effective = stored.clone().unwrap_or_else(|| default.clone());
+    CacheDirInfo {
+        needs_restart: effective != active,
+        path: effective.display().to_string(),
+        default_path: default.display().to_string(),
+        is_custom: stored.is_some(),
+    }
+}
+
+/// Persist a new cache root (`None` resets to the default). Validates
+/// that the folder exists and is writable before saving; the change
+/// takes effect on the next launch.
+#[tauri::command]
+async fn set_cache_dir(
+    app: tauri::AppHandle,
+    path: Option<String>,
+) -> Result<(), String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app
+        .store(SETTINGS_STORE_FILE)
+        .map_err(|e| format!("open settings store: {e}"))?;
+    match path {
+        None => {
+            store.delete(CACHE_DIR_KEY);
+        }
+        Some(raw) => {
+            let raw = raw.trim().to_string();
+            let dir = PathBuf::from(&raw);
+            if raw.is_empty() || !dir.is_absolute() {
+                return Err("Pick an absolute folder path.".into());
+            }
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|e| format!("Can't create the folder: {e}"))?;
+            let probe = dir.join(".ytubic-write-test");
+            tokio::fs::write(&probe, b"ok")
+                .await
+                .map_err(|e| format!("Folder isn't writable: {e}"))?;
+            let _ = tokio::fs::remove_file(&probe).await;
+            store.set(CACHE_DIR_KEY, serde_json::Value::String(raw));
+        }
+    }
+    store.save().map_err(|e| format!("save settings store: {e}"))?;
+    Ok(())
+}
+
+/// Native directory picker for the cache-folder setting. Returns
+/// `None` when the user cancels. Blocking picker variant, so keep it
+/// off the async runtime's core threads.
+#[tauri::command]
+async fn pick_cache_folder(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().blocking_pick_folder()
+    })
+    .await
+    .ok()
+    .flatten()
+    .and_then(|f| f.into_path().ok())
+    .map(|p| p.display().to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -1139,10 +1858,7 @@ fn url_to_filename(url: &str) -> String {
 }
 
 fn cover_cache_dir(app: &tauri::AppHandle) -> PathBuf {
-    app.path()
-        .app_cache_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("covers")
+    app.state::<ActiveCacheRoot>().0.join("covers")
 }
 
 /// Download a cover image (typically from iTunes / mzstatic) and stash
@@ -1923,19 +2639,30 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(state)
+        .manage(CloseBehavior::default())
+        .manage(JarWriteLock::default())
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
             resolve_stream_ytdlp,
             get_stream_base_url,
             start_login,
             get_cookie_header,
+            get_auth_context,
+            merge_response_cookies,
             is_logged_in,
             clear_cookies,
             list_accounts,
             switch_account,
             remove_account,
             update_account_meta,
+            set_account_channel,
             get_active_account_id,
             list_cache,
             delete_cache_entries,
@@ -1943,6 +2670,13 @@ pub fn run() {
             cover_cache_stats,
             clear_cover_cache,
             quit_app,
+            set_close_behavior,
+            autostart_set,
+            autostart_is_enabled,
+            notify_track,
+            get_cache_dir,
+            set_cache_dir,
+            pick_cache_folder,
             focus_main_window,
             open_player_window,
             close_player_window,
@@ -1950,12 +2684,22 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 match window.label() {
-                    // Close-to-tray: first close request hides the main
-                    // window instead of exiting. Real quit is via the
-                    // tray's Quit item.
+                    // Main window: hide to tray or quit, per the user's
+                    // Settings choice (default tray). Quit goes through
+                    // an explicit exit — just letting the close proceed
+                    // could leave a floating-player window keeping the
+                    // process alive headless.
                     "main" => {
-                        let _ = window.hide();
-                        api.prevent_close();
+                        let quit = window
+                            .state::<CloseBehavior>()
+                            .quit_on_close
+                            .load(Ordering::Relaxed);
+                        if quit {
+                            window.app_handle().exit(0);
+                        } else {
+                            let _ = window.hide();
+                            api.prevent_close();
+                        }
                     }
                     // The floating player window actually closes — we
                     // tell the main window so it can revert the layout
@@ -1970,10 +2714,14 @@ pub fn run() {
         .setup(move |app| {
             let port = port_handle.clone();
             let token = token_handle.clone();
-            let cache_root = app
-                .path()
-                .app_cache_dir()
-                .unwrap_or_else(|_| std::env::temp_dir());
+            // User-chosen cache root (Settings → Storage) or the OS
+            // default. Captured once and exposed as managed state so
+            // every cache-path computation matches the directories the
+            // stream server is about to bind — a preference change made
+            // later only applies after relaunch.
+            let cache_root = stored_cache_root(app.handle())
+                .unwrap_or_else(|| default_cache_root(app.handle()));
+            app.manage(ActiveCacheRoot(cache_root.clone()));
             let cache_dir = cache_root.join("stream");
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
@@ -1985,6 +2733,10 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 migrate_plaintext_cookies(&handle).await;
                 migrate_to_accounts_layout(&handle).await;
+                // Heal any duplicate account rows left by the old
+                // email-based dedup before the UI reads the list.
+                dedup_accounts_by_identity(&handle).await;
+                cleanup_login_artifacts(&handle).await;
                 start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
                     .await;
             });
@@ -2060,5 +2812,77 @@ mod tests {
                 "no token must not reach the handler"
             );
         });
+    }
+
+    use super::merge_set_cookies_into_jar;
+
+    const NOW: i64 = 1_700_000_000;
+    const HOST: &str = "music.youtube.com";
+
+    fn jar() -> String {
+        "# Netscape HTTP Cookie File\n\
+         .youtube.com\tTRUE\t/\tTRUE\t1800000000\tSAPISID\told-sapisid\n\
+         .youtube.com\tTRUE\t/\tTRUE\t1800000000\tSIDCC\told-sidcc\n"
+            .to_string()
+    }
+
+    #[test]
+    fn merge_replaces_rotated_value() {
+        let lines = vec![
+            "SIDCC=new-sidcc; Domain=.youtube.com; Path=/; Secure; Max-Age=31536000".to_string(),
+        ];
+        let (out, changed, dirty) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(changed && dirty);
+        assert!(out.contains("SIDCC\tnew-sidcc"));
+        assert!(!out.contains("old-sidcc"));
+        assert!(out.contains("SAPISID\told-sapisid"), "untouched cookie survives");
+    }
+
+    #[test]
+    fn merge_inserts_new_cookie_with_domain() {
+        let lines =
+            vec!["LOGIN_INFO=abc; Domain=.youtube.com; Path=/; Secure; HttpOnly; Max-Age=63072000"
+                .to_string()];
+        let (out, changed, _) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(changed);
+        assert!(out.contains(".youtube.com\tTRUE\t/\tTRUE\t1763072000\tLOGIN_INFO\tabc"));
+    }
+
+    #[test]
+    fn merge_inserts_host_only_cookie_under_response_host() {
+        let lines = vec!["PZS=1; Path=/; Secure; Max-Age=600".to_string()];
+        let (out, changed, _) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(changed);
+        assert!(out.contains(".music.youtube.com\tTRUE\t/\tTRUE"));
+    }
+
+    #[test]
+    fn merge_removes_expired_cookie() {
+        let lines = vec!["SIDCC=gone; Domain=.youtube.com; Path=/; Max-Age=0".to_string()];
+        let (out, changed, _) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(changed);
+        assert!(!out.contains("SIDCC"));
+    }
+
+    #[test]
+    fn merge_ignores_foreign_domains() {
+        let lines = vec![
+            "tracker=1; Domain=.example.com; Path=/; Max-Age=1000".to_string(),
+            "__cf_bm=x; Domain=.genius.com; Path=/; Max-Age=1000".to_string(),
+        ];
+        let (out, changed, dirty) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(!changed && !dirty);
+        assert_eq!(out, jar(), "jar must be untouched");
+    }
+
+    #[test]
+    fn merge_expiry_only_refresh_persists_without_cache_reset() {
+        let lines = vec![
+            "SIDCC=old-sidcc; Domain=.youtube.com; Path=/; Secure; Max-Age=31536000".to_string(),
+        ];
+        let (out, changed, dirty) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(!changed, "same value must not invalidate the header cache");
+        assert!(dirty, "but the fresher expiry should be written");
+        assert!(out.contains(&format!("{}", NOW + 31_536_000)));
     }
 }

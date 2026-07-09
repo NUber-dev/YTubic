@@ -12,15 +12,23 @@ import { FloatingPlayerSync } from "@/components/layout/floating-player-sync";
 import { DragSnapOverlay } from "@/components/layout/drag-snap-overlay";
 import { WindowResizeHandles } from "@/components/layout/window-resize-handles";
 import { EntityPageHeader } from "@/components/layout/entity-page-header";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
+import { PremiumGateDialog } from "@/components/layout/premium-gate-dialog";
+import { ChannelPickerDialog } from "@/components/layout/channel-picker-dialog";
+import { WhatsNewDialog } from "@/components/layout/whats-new-dialog";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAudioEngine } from "@/lib/audio-engine";
+import { useCacheAutoClean } from "@/lib/cache-cleanup";
+import { usePlaybackNotifications } from "@/lib/playback-notifications";
 import { useYtdlpSetup } from "@/lib/ytdlp";
 import { useUpdateStartupCheck } from "@/lib/updater";
+import { useWhatsNewOnUpdate } from "@/lib/store/whats-new";
 import { pickHighResThumbnail } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useLayoutStore } from "@/lib/store/layout";
 import { usePremiumStatusSync } from "@/lib/store/premium";
+import { useCloseBehaviorSync, useSettingsStore } from "@/lib/store/settings";
 import {
   useAccountMetaBackfill,
   useAccountsChangedListener,
@@ -73,13 +81,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   useAudioEngine();
   useYtdlpSetup();
   useUpdateStartupCheck();
+  useWhatsNewOnUpdate();
   usePremiumStatusSync();
   useLoginSuccessListener();
   useAccountsChangedListener();
   useAccountMetaBackfill();
   useGlobalShortcuts();
+  useCloseBehaviorSync();
+  useCacheAutoClean();
+  usePlaybackNotifications();
   const mode = useLayoutStore((s) => s.mode);
   const setMode = useLayoutStore((s) => s.setMode);
+  const background = useSettingsStore((s) => s.background);
   // The player UI is hidden whenever there's no active track —
   // covers the "Nothing playing" empty state at first launch and
   // after the queue is cleared. The mode itself stays the same; the
@@ -181,7 +194,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         }
       >
         <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-background">
-          <BackgroundCover />
+          {background === "ambient" && <BackgroundCover />}
           {/* Custom title bar spans the full window width so the
               Windows-style min/max/close buttons land in the actual
               top-right corner, not behind the floating player. */}
@@ -223,6 +236,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
           <DragSnapOverlay />
           <WindowResizeHandles />
+          <SettingsDialog />
+          <PremiumGateDialog />
+          <ChannelPickerDialog />
+          <WhatsNewDialog />
         </div>
       </SidebarProvider>
       <Toaster />

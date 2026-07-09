@@ -39,7 +39,9 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        // Starts below the custom title bar (--titlebar-h) so the
+        // window-control strip stays crisp above the dim + blur.
+        "fixed inset-x-0 bottom-0 top-(--titlebar-h) z-50 bg-black/50 backdrop-blur-xs data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
         className
       )}
       {...props}
@@ -49,15 +51,21 @@ function DialogOverlay({
 
 function DialogContent({
   className,
+  overlayClassName,
   children,
   showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  // Per-dialog overlay tint/blur override. tailwind-merge lets a caller
+  // pass e.g. `bg-black/40` to dim less than the default `bg-black/50`
+  // (the settings popup does this so more of the cover's colour bleeds
+  // through its backdrop) without affecting every other dialog.
+  overlayClassName?: string
 }) {
   return (
     <DialogPortal data-slot="dialog-portal">
-      <DialogOverlay />
+      <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(

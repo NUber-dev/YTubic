@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useLayoutStore, type LayoutMode } from "@/lib/store/layout";
+import { openSettings } from "@/lib/store/settings-dialog";
 import { checkForUpdates } from "@/lib/updater";
 import { AboutDialog } from "@/components/layout/about-dialog";
 
@@ -57,6 +58,13 @@ import { AboutDialog } from "@/components/layout/about-dialog";
 const NAV_BTN_CLS =
   "size-7 text-foreground/65 hover:bg-transparent hover:text-foreground dark:hover:bg-transparent";
 
+// Plain-vite dev in a regular browser has no Tauri backend —
+// `getCurrentWindow()` throws on missing `__TAURI_INTERNALS__`, which
+// used to crash the whole shell through the router's error boundary.
+// Window controls are meaningless in a browser tab anyway.
+const IS_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 /**
  * Custom title bar. The native window frame is disabled
  * (`decorations: false` in tauri.conf.json) so we draw the strip
@@ -64,10 +72,10 @@ const NAV_BTN_CLS =
  * left, Windows-style min/maximize/close on the right.
  *
  * Clicking our close button still goes through the Rust
- * `WindowEvent::CloseRequested` handler, which hides the window into
- * the tray rather than exiting — matches the native close button's
- * behavior before this change. The "Quit" item in the More menu is
- * the only frontend path that actually terminates the process.
+ * `WindowEvent::CloseRequested` handler, which either hides the window
+ * into the tray (default) or quits, per the "Close button" choice on
+ * the Settings page. The "Quit" item in the More menu always
+ * terminates the process regardless of that setting.
  */
 export function TopBar() {
   const router = useRouter();
@@ -76,6 +84,7 @@ export function TopBar() {
   const [aboutOpen, setAboutOpen] = useState(false);
 
   useEffect(() => {
+    if (!IS_TAURI) return;
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     const win = getCurrentWindow();
@@ -123,9 +132,7 @@ export function TopBar() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
-              <DropdownMenuItem
-                onSelect={() => router.navigate({ to: "/settings" })}
-              >
+              <DropdownMenuItem onSelect={() => openSettings()}>
                 <SettingsIcon />
                 Settings
               </DropdownMenuItem>

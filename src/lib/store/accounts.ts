@@ -5,7 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resetInnertube } from "@/lib/innertube/client";
 import { fetchAccountInfo } from "@/lib/innertube/account";
+import { fetchChannelList } from "@/lib/innertube/channels";
 import { clearPrefetchMemo } from "@/lib/stream";
+import { openChannelPicker } from "@/lib/store/channel-picker";
 import { usePlaybackStore } from "@/lib/store/playback";
 import { usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
 import { usePremiumStore } from "@/lib/store/premium";
@@ -17,6 +19,10 @@ export type AccountSummary = {
   email: string;
   name: string;
   photoUrl: string | null;
+  /** Brand-channel page id this account acts as; null = personal channel. */
+  pageId: string | null;
+  channelName: string | null;
+  channelPhotoUrl: string | null;
   isActive: boolean;
 };
 
@@ -62,7 +68,7 @@ export function useAccounts() {
  * dedup" bug.
  *
  * Soft refresh = drop the InnerTube client (so the backfill fetches
- * with the new jar) and invalidate the auth-related queries so the
+ * with the new jar) and refresh the auth-related queries so the
  * sidebar acknowledges the new row. The `accounts-changed` event
  * follows shortly after from `update_account_meta` and runs the
  * full reset.
@@ -75,9 +81,28 @@ export function useLoginSuccessListener(): void {
     void listen("login-success", () => {
       resetInnertube();
       void qc.invalidateQueries({ queryKey: ["accounts"] });
-      void qc.invalidateQueries({ queryKey: ["active-account-id"] });
       void qc.invalidateQueries({ queryKey: ["auth-logged-in"] });
-      void qc.invalidateQueries({ queryKey: ["account-info"] });
+      // RESET (not invalidate) the id + meta pair the backfill writes
+      // from. Invalidate keeps stale data around while refetching: the
+      // id query is a local invoke that lands in ~1ms with the NEW
+      // account id while `account-info` still holds the PREVIOUS
+      // account's meta, so the backfill effect would fire
+      // `update_account_meta(new id, old meta)`. Identity dedup then
+      // mislabels the fresh row as a duplicate of the old account and
+      // merges them, replacing the old account's cookies. Reset drops
+      // the data first, so the effect only ever sees a fresh pair.
+      void qc.resetQueries({ queryKey: ["active-account-id"] });
+      void qc.resetQueries({ queryKey: ["account-info"] });
+      // A Google account can hold several YouTube channels, and the
+      // library/likes belong to the channel rather than the account.
+      // Right after a fresh sign-in is the moment to offer the choice,
+      // when there is one to make. Best-effort: on failure the picker
+      // stays reachable from Settings and the sidebar account menu.
+      void fetchChannelList()
+        .then((list) => {
+          if (list.length > 1) openChannelPicker();
+        })
+        .catch(() => {});
     }).then((un) => {
       if (cancelled) un();
       else dispose = un;
@@ -111,31 +136,33 @@ export function useAccountsChangedListener(): void {
       //    index = -1 which strips the audio element's src.
       usePlaybackStore.getState().clearQueue();
 
-      // 3. Other per-account local state — typed search history,
-      //    per-track Song↔Video preferences, user-set "I have
-      //    Premium" override.
+      // 3. Other per-account local state: typed search history,
+      //    per-track Song↔Video preferences, cached Premium status.
       useSearchHistory.getState().clear();
       useTrackSourceStore.setState({ byVideoId: {} });
-      usePremiumStore.setState({ status: null, override: false });
+      usePremiumStore.setState({ status: null });
 
       // 4. In-memory caches that wrap network state.
       resetInnertube();
       clearPrefetchMemo();
 
-      // 5. Query cache. `clear` drops every cached body so the UI
-      //    flips to loading states; the follow-up `invalidateQueries`
-      //    nudges all active observers to refetch immediately rather
-      //    than waiting for the next mount.
-      qc.clear();
-      void qc.invalidateQueries();
+      // 5. Query cache. `resetQueries` puts every query back to its
+      //    initial empty state and refetches the ones with mounted
+      //    observers. Not `clear()` + `invalidateQueries()`: clear
+      //    empties the cache map, the follow-up invalidate then
+      //    matches nothing, and a screen that stays mounted through
+      //    the switch (Home, when the user switches accounts from
+      //    the sidebar) keeps showing the old account's data from
+      //    its now-detached observer instead of refetching.
+      void qc.resetQueries();
 
       // 6. Send the user to Home. Account-scoped routes (a playlist
       //    the previous account had access to, a library page) can't
-      //    keep showing valid state after a switch — a forced
+      //    keep showing valid state after a switch, so a forced
       //    navigate is the cheapest way to land somewhere that works
       //    for any account. If we're already on "/", the navigate is
-      //    a no-op but step 5 above has already invalidated the home
-      //    feed so it refetches in place.
+      //    a no-op but step 5 has already reset the home feed query,
+      //    which refetches in place.
       void navigate({ to: "/" });
     }).then((un) => {
       if (cancelled) un();

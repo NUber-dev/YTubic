@@ -14,7 +14,9 @@ import {
   PinOffIcon,
   UserPlusIcon,
   UserCogIcon,
+  UsersRoundIcon,
   CreditCardIcon,
+  LogInIcon,
   LogOutIcon,
   ExternalLinkIcon,
   CheckIcon,
@@ -33,6 +35,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -48,6 +51,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePinned, usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
+import { openChannelPicker } from "@/lib/store/channel-picker";
+import { openSettings } from "@/lib/store/settings-dialog";
+import { UpdateBanner } from "@/components/layout/update-banner";
 import { fetchAccountInfo } from "@/lib/innertube/account";
 import { resetInnertube } from "@/lib/innertube/client";
 import { usePremiumStore } from "@/lib/store/premium";
@@ -185,13 +191,16 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
+        <UpdateBanner />
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild tooltip="Settings" className={MENU_BTN_CLS}>
-              <Link to="/settings">
-                <SettingsIcon />
-                <span>Settings</span>
-              </Link>
+            <SidebarMenuButton
+              tooltip="Settings"
+              className={MENU_BTN_CLS}
+              onClick={() => openSettings()}
+            >
+              <SettingsIcon />
+              <span>Settings</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -208,6 +217,32 @@ const MANAGE_GOOGLE_URL = "https://myaccount.google.com/";
 const MANAGE_SUBSCRIPTION_URL =
   "https://music.youtube.com/paid_memberships";
 
+/**
+ * The logged-out footer CTA: a full-width primary (brand red) button.
+ * Collapses to a red icon button with a tooltip in icon mode. Runs the
+ * same `start_login` flow as "Add another account".
+ */
+function SidebarSignInButton() {
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <Button
+          title="Sign in"
+          onClick={() => {
+            invoke("start_login").catch((e) =>
+              toast.error(`Sign-in failed: ${String(e)}`),
+            );
+          }}
+          className="h-9 w-full gap-2 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:p-0"
+        >
+          <LogInIcon />
+          <span className="group-data-[collapsible=icon]:hidden">Sign in</span>
+        </Button>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  );
+}
+
 function UserProfile() {
   const loggedIn = useQuery({
     queryKey: ["auth-logged-in"],
@@ -223,16 +258,43 @@ function UserProfile() {
   });
   const accounts = useAccounts();
   const premiumStatus = usePremiumStore((s) => s.status);
-  const override = usePremiumStore((s) => s.override);
 
-  if (!loggedIn.data || !account.data) return null;
-
-  const { name, email, photoUrl } = account.data;
-  const initial = (name || email || "?").trim().charAt(0).toUpperCase();
-  const isPremium = premiumStatus === "premium" || override;
-  const tierLabel = isPremium ? "Premium" : "Free";
   const allAccounts = accounts.data ?? [];
-  const activeAccount = allAccounts.find((a) => a.isActive);
+  const activeAccount = allAccounts.find((a) => a.isActive) ?? allAccounts[0];
+
+  // Auth check still resolving: render nothing to avoid a flash.
+  if (loggedIn.isLoading) return null;
+
+  // No live profile: signed out, or `is_logged_in` reports a session (a
+  // SAPISID cookie exists) whose `/account_menu` never loads (expired
+  // session). With one stored account or none, the primary sign-in
+  // button is the way back in; a re-login merges into the existing row
+  // via identity dedup, so no duplicate appears. With several stored
+  // accounts, collapsing to a sign-in button would strand the user away
+  // from the healthy ones (no way to switch or to sign the broken one
+  // out), so keep the menu and render it from the stored meta instead.
+  if (!account.data) {
+    // Give a genuine first paint a moment before falling back.
+    if (loggedIn.data === true && account.isLoading) return null;
+    if (allAccounts.length < 2) return <SidebarSignInButton />;
+  }
+
+  const live = account.data;
+  const name =
+    live?.name ||
+    activeAccount?.channelName ||
+    activeAccount?.name ||
+    activeAccount?.email ||
+    "Account";
+  const email = live?.email ?? activeAccount?.email ?? "";
+  const photoUrl =
+    live?.photoUrl ??
+    activeAccount?.channelPhotoUrl ??
+    activeAccount?.photoUrl ??
+    undefined;
+  const initial = (name || email || "?").trim().charAt(0).toUpperCase();
+  const isPremium = premiumStatus === "premium";
+  const tierLabel = isPremium ? "Premium" : "Free";
 
   const signOut = async () => {
     if (!activeAccount) {
@@ -294,7 +356,7 @@ function UserProfile() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
-              tooltip={email ? `${name} — ${email}` : name}
+              tooltip={email ? `${name} (${email})` : name}
               className={MENU_BTN_CLS}
             >
               <Avatar className="size-4 shrink-0">
@@ -304,18 +366,23 @@ function UserProfile() {
                 </AvatarFallback>
               </Avatar>
               <span className="truncate">{name}</span>
-              <Badge
-                variant="outline"
-                className={cn(
-                  "ms-auto h-4 px-1.5 text-[10px] font-semibold uppercase tracking-wide",
-                  "group-data-[collapsible=icon]:hidden",
-                  isPremium
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                    : "text-muted-foreground",
-                )}
-              >
-                {tierLabel}
-              </Badge>
+              {/* The tier badge is a claim about the live session; with
+                  only stored meta (dead session fallback) it would say
+                  "Free" about an account we can't actually see. */}
+              {live ? (
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "ms-auto h-4 px-1.5 text-[10px] font-semibold uppercase tracking-wide",
+                    "group-data-[collapsible=icon]:hidden",
+                    isPremium
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  {tierLabel}
+                </Badge>
+              ) : null}
             </SidebarMenuButton>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -380,6 +447,10 @@ function UserProfile() {
                 <DropdownMenuSeparator />
               </>
             ) : null}
+            <DropdownMenuItem onSelect={() => openChannelPicker()}>
+              <UsersRoundIcon />
+              Switch channel
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={addAccount}>
               <UserPlusIcon />
               Add another account

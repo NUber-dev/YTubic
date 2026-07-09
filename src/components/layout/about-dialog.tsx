@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { checkForUpdates } from "@/lib/updater";
+import { openWhatsNew } from "@/lib/store/whats-new";
 
 const REPO_URL = "https://github.com/NUber-dev/YTubic";
 const KOFI_URL = "https://ko-fi.com/nuberr";
@@ -50,11 +51,18 @@ export function AboutDialog({
         <DialogHeader>
           <div className="flex items-center gap-3">
             <img src="/ytubic-icon.svg" alt="" className="size-12" />
-            <div>
+            <div className="flex flex-col items-start">
               <DialogTitle className="text-lg">YTubic</DialogTitle>
               <DialogDescription>
                 {version ? `Version ${version}` : " "}
               </DialogDescription>
+              <button
+                type="button"
+                onClick={() => void openWhatsNew()}
+                className="mt-0.5 text-xs text-primary underline-offset-2 hover:underline"
+              >
+                What's new
+              </button>
             </div>
           </div>
         </DialogHeader>

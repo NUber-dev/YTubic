@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { AlertCircleIcon, Loader2Icon, LogInIcon } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -20,6 +20,7 @@ import {
   type PlaylistFirstPage,
   type PlaylistNextPage,
 } from "@/lib/innertube/playlist";
+import { openSettings } from "@/lib/store/settings-dialog";
 
 export const Route = createFileRoute("/library")({
   component: LibraryPage,
@@ -87,9 +88,7 @@ function LoggedOutState() {
           songs, playlists, and premium-quality streams.
         </p>
       </div>
-      <Button asChild>
-        <Link to="/settings">Go to Settings</Link>
-      </Button>
+      <Button onClick={() => openSettings("general")}>Go to Settings</Button>
     </div>
   );
 }

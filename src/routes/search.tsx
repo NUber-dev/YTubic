@@ -34,6 +34,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { useSearchHistory } from "@/lib/store/search-history";
 import { usePlaybackStore } from "@/lib/store/playback";
+import { openSettings } from "@/lib/store/settings-dialog";
 import { cn } from "@/lib/utils";
 import type {
   Shelf,
@@ -677,12 +678,13 @@ function LibrarySignInHint() {
           Import your YouTube Music session to search your liked songs.
         </p>
       </div>
-      <Link
-        to="/settings"
+      <button
+        type="button"
+        onClick={() => openSettings("general")}
         className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90"
       >
         Go to Settings
-      </Link>
+      </button>
     </div>
   );
 }

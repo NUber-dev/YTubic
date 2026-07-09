@@ -1,6 +1,6 @@
 [package]
 name = "ytubic"
-version = "0.1.0"
+version = "0.2.1"
 description = "YTubic — fast, responsive YouTube Music desktop client"
 authors = ["George Shyshov"]
 license = "GPL-3.0-only"
@@ -25,7 +25,21 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
+# default-features minus `cookies`: the plugin's persistent cookie store
+# (app-cache/.cookies) silently captured Google's rotated session cookies
+# while our requests kept replaying the static jar snapshot — Google reads
+# that divergence as stolen-cookie replay and revokes the session within
+# hours. We echo rotations into the jar ourselves (merge_response_cookies),
+# so the shadow store must not exist: it also attached partial cookie sets
+# to requests that carried no explicit Cookie header, and it kept session
+# security cookies in plaintext next to our DPAPI-encrypted jar.
+tauri-plugin-http = { version = "2", default-features = false, features = [
+    "unsafe-headers",
+    "rustls-tls",
+    "http2",
+    "charset",
+    "macos-system-configuration",
+] }
 tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
 reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
@@ -38,6 +52,9 @@ cookie = "0.18"
 time = "0.3"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

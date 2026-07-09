@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { fetchRadio } from "@/lib/innertube/radio";
 import { prefetchStream, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
+import { usePremiumStore } from "@/lib/store/premium";
+import { openPremiumGate } from "@/lib/store/premium-gate";
 import {
   resolveStreamId,
   useTrackSourceStore,
@@ -129,6 +131,13 @@ export function useAudioEngine() {
     videoId ? resolveStreamId(videoId, s.byVideoId) : undefined,
   );
 
+  // Reactive Premium check for the gate below. Subscribing (rather than
+  // calling isPremium() inside the effect) makes the resolve effect
+  // re-run when the status lands after sign-in / the launch-time probe.
+  // Without this, a track gated during the "still checking" window would
+  // sit silent until the user re-picked it.
+  const premiumOk = usePremiumStore((s) => s.status === "premium");
+
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -140,6 +149,25 @@ export function useAudioEngine() {
       el.removeAttribute("src");
       el.load();
       usePlaybackStore.getState().setStreamUrl(undefined);
+      return;
+    }
+    // Premium gate: signed-out / Free accounts browse but don't stream.
+    // Every entry path (track clicks, media keys, tray, floating window,
+    // restored queues) funnels through this effect, so one check here
+    // guarantees no yt-dlp spawn and no cache write happens without
+    // Premium. A deliberate play attempt (playing=true) gets the
+    // explainer dialog; the silent preload of a restored queue
+    // (playing=false) just parks the track.
+    if (!premiumOk) {
+      el.removeAttribute("src");
+      el.load();
+      const store = usePlaybackStore.getState();
+      store.setStreamUrl(undefined);
+      store.setStatus("idle");
+      if (store.playing) {
+        store.setPlaying(false);
+        openPremiumGate();
+      }
       return;
     }
     // Drop the previous track's src immediately. Otherwise a paused→playing
@@ -191,14 +219,23 @@ export function useAudioEngine() {
     // videoId/streamVideoId alone wouldn't change. Repeating a *single*
     // track (repeat-one, or repeat-all on a 1-track queue) keeps the same
     // index, so the store replays it via pendingSeek instead — see
-    // `next()` in store/playback.ts.
-  }, [streamVideoId, videoId, index]);
+    // `next()` in store/playback.ts. `premiumOk` so that gaining Premium
+    // (sign-in, status re-check) re-resolves a track the gate parked.
+  }, [streamVideoId, videoId, index, premiumOk]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
+    if (playing && !premiumOk) {
+      // Resume attempts (play button, Space, SMTC play) on a gated track
+      // never reach the resolve effect (its deps don't include
+      // `playing`), so intercept them here.
+      usePlaybackStore.getState().setPlaying(false);
+      openPremiumGate();
+      return;
+    }
     if (!el.src) return;
     if (playing) {
       void el.play().catch((e) => {
@@ -208,7 +245,7 @@ export function useAudioEngine() {
     } else {
       el.pause();
     }
-  }, [playing]);
+  }, [playing, premiumOk]);
 
   // Volume / mute follow store.
   const volume = usePlaybackStore((s) => s.volume);

@@ -19,6 +19,7 @@ import {
   initFloatingTrackSourceBridge,
 } from "@/lib/store/track-source";
 import { useLayoutStore } from "@/lib/store/layout";
+import { useSettingsStore } from "@/lib/store/settings";
 import { cn } from "@/lib/utils";
 import { queryClient } from "@/lib/query-client";
 
@@ -38,6 +39,10 @@ initFloatingTrackSourceBridge();
  * `<PlayerBar variant="floating">`.
  */
 export default function FloatingPlayerApp() {
+  // Mirrors the main window's Appearance → Background choice; the
+  // cross-window `storage` listener in the settings store keeps it
+  // live when toggled over there.
+  const background = useSettingsStore((s) => s.background);
   return (
     <ThemeProvider
       attribute="class"
@@ -54,7 +59,7 @@ export default function FloatingPlayerApp() {
       <QueryClientProvider client={queryClient}>
         <TooltipProvider delayDuration={800} skipDelayDuration={0}>
           <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-background">
-            <FloatingBackgroundCover />
+            {background === "ambient" && <FloatingBackgroundCover />}
             <FloatingPlayerSyncReceiver />
             <FloatingTitleBar />
             <main className="relative flex-1">

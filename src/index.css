@@ -75,7 +75,12 @@
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
+  /* Control-outline colour: outline buttons, segmented toggles, stat
+     cards and input fields all border with this. Kept level with
+     --border so those light outlines read as a subtle hairline rather
+     than a bright edge. (The switch off-track pins its own opacity so
+     it isn't dragged down with them — see switch.tsx.) */
+  --input: oklch(1 0 0 / 10%);
   --ring: var(--brand);
 
   --sidebar: oklch(0.205 0 0);
