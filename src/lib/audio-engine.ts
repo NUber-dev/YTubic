@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -31,6 +31,14 @@ export function useAudioEngine() {
   // auto-skip after a few consecutive failures so we don't burn through
   // the whole queue if e.g. the network is dead.
   const consecutiveErrorsRef = useRef(0);
+  // Remembers the `videoId:index` we've already auto-retried once, so a
+  // track that keeps failing falls through to the normal error/skip path
+  // instead of looping. Cleared on a successful `playing`.
+  const retriedTrackRef = useRef<string | null>(null);
+  // Bumping this re-runs the resolve effect for the *current* track
+  // without any of its real deps changing — used to re-fetch a fresh
+  // stream URL after a transient failure (e.g. a googlevideo 403).
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // Ensure a single <audio> element exists.
   useEffect(() => {
@@ -81,6 +89,29 @@ export function useAudioEngine() {
         console.error("[audio] element error:", msg, "src=", el.currentSrc);
       }
 
+      // One automatic retry of the SAME track before giving up. Most
+      // first-play failures are a transient googlevideo 403 on the media
+      // URL: the stream server drops the failed entry immediately, so a
+      // re-fetch spawns a fresh yt-dlp resolve that usually succeeds —
+      // exactly what a manual re-click does. Only retry a track the user
+      // actively wants playing, and only once per track instance.
+      {
+        const s0 = store();
+        const cur0 = s0.index >= 0 ? s0.queue[s0.index] : undefined;
+        const key0 = cur0 ? `${cur0.videoId}:${s0.index}` : null;
+        if (s0.playing && key0 && retriedTrackRef.current !== key0) {
+          retriedTrackRef.current = key0;
+          if (import.meta.env.DEV) {
+            console.warn("[audio] retrying", key0, "after error:", msg);
+          }
+          store().setStatus("loading");
+          // Small delay so a truly-dead source doesn't hot-loop; also
+          // gives the server a beat to tear down the failed download.
+          window.setTimeout(() => setRetryNonce((n) => n + 1), 400);
+          return;
+        }
+      }
+
       store().setStatus("error", msg);
 
       // Auto-advance: if the user wanted playback and we have a next
@@ -98,6 +129,9 @@ export function useAudioEngine() {
     };
     const onPlaying = () => {
       consecutiveErrorsRef.current = 0;
+      // Track played successfully — allow a fresh auto-retry if it later
+      // fails again (e.g. a mid-stream drop on a much later replay).
+      retriedTrackRef.current = null;
       store().setStatus("ready");
     };
     const onWaiting = () => {
@@ -238,7 +272,9 @@ export function useAudioEngine() {
     // index, so the store replays it via pendingSeek instead — see
     // `next()` in store/playback.ts. `premiumOk` so that gaining Premium
     // (sign-in, status re-check) re-resolves a track the gate parked.
-  }, [streamVideoId, videoId, index, premiumOk]);
+    // `retryNonce` so the error handler can force a fresh stream-URL fetch
+    // for the current track after a transient failure without changing id.
+  }, [streamVideoId, videoId, index, premiumOk, retryNonce]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);

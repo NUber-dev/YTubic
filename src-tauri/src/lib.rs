@@ -2360,6 +2360,19 @@ fn spawn_downloader(
             "--no-warnings",
             "--no-part",
             "-q",
+            // YouTube regularly hands out a signed media URL that then 403s
+            // on the very first byte-range request (token/pot desync or
+            // per-URL throttling). Left alone this surfaces as a one-off
+            // "download failed" that a manual re-click fixes. Retrying the
+            // data download and the extractor a few times clears the vast
+            // majority of these inside a single spawn, before the handler
+            // ever returns 502 to the audio element.
+            "--retries",
+            "5",
+            "--extractor-retries",
+            "3",
+            "--socket-timeout",
+            "15",
             "--extractor-args",
             "youtube:player_client=tv,android_vr",
             "-o",
