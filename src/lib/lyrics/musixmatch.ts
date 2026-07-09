@@ -1,6 +1,7 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
+import { hitMatches, normalizeForMatch } from "@/lib/lyrics/match";
 
 /**
  * Musixmatch — unofficial reverse-engineered web-desktop client. The
@@ -207,7 +208,21 @@ async function findTrackId(
     if (!r.ok) return null;
     const json = (await r.json()) as MxmEnvelope<MxmSearchBody>;
     if (json?.message?.header?.status_code === 401) return "auth-failure";
-    const list = json?.message?.body?.track_list ?? [];
+    const rawList = json?.message?.body?.track_list ?? [];
+    // track.search is fuzzy and returns something even when Musixmatch
+    // lacks this track, which surfaces a confidently-wrong different song.
+    // Keep only hits whose title/artist plausibly match the request before
+    // the synced/plain preference picks the "best" one.
+    const reqTitle = normalizeForMatch(p.title);
+    const reqArtist = normalizeForMatch(p.artist ?? "");
+    const list = rawList.filter((t) =>
+      hitMatches(
+        reqTitle,
+        reqArtist,
+        normalizeForMatch(t.track?.track_name ?? ""),
+        normalizeForMatch(t.track?.artist_name ?? ""),
+      ),
+    );
     // Prefer a track with synced subtitles; fall back to any track with
     // lyrics. The result list is already sorted by rating descending, so
     // the first hit in either pool is the best one.

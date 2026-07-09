@@ -1,5 +1,6 @@
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
+import { hitMatches, normalizeForMatch } from "@/lib/lyrics/match";
 
 /**
  * LRCLIB (https://lrclib.net) — free, open lyrics database with synced
@@ -78,11 +79,26 @@ async function lrclibSearch(p: LrclibParams): Promise<LrclibRecord | null> {
   if (!r.ok) throw new Error(`LRCLIB /search ${r.status}`);
   const results = (await r.json()) as LrclibRecord[];
   if (!Array.isArray(results) || results.length === 0) return null;
+  // /search is fuzzy and will confidently return a completely different
+  // song when LRCLIB has no record for this track (the wrong-lyrics bug).
+  // Drop hits whose title/artist don't plausibly match the request before
+  // any synced/duration preference runs.
+  const reqTitle = normalizeForMatch(p.title);
+  const reqArtist = normalizeForMatch(p.artist ?? "");
+  const matched = results.filter((rec) =>
+    hitMatches(
+      reqTitle,
+      reqArtist,
+      normalizeForMatch(rec.trackName ?? ""),
+      normalizeForMatch(rec.artistName ?? ""),
+    ),
+  );
+  if (matched.length === 0) return null;
   // Prefer results with synced lyrics. Then, if we know the duration,
   // prefer the closest one — YTM and LRCLIB versions occasionally
   // differ by a second or two.
-  const synced = results.filter((r) => r.syncedLyrics);
-  const pool = synced.length > 0 ? synced : results;
+  const synced = matched.filter((r) => r.syncedLyrics);
+  const pool = synced.length > 0 ? synced : matched;
   if (!p.duration) return pool[0];
   return pool.reduce((best, cur) => {
     const bestDiff = Math.abs((best.duration ?? 0) - (p.duration ?? 0));

@@ -18,8 +18,11 @@ describe("tokenOverlap", () => {
     expect(tokenOverlap("a b", "c d")).toBe(0);
   });
 
-  it("is measured over the smaller set", () => {
-    expect(tokenOverlap("a", "a b c")).toBe(1);
+  it("is jaccard: shared over the union, so a subset is not a perfect match", () => {
+    // one shared token out of three distinct -> 1/3, NOT 1. This is what
+    // stops a different song credited to just "Sukha" matching the full
+    // "Sukha, Prodgk & Tegi Pannu" on the one shared name.
+    expect(tokenOverlap("a", "a b c")).toBeCloseTo(1 / 3);
   });
 });
 
@@ -51,6 +54,21 @@ describe("hitMatches", () => {
   it("tolerates featurings / parentheticals via normalization", () => {
     expect(
       hitMatches(norm("Blinding Lights"), norm("The Weeknd"), norm("Blinding Lights (Remix)"), norm("The Weeknd feat. X")),
+    ).toBe(true);
+  });
+
+  it("rejects a different song by a same-named artist (ON SIGHT bug)", () => {
+    // a wrong Punjabi track credited to just "Sukha" must not match a
+    // request for "ON SIGHT" by "Sukha, Prodgk & Tegi Pannu"
+    expect(
+      hitMatches(norm("ON SIGHT"), norm("Sukha, Prodgk & Tegi Pannu"), norm("Billo"), norm("Sukha")),
+    ).toBe(false);
+  });
+
+  it("accepts a collab track whose lyric db credits only the primary artist", () => {
+    // exact title match relaxes the full-collaborator-list requirement
+    expect(
+      hitMatches(norm("B's on the Table"), norm("Drake, 21 Savage"), norm("B's on the Table"), norm("Drake")),
     ).toBe(true);
   });
 });
