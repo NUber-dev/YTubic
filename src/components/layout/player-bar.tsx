@@ -11,10 +11,12 @@ import {
   Volume2Icon,
   VolumeXIcon,
   Loader2Icon,
+  Maximize2Icon,
   MusicIcon,
   VideoIcon,
 } from "lucide-react";
 import { QueueBody, QueueToggleButton } from "@/components/layout/queue-panel";
+import { FullscreenPlayer } from "@/components/layout/fullscreen-player";
 import {
   LyricsBody,
   LyricsSourceButton,
@@ -424,6 +426,7 @@ export function PlayerBar({
 
   const [scrub, setScrub] = useState<number | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const iTunesCover = useITunesCover(track);
   const lyricsState = useLyricsView(track);
   // The cover doubles as a drag handle for layout switching. In the
@@ -661,6 +664,25 @@ export function PlayerBar({
             onToggle={() => setQueueOpen((v) => !v)}
           />
           <VolumeControl />
+          {/* No expand in the floating window: a "full screen" view of a
+              350px window isn't one, and the main window already offers
+              the real thing. */}
+          {variant !== "floating" ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Full screen"
+                  disabled={!hasTrack}
+                  onClick={() => setFullscreen(true)}
+                >
+                  <Maximize2Icon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Full screen</TooltipContent>
+            </Tooltip>
+          ) : null}
         </div>
         <div className="flex items-center gap-1">
           {track && <SourceToggle track={track} />}
@@ -668,6 +690,9 @@ export function PlayerBar({
         </div>
       </div>
     </aside>
+    {fullscreen ? (
+      <FullscreenPlayer onClose={() => setFullscreen(false)} />
+    ) : null}
     </TooltipProvider>
   );
 }
