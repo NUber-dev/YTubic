@@ -82,7 +82,7 @@ function invalidateToken(): void {
   }
 }
 
-async function fetchToken(): Promise<string | null> {
+async function fetchToken(signal?: AbortSignal): Promise<string | null> {
   const cached = loadStoredToken();
   if (cached && Date.now() - cached.loadedAt < TOKEN_TTL_MS) {
     return cached.token;
@@ -92,6 +92,7 @@ async function fetchToken(): Promise<string | null> {
     const r = await tauriFetch(url, {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (!r.ok) return null;
     const json = (await r.json()) as MxmEnvelope<{ user_token?: string }>;
@@ -142,30 +143,44 @@ type MxmLyricsBody = {
 
 export async function fetchMusixmatchLyrics(
   p: MusixmatchParams,
+  signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
 
   // Two-pass to handle token expiry: if any call returns 401, drop the
-  // cached token and retry once with a fresh one.
-  let result = await tryFetch(p);
+  // cached token and retry once with a fresh one. Both passes share the
+  // caller's signal, so the provider's total time budget stays bounded.
+  let result = await tryFetch(p, signal);
   if (result === "auth-failure") {
     invalidateToken();
-    result = await tryFetch(p);
+    result = await tryFetch(p, signal);
+  }
+  // Every step above swallows its own fetch errors into null, which
+  // would cache a mid-chain timeout as a permanent "no lyrics" for an
+  // hour. Rethrow instead so react-query treats it as the transient
+  // failure it is (retry now, re-fetch on the next mount).
+  if (signal?.aborted && (result === null || result === "auth-failure")) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Musixmatch timed out");
   }
   return result === "auth-failure" ? null : result;
 }
 
 type TryFetchResult = Lyrics | null | "auth-failure";
 
-async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
-  const token = await fetchToken();
+async function tryFetch(
+  p: MusixmatchParams,
+  signal?: AbortSignal,
+): Promise<TryFetchResult> {
+  const token = await fetchToken(signal);
   if (!token) return null;
 
-  const trackId = await findTrackId(p, token);
+  const trackId = await findTrackId(p, token, signal);
   if (trackId === "auth-failure") return "auth-failure";
   if (!trackId) return null;
 
-  const subtitle = await getSubtitle(trackId, token);
+  const subtitle = await getSubtitle(trackId, token, signal);
   if (subtitle === "auth-failure") return "auth-failure";
   if (subtitle) {
     const lines = parseLRC(subtitle);
@@ -174,7 +189,7 @@ async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
     }
   }
 
-  const plain = await getPlainLyrics(trackId, token);
+  const plain = await getPlainLyrics(trackId, token, signal);
   if (plain === "auth-failure") return "auth-failure";
   if (plain) return { kind: "plain", text: plain, source: "Musixmatch" };
 
@@ -184,6 +199,7 @@ async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
 async function findTrackId(
   p: MusixmatchParams,
   token: string,
+  signal?: AbortSignal,
 ): Promise<number | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.search`);
   url.searchParams.set("q_track", p.title);
@@ -200,6 +216,7 @@ async function findTrackId(
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     // A stale/flagged token can be rejected at the HTTP layer (401/403),
     // not only via the envelope status_code — treat both as auth failures
@@ -239,6 +256,7 @@ async function findTrackId(
 async function getSubtitle(
   trackId: number,
   token: string,
+  signal?: AbortSignal,
 ): Promise<string | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.subtitle.get`);
   url.searchParams.set("track_id", String(trackId));
@@ -251,6 +269,7 @@ async function getSubtitle(
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (r.status === 401 || r.status === 403) return "auth-failure";
     if (!r.ok) return null;
@@ -266,6 +285,7 @@ async function getSubtitle(
 async function getPlainLyrics(
   trackId: number,
   token: string,
+  signal?: AbortSignal,
 ): Promise<string | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.lyrics.get`);
   url.searchParams.set("track_id", String(trackId));
@@ -277,6 +297,7 @@ async function getPlainLyrics(
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (r.status === 401 || r.status === 403) return "auth-failure";
     if (!r.ok) return null;
