@@ -745,8 +745,16 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         .center()
         .data_directory(webview_data.clone())
         .user_agent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+            // Windows UA fools Google under WebView2, but on macOS the engine
+            // is WKWebView: a Safari UA matches the real engine fingerprint,
+            // which consumer-account risk checks care about.
+            if cfg!(target_os = "macos") {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+                 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+            } else {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+            },
         )
         // Surface the current origin in the title so the user can spot
         // a redirect to an unexpected host (anti-phishing).
