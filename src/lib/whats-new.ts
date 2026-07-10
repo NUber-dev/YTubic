@@ -8,6 +8,12 @@ export type WhatsNewSection = {
    * list. Ignored when `items` is present.
    */
   body?: string;
+  /**
+   * Short call-to-action rendered as a yellow alert panel below the
+   * items or body. Use for a must-read instruction, e.g. signing in
+   * again after an update.
+   */
+  alert?: string;
 };
 
 export type WhatsNewEntry = {
@@ -31,6 +37,40 @@ export type WhatsNewEntry = {
  * user-facing release; keep the copy free of em/en dashes.
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
+  {
+    version: "0.2.2",
+    date: "July 2026",
+    sections: [
+      {
+        heading: "Your playlists in the sidebar",
+        items: [
+          "The sidebar now lists every playlist in your library, not just the ones you pinned.",
+          "Pin a playlist to keep it at the top, or hide the ones you never open.",
+        ],
+      },
+      {
+        heading: "Storage settings",
+        items: [
+          "The Storage tab now shows real song titles for every cached track, plus when the next auto-clean is due.",
+        ],
+      },
+      {
+        heading: "Fixes",
+        items: [
+          "Fixed the Windows Now Playing tile showing \"Unknown app\" instead of YTubic's name and icon.",
+          "Fixed a bug where some songs wouldn't load, or wouldn't load on the first try.",
+        ],
+      },
+      {
+        heading: "Bug with session expiration and library disappearing",
+        items: [
+          "Finally fixed the bug where after 2 hours all songs and playlists would disappear from the library and the session would become expired.",
+        ],
+        alert:
+          "Make sure to re-log into your account after the update to refresh the session.",
+      },
+    ],
+  },
   {
     version: "0.2.1",
     date: "July 2026",
