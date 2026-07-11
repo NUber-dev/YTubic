@@ -95,11 +95,11 @@ export function LikeDislikeButtons({
         toast.success("Added to Liked");
       }
       // The heart-fill cache (["liked-songs"]) is separate from the
-      // Library → Songs list (["library","liked-songs-pages"]) and the
+      // Library → Songs list (["library","songs-pages"]) and the
       // Liked Songs (LM) playlist page (["playlist-pages", …"LM"…]). Mark
       // those stale so they don't keep showing an outdated list. They're
       // heavy infinite queries, so invalidate only refetches if mounted.
-      void qc.invalidateQueries({ queryKey: ["library", "liked-songs-pages"] });
+      void qc.invalidateQueries({ queryKey: ["library", "songs-pages"] });
       void qc.invalidateQueries({
         predicate: (q) =>
           q.queryKey[0] === "playlist-pages" &&

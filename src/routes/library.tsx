@@ -12,14 +12,11 @@ import {
   fetchLibraryAlbums,
   fetchLibraryArtists,
   fetchLibraryPlaylists,
+  fetchLibrarySongsContinuation,
+  fetchLibrarySongsFirstPage,
   type LibrarySection,
+  type LibrarySongsPage,
 } from "@/lib/innertube/library";
-import {
-  fetchPlaylistContinuation,
-  fetchPlaylistFirstPage,
-  type PlaylistFirstPage,
-  type PlaylistNextPage,
-} from "@/lib/innertube/playlist";
 import { openSettings } from "@/lib/store/settings-dialog";
 
 export const Route = createFileRoute("/library")({
@@ -125,15 +122,13 @@ function SectionsView({
   );
 }
 
-type AnyPage = PlaylistFirstPage | PlaylistNextPage;
-
 function LikedSongsView() {
-  const query = useInfiniteQuery<AnyPage, Error>({
-    queryKey: ["library", "liked-songs-pages"],
+  const query = useInfiniteQuery<LibrarySongsPage, Error>({
+    queryKey: ["library", "songs-pages"],
     initialPageParam: undefined,
     queryFn: async ({ pageParam }) => {
-      if (!pageParam) return fetchPlaylistFirstPage("LM");
-      return fetchPlaylistContinuation(pageParam as string);
+      if (!pageParam) return fetchLibrarySongsFirstPage();
+      return fetchLibrarySongsContinuation(pageParam as string);
     },
     getNextPageParam: (lastPage) => lastPage.continuationToken,
   });
@@ -178,7 +173,9 @@ function LikedSongsView() {
   }
   if (tracks.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">No liked songs yet.</p>
+      <p className="text-sm text-muted-foreground">
+        No songs in your library yet.
+      </p>
     );
   }
 

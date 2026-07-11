@@ -48,6 +48,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useLayoutStore, type LayoutMode } from "@/lib/store/layout";
+import { IS_MAC } from "@/lib/platform";
 import { openSettings } from "@/lib/store/settings-dialog";
 import { checkForUpdates } from "@/lib/updater";
 import { AboutDialog } from "@/components/layout/about-dialog";
@@ -66,10 +67,13 @@ const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 /**
- * Custom title bar. The native window frame is disabled
+ * Custom title bar. On Windows the native frame is disabled
  * (`decorations: false` in tauri.conf.json) so we draw the strip
  * ourselves: drag region down the middle, navigation controls on the
- * left, Windows-style min/maximize/close on the right.
+ * left, Windows-style min/maximize/close on the right. On macOS the
+ * native traffic lights overlay the bar (`titleBarStyle: "Overlay"` in
+ * tauri.macos.conf.json), so we skip our own buttons and pad the left
+ * cluster past them instead.
  *
  * Clicking our close button still goes through the Rust
  * `WindowEvent::CloseRequested` handler, which either hides the window
@@ -119,7 +123,9 @@ export function TopBar() {
         data-tauri-drag-region
         className="relative z-30 flex h-9 shrink-0 select-none items-center"
       >
-        <div className="flex items-center gap-1 pl-2">
+        <div
+          className={`flex items-center gap-1 ${IS_MAC ? "pl-[78px]" : "pl-2"}`}
+        >
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -196,32 +202,34 @@ export function TopBar() {
             almost anywhere in the bar to move the window. */}
         <div data-tauri-drag-region className="h-full flex-1" />
 
-        <div className="flex h-full items-center">
-          <button
-            type="button"
-            onClick={() => win().minimize()}
-            aria-label="Minimize"
-            className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
-          >
-            <MinimizeGlyph />
-          </button>
-          <button
-            type="button"
-            onClick={() => win().toggleMaximize()}
-            aria-label={maximized ? "Restore" : "Maximize"}
-            className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
-          >
-            {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
-          </button>
-          <button
-            type="button"
-            onClick={() => win().close()}
-            aria-label="Close"
-            className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-[#c42b1c] hover:text-white"
-          >
-            <CloseGlyph />
-          </button>
-        </div>
+        {!IS_MAC && (
+          <div className="flex h-full items-center">
+            <button
+              type="button"
+              onClick={() => win().minimize()}
+              aria-label="Minimize"
+              className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
+            >
+              <MinimizeGlyph />
+            </button>
+            <button
+              type="button"
+              onClick={() => win().toggleMaximize()}
+              aria-label={maximized ? "Restore" : "Maximize"}
+              className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
+            >
+              {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
+            </button>
+            <button
+              type="button"
+              onClick={() => win().close()}
+              aria-label="Close"
+              className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-[#c42b1c] hover:text-white"
+            >
+              <CloseGlyph />
+            </button>
+          </div>
+        )}
       </header>
 
       <ReportIssueDialog open={reportOpen} onOpenChange={setReportOpen} />
@@ -354,9 +362,9 @@ function ReportIssueDialog({
         <DialogHeader>
           <DialogTitle>Report an issue</DialogTitle>
           <DialogDescription>
-            Tell us what went wrong or what you'd like to see. Submitting
-            opens a prefilled GitHub issue in your browser — app version
-            and OS are attached automatically.
+            Tell us what went wrong or what you'd like to see. Submitting opens
+            a prefilled GitHub issue in your browser — app version and OS are
+            attached automatically.
           </DialogDescription>
         </DialogHeader>
 
@@ -445,11 +453,7 @@ function RestoreGlyph() {
 function CloseGlyph() {
   return (
     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
-      <path
-        d="M0 0 L10 10 M10 0 L0 10"
-        stroke="currentColor"
-        strokeWidth="1"
-      />
+      <path d="M0 0 L10 10 M10 0 L0 10" stroke="currentColor" strokeWidth="1" />
     </svg>
   );
 }

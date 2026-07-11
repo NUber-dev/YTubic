@@ -1,8 +1,12 @@
 import type { ShelfItem } from "./types";
 import {
+  collectResponsiveRows,
   collectShelfNodes,
+  findContinuationToken,
+  mapResponsiveListItem,
   mapShelfWrapper,
   rawBrowse,
+  rawBrowseContinuation,
   type YtNode,
 } from "./shared";
 
@@ -46,6 +50,44 @@ export function fetchLibraryAlbums(): Promise<LibrarySection[]> {
 
 export function fetchLibraryArtists(): Promise<LibrarySection[]> {
   return browseSections("FEmusic_library_corpus_artists");
+}
+
+/** One page of Library → Songs plus the pointer to the next. */
+export type LibrarySongsPage = {
+  tracks: ShelfItem[];
+  continuationToken?: string;
+};
+
+function collectSongRows(json: YtNode, seenIds: Set<string>): ShelfItem[] {
+  const out: ShelfItem[] = [];
+  for (const row of collectResponsiveRows(json)) {
+    const mapped = mapResponsiveListItem(row);
+    if (mapped && mapped.kind === "song" && !seenIds.has(mapped.id)) {
+      seenIds.add(mapped.id);
+      out.push(mapped);
+    }
+  }
+  return out;
+}
+
+export async function fetchLibrarySongsFirstPage(): Promise<LibrarySongsPage> {
+  const json = await rawBrowse("FEmusic_liked_videos");
+  return {
+    tracks: collectSongRows(json, new Set()),
+    continuationToken: findContinuationToken(json),
+  };
+}
+
+export async function fetchLibrarySongsContinuation(
+  token: string,
+): Promise<LibrarySongsPage> {
+  const json = await rawBrowseContinuation(token);
+  const next = findContinuationToken(json);
+  return {
+    tracks: collectSongRows(json, new Set()),
+    // A page that hands back its own token would loop forever.
+    continuationToken: next === token ? undefined : next,
+  };
 }
 
 /**

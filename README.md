@@ -5,7 +5,7 @@
 <h1 align="center">YTubic</h1>
 
 <p align="center">
-  A fast, responsive YouTube Music desktop client for Windows.
+  A fast, responsive YouTube Music desktop client for Windows and macOS.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download for Windows" height="60" />
+    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows%20%2F%20macOS-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download for Windows / macOS" height="60" />
   </a>
 </p>
 
@@ -30,7 +30,7 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 - **Synced lyrics** — line-by-line synced lyrics from multiple providers (LRCLIB, Musixmatch, Genius)
 - **Hi-res cover art** — upgrades album covers to high-resolution studio art when available
 - **Full library support** — your playlists, likes, albums and artists; search with filters; radio/autoplay queues
-- **Windows integration** — media keys, System Media Transport Controls, tray icon, single instance
+- **OS integration** — media keys, the system media tile (SMTC on Windows, Now Playing on macOS), tray / menu-bar icon, single instance
 - **Auto-updates** — the app updates itself from GitHub Releases, and keeps its yt-dlp copy fresh automatically
 
 > **Disclaimer:** YTubic is an unofficial client. It is not affiliated with,
@@ -41,9 +41,11 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 
 ## Install
 
-Download the latest installer from the [Releases](../../releases) page and run it.
+Download the latest installer from the [Releases](../../releases) page and run
+it — the `.exe` on Windows, the `.dmg` on macOS.
 
-- **Windows 10/11 only** for now.
+- **Windows 10/11** and **macOS 10.15+** (Apple Silicon and Intel — the app and
+  its yt-dlp copy are universal binaries).
 - On first launch the app downloads its own copy of yt-dlp (~12 MB) into its
   data folder and keeps it updated automatically.
 - Signing in is optional: browse and playback work anonymously; sign in to get
@@ -55,6 +57,15 @@ Download the latest installer from the [Releases](../../releases) page and run i
 The installer is not code-signed (certificates are expensive for a free
 open-source project). Click "More info" → "Run anyway". The source code is
 public — you can audit it or build it yourself.
+
+**macOS says the app "is damaged" / "can't be opened" (Gatekeeper).**
+Same reason — the app is not signed or notarized. Either right-click the app
+in Applications and choose "Open" (then "Open" again), or clear the quarantine
+flag once from Terminal:
+
+```bash
+xattr -cr /Applications/YTubic.app
+```
 
 **My antivirus flags the app / yt-dlp.**
 yt-dlp is a widely-used open-source downloader that some AV vendors
@@ -74,7 +85,7 @@ yt-dlp copy every ~3 days). Restarting the app forces the check.
 
 ## Stack
 
-- **Shell:** Tauri 2 (Rust backend, system webview — WebView2 on Windows)
+- **Shell:** Tauri 2 (Rust backend, system webview — WebView2 on Windows, WKWebView on macOS)
 - **Frontend:** React 19 + TypeScript
 - **Build:** Vite 7
 - **Styling:** Tailwind CSS v4

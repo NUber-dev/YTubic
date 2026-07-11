@@ -230,4 +230,4 @@ Premium-фича «загрузки»). Перед релизом:
 ### Отложено / после релиза
 - Подпись кода (Azure Trusted Signing) — когда появятся жалобы на SmartScreen
 - Fider/Canny для фидбека — если GitHub-аккаунт окажется барьером
-- macOS/Linux — потребует замены DPAPI и SMTC-слоя
+- ~~macOS~~ — готово (Keychain вместо DPAPI, Now Playing через souvlaki); Linux — потребует замены DPAPI-слоя (libsecret)
