@@ -37,11 +37,13 @@ fn sanitize_video_id(id: &str) -> bool {
 /// Platform-native symmetric "encrypt with current user's credentials"
 /// primitive. On Windows we use DPAPI (CryptProtectData) — the blob is
 /// only decryptable by the same Windows user on the same machine. On
-/// other platforms we currently fall back to plaintext (FIXME: hook
-/// into macOS Keychain / libsecret when we ship beyond Windows).
+/// macOS a random 256-bit data key lives in the user's login Keychain
+/// and the blobs are AES-256-GCM under it — same trust model (the OS
+/// gates access to the key by user + app). On Linux we currently fall
+/// back to plaintext (FIXME: hook into libsecret when we ship there).
 ///
-/// A fixed `ENTROPY` byte string is mixed in so a *different* app
-/// running as the same user can't trivially pass our blob to
+/// A fixed `ENTROPY` byte string is mixed in on Windows so a *different*
+/// app running as the same user can't trivially pass our blob to
 /// CryptUnprotectData and get our cookies out. This is a small hurdle
 /// against generic credential-stealer malware, not a real boundary —
 /// any attacker with our binary can read the entropy string.
@@ -126,14 +128,128 @@ mod secure_store {
         }
     }
 
-    #[cfg(not(windows))]
+    // macOS: `MAGIC ++ 12-byte nonce ++ AES-256-GCM ciphertext`, keyed by a
+    // random 32-byte data key stored in the login Keychain. Callers already
+    // run encrypt/decrypt inside `spawn_blocking`, so a Keychain permission
+    // prompt can't stall the async runtime. Note for dev: unsigned debug
+    // builds get a fresh code identity per rebuild, so macOS re-prompts for
+    // Keychain access after each rebuild — expected, goes away with a stable
+    // signing identity. Don't work around it by special-casing debug builds
+    // to plaintext.
+    #[cfg(target_os = "macos")]
+    const MAGIC: &[u8; 5] = b"YTBC1";
+
+    #[cfg(target_os = "macos")]
+    fn keychain_key() -> Result<[u8; 32], String> {
+        let entry = keyring::Entry::new("com.github.ivasy.ytubic", "cookie-store-key")
+            .map_err(|e| format!("keychain: {e}"))?;
+        match entry.get_secret() {
+            Ok(k) => k
+                .as_slice()
+                .try_into()
+                .map_err(|_| "keychain: stored key has unexpected size".into()),
+            Err(keyring::Error::NoEntry) => {
+                let mut key = [0u8; 32];
+                getrandom::getrandom(&mut key).map_err(|e| format!("getrandom: {e}"))?;
+                entry
+                    .set_secret(&key)
+                    .map_err(|e| format!("keychain: {e}"))?;
+                Ok(key)
+            }
+            Err(e) => Err(format!("keychain: {e}")),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn seal(key: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>, String> {
+        use aes_gcm::aead::{Aead, KeyInit};
+        let cipher = aes_gcm::Aes256Gcm::new(key.into());
+        let mut nonce = [0u8; 12];
+        getrandom::getrandom(&mut nonce).map_err(|e| format!("getrandom: {e}"))?;
+        let ciphertext = cipher
+            .encrypt((&nonce).into(), plain)
+            .map_err(|e| format!("encrypt: {e}"))?;
+        let mut out = Vec::with_capacity(MAGIC.len() + nonce.len() + ciphertext.len());
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&ciphertext);
+        Ok(out)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, String> {
+        use aes_gcm::aead::{Aead, KeyInit};
+        let body = &blob[MAGIC.len()..];
+        let (nonce, ciphertext) = body.split_at(12);
+        let cipher = aes_gcm::Aes256Gcm::new(key.into());
+        cipher
+            .decrypt(nonce.into(), ciphertext)
+            .map_err(|_| "decrypt failed (wrong key or tampered blob)".into())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn encrypt(plain: &[u8]) -> Result<Vec<u8>, String> {
+        seal(&keychain_key()?, plain)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
+        // Blobs without our framing are pre-Keychain plaintext jars (or
+        // Windows DPAPI blobs on a copied profile — those fail later at the
+        // JSON parse, same as before). Pass them through: the next write
+        // re-encrypts, which is the migration path.
+        if encrypted.len() < MAGIC.len() + 12 + 16 || !encrypted.starts_with(MAGIC) {
+            return Ok(encrypted.to_vec());
+        }
+        open(&keychain_key()?, encrypted)
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn encrypt(plain: &[u8]) -> Result<Vec<u8>, String> {
         Ok(plain.to_vec())
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
         Ok(encrypted.to_vec())
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    mod tests {
+        // AEAD framing tests run with a fixed key so CI never touches the
+        // Keychain (headless runners can't answer the access prompt).
+        const KEY: [u8; 32] = [7u8; 32];
+
+        #[test]
+        fn roundtrip() {
+            let blob = super::seal(&KEY, b"cookie: yes").unwrap();
+            assert!(blob.starts_with(super::MAGIC));
+            assert_eq!(super::open(&KEY, &blob).unwrap(), b"cookie: yes");
+        }
+
+        #[test]
+        fn tamper_detected() {
+            let mut blob = super::seal(&KEY, b"cookie: yes").unwrap();
+            let last = blob.len() - 1;
+            blob[last] ^= 1;
+            assert!(super::open(&KEY, &blob).is_err());
+        }
+
+        #[test]
+        fn distinct_nonces() {
+            let a = super::seal(&KEY, b"same").unwrap();
+            let b = super::seal(&KEY, b"same").unwrap();
+            assert_ne!(a, b, "nonce must be random per seal");
+        }
+
+        #[test]
+        fn plaintext_passthrough() {
+            // Pre-Keychain jars have no YTBC1 framing — decrypt must hand
+            // them back untouched (and, being unframed, never hit the
+            // Keychain, so this is safe on headless CI).
+            let jar = br#"{"cookies":[]}"#;
+            assert_eq!(super::decrypt(jar).unwrap(), jar);
+        }
     }
 }
 
@@ -226,11 +342,19 @@ fn account_webview_dir(app: &tauri::AppHandle, id: &str) -> PathBuf {
     accounts_dir(app).join(id).join("webview")
 }
 
-/// Chrome UA the login and refresh WebViews both present to Google. Kept
+/// Browser UA the login and refresh WebViews both present to Google. Kept
 /// identical so the session Google issues to the login window is the
-/// same one the refresh window later renews.
+/// same one the refresh window later renews. The claimed browser must
+/// match the webview's real engine: Google fingerprints the engine and
+/// blocks sign-in on a mismatch ("This browser or app may not be
+/// secure"), so WebView2 (Chromium) claims Chrome and WKWebView (WebKit)
+/// claims Safari.
+#[cfg(not(target_os = "macos"))]
 const YT_LOGIN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+#[cfg(target_os = "macos")]
+const YT_LOGIN_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+     (KHTML, like Gecko) Version/17.6 Safari/605.1.15";
 
 /// WebView2 browser args shared by the login window and the session-keeper.
 /// Both open the same per-account profile directory, and WebView2 requires
@@ -2896,7 +3020,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             "YTubic"
         })
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // macOS menu-bar extras open their menu on left-click; on Windows
+        // left-click shows the window and the menu stays on right-click.
+        .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
             "play_pause" => {
@@ -2914,7 +3040,12 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            // Left-click the icon = show the window.
+            // Left-click the icon = show the window. Not on macOS, where
+            // the same click opens the menu (see show_menu_on_left_click)
+            // and the "Show YTubic" item covers restoring the window.
+            if cfg!(target_os = "macos") {
+                return;
+            }
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -3118,8 +3249,17 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // macOS: clicking the Dock icon while the main window is hidden
+            // (red button = hide-to-menu-bar) fires Reopen — without this
+            // handler the Dock click does nothing and the app looks hung.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main_window(_app);
+            }
+        });
 }
 
 #[cfg(test)]

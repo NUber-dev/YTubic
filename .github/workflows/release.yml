@@ -1,12 +1,20 @@
-# Builds the Windows installer and publishes a draft GitHub Release
-# whenever a `v*` tag is pushed. Publish flow:
+# Builds the Windows installer + macOS universal .dmg and publishes a
+# draft GitHub Release whenever a `v*` tag is pushed. Publish flow:
 #   git tag v0.1.0 && git push origin v0.1.0
 # → wait for this workflow → review the draft on the Releases page → publish.
+#
+# tauri-action merges both platforms' updater entries into the release's
+# single latest.json (darwin-universal + windows-x86_64 keys).
 #
 # The TAURI_SIGNING_* secrets are for tauri-plugin-updater artifact
 # signatures (latest.json + .sig). Until the updater is wired up and the
 # secrets are set, they resolve to empty strings and the build simply
 # skips updater artifacts.
+#
+# The APPLE_* secrets are for macOS code signing + notarization. They are
+# currently unset, so the .app/.dmg ship unsigned (Gatekeeper workaround
+# documented in the README). Adding the secrets later activates signing
+# automatically — no workflow change needed.
 name: Release
 
 on:
@@ -16,7 +24,15 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+          - platform: windows-latest
+            args: ""
+    runs-on: ${{ matrix.platform }}
     permissions:
       contents: write
     steps:
@@ -27,6 +43,9 @@ jobs:
           node-version: 20
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Universal macOS binary needs both halves; harmless empty on Windows.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -36,9 +55,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "YTubic ${{ github.ref_name }}"
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           prerelease: false
+          args: ${{ matrix.args }}

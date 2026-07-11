@@ -63,6 +63,14 @@ tauri-plugin-notification = "2"
 # shows up as "Unknown app". See src/media.rs.
 souvlaki = "0.7"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Cookie-jar encryption (see `mod secure_store` in lib.rs): a random data key
+# lives in the login Keychain and the jar files are AES-256-GCM under it —
+# the macOS counterpart of DPAPI below.
+keyring = { version = "3", features = ["apple-native"] }
+aes-gcm = "0.10"
+getrandom = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
