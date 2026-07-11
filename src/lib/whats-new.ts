@@ -38,6 +38,17 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.3.2",
+    date: "July 2026",
+    image: "/whats-new/0.3.0.svg",
+    sections: [
+      {
+        heading: "Bug fix",
+        body: "Connecting a Last.fm account failed with an \"Invalid API key\" error in 0.3.0 and 0.3.1 because the release pipeline corrupted the API credentials. That's fixed for good now, so head to the Integrations tab and connect your account.",
+      },
+    ],
+  },
+  {
     version: "0.3.1",
     date: "July 2026",
     image: "/whats-new/0.3.0.svg",
