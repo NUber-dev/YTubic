@@ -35,6 +35,8 @@
     "core:window:allow-start-dragging",
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
-    "core:window:allow-set-always-on-top"
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-internal-toggle-maximize"
   ]
 }
