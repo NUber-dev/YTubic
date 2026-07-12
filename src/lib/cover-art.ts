@@ -22,7 +22,11 @@ import { invoke } from "@tauri-apps/api/core";
  * which is hot in the browser image cache and survives restarts.
  */
 
-const CACHE_KEY_PREFIX = "ytm-cover-itunes:";
+// v2: cache entries store the upgraded artwork URL, and v1 entries carry
+// the dead "100000x100000-999" pattern (now HTTP 400). Bumping the prefix
+// orphans those entries so every track re-resolves to the working
+// 3000x3000bb URL (the stale v1 keys are a few KB of inert localStorage).
+const CACHE_KEY_PREFIX = "ytm-cover-itunes-v2:";
 const POSITIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const NEGATIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REQUEST_TIMEOUT_MS = 5000;
@@ -113,16 +117,15 @@ function writeCache(key: string, url: string | null): void {
 /**
  * iTunes thumbnail URLs end with "/<W>x<H><suffix>.<ext>", e.g.
  * "/100x100bb.jpg". The CDN clamps any size request to whatever max
- * was stored (typically 3000×3000 for music), so asking for 5000 is
- * safe — we just get whatever is highest available. The "bb" suffix
- * adds the small bordered look (visually identical to none for square
- * art), and "-999" is the undocumented "highest quality, minimal
- * recompression" trick used by the iTunes Artwork Finder community.
+ * was stored (typically 3000×3000 for music), so asking for 3000 gets
+ * the highest available. The old "100000x100000-999" community trick
+ * now returns HTTP 400 (Apple dropped the "-999" variant), so we ask
+ * for a plain bb size the CDN still serves.
  */
 function upgradeITunesArtwork(url: string): string {
   return url.replace(
     /\/\d+x\d+[a-z-]*\.(jpg|png)$/i,
-    "/100000x100000-999.$1",
+    "/3000x3000bb.$1",
   );
 }
 

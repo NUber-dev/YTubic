@@ -22,7 +22,8 @@ import {
   LyricsSourceButton,
   useLyricsView,
 } from "@/components/layout/lyrics-view";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import { useShallow } from "zustand/react/shallow";
@@ -34,7 +35,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
-import { Thumbnail } from "@/components/shared/thumbnail";
+import { Thumbnail, thumbnailUrlsBySize } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
 import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
@@ -79,6 +80,74 @@ export function useITunesCover(track: QueueTrack | undefined): string | null {
   }, [artistKey, titleKey]);
 
   return url;
+}
+
+/**
+ * Vibrant accent hex pulled from the cover art by a Rust command (a webview
+ * canvas read taints on the CORS-less art CDNs, so it's done server-side).
+ * Returns null until it resolves, so callers keep the brand default until
+ * then. Shared by the compact player and the fullscreen view so the accent
+ * matches across both. Pass the YouTube thumbnail rather than the cached
+ * iTunes cover: it's downscaled server-side anyway, and it's always
+ * reachable, so the accent never falls back to red just because the local
+ * cover lagged behind.
+ */
+// Mirrors the Rust ACCENT_FALLBACK. Used when the accent fetch itself fails
+// (network/host reject) so the UI shows a neutral grey rather than snapping
+// back to brand red — red is reserved for tracks with no artwork at all.
+const ACCENT_NEUTRAL = "#71717A";
+
+export function useAccentColor(
+  urls: ReadonlyArray<string | null | undefined>,
+): string | null {
+  // Key on the actual candidate set (a stable string), not the array
+  // identity, which changes every render.
+  const key = urls.filter((u): u is string => Boolean(u)).join("\n");
+  const [accent, setAccent] = useState<string | null>(null);
+  useEffect(() => {
+    const candidates = key.split("\n").filter(Boolean);
+    if (candidates.length === 0) {
+      setAccent(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      // Walk the candidates (iTunes cover first, then thumbnails largest→
+      // smallest) and take the first the Rust side can actually fetch. The
+      // single largest thumbnail sometimes 404s; without this the accent
+      // just fell back to red instead of trying the next size.
+      for (const url of candidates) {
+        try {
+          const hex = await invoke<string>("dominant_accent_color", { url });
+          if (!cancelled) setAccent(hex);
+          return;
+        } catch {
+          /* try the next candidate */
+        }
+      }
+      if (!cancelled) setAccent(ACCENT_NEUTRAL);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+  return accent;
+}
+
+/**
+ * Remap the brand tokens to an extracted accent for a subtree: the seek
+ * fill (`bg-primary`), play button (`bg-brand`), and active shuffle/repeat
+ * icons (`text-brand`) all follow. Returns undefined (no override) until
+ * the accent resolves, so the brand default shows meanwhile.
+ */
+export function accentStyleFor(accent: string | null): CSSProperties | undefined {
+  return accent
+    ? ({
+        "--player-accent": accent,
+        "--brand": "var(--player-accent)",
+        "--primary": "var(--player-accent)",
+      } as CSSProperties)
+    : undefined;
 }
 
 export function formatTime(seconds: number): string {
@@ -438,6 +507,14 @@ export function PlayerBar({
   const [queueOpen, setQueueOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const iTunesCover = useITunesCover(track);
+  // Accent for the whole player surface, pulled from the cover art (same
+  // source the fullscreen view uses) so the seek fill, play button, and
+  // active toggles match the art here too instead of staying brand red.
+  const accent = useAccentColor([
+    iTunesCover,
+    ...thumbnailUrlsBySize(track?.thumbnails ?? []),
+  ]);
+  const accentStyle = accentStyleFor(accent);
   const lyricsState = useLyricsView(track);
   // The cover doubles as a drag handle for layout switching. In the
   // floating window the OS title bar already owns drag, so we don't
@@ -481,7 +558,7 @@ export function PlayerBar({
     // 300ms, which makes the next tooltip pop up instantly — annoying
     // when the buttons are densely packed).
     <TooltipProvider delayDuration={800} skipDelayDuration={0}>
-    <aside className={wrapperClass}>
+    <aside className={wrapperClass} style={accentStyle}>
       {/* Queue overlay vs. cover-and-lyrics body. AnimatePresence
           crossfades the two when the user toggles the queue button.
           Both branches fill the card above the bottom action row

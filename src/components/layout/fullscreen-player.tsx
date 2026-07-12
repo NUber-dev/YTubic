@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { motion } from "motion/react";
 import {
   ChevronDownIcon,
@@ -25,13 +25,15 @@ import { LyricsBody, useLyricsView } from "@/components/layout/lyrics-view";
 import {
   ProgressSlider,
   VolumeControl,
+  accentStyleFor,
   formatTime,
   repeatLabel,
+  useAccentColor,
   useITunesCover,
 } from "@/components/layout/player-bar";
 import {
   Thumbnail,
-  pickHighResThumbnail,
+  thumbnailUrlsBySize,
 } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { cn } from "@/lib/utils";
@@ -92,30 +94,25 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
   // late), so the bar and total aren't stuck at 0:00.
   const knownDuration = duration > 0 ? duration : (track?.duration ?? 0);
 
-  // Ambient backdrop + foreground share one artwork source.
-  const backdropUrl =
-    iTunesCover ?? pickHighResThumbnail(track?.thumbnails ?? []);
-
-  // Vibrant accent from the cover, computed server-side. Falls back to
-  // the brand red (we simply don't override the vars) until it resolves.
-  const [accent, setAccent] = useState<string | null>(null);
+  // Ordered art candidates: the local iTunes cover first (served from our own
+  // loopback server, so both the webview <img> and the Rust accent fetch read
+  // it reliably), then every YouTube thumbnail largest→smallest. The ambient
+  // <img> and the accent both walk this list, dropping to the next candidate
+  // when one fails, so a 404 on the largest variant no longer leaves a black
+  // backdrop and a red accent. The sharp foreground art still prefers iTunes.
+  const artCandidates = useMemo(
+    () =>
+      [iTunesCover, ...thumbnailUrlsBySize(track?.thumbnails ?? [])].filter(
+        (u): u is string => Boolean(u),
+      ),
+    [iTunesCover, track?.thumbnails],
+  );
+  const accent = useAccentColor(artCandidates);
+  const [failedArt, setFailedArt] = useState<Set<string>>(() => new Set());
   useEffect(() => {
-    if (!backdropUrl) {
-      setAccent(null);
-      return;
-    }
-    let cancelled = false;
-    void invoke<string>("dominant_accent_color", { url: backdropUrl })
-      .then((hex) => {
-        if (!cancelled) setAccent(hex);
-      })
-      .catch(() => {
-        if (!cancelled) setAccent(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [backdropUrl]);
+    setFailedArt(new Set());
+  }, [track?.videoId]);
+  const backdropUrl = artCandidates.find((u) => !failedArt.has(u)) ?? null;
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -127,6 +124,19 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  // Take over the whole screen while the immersive view is open — native
+  // macOS fullscreen (its own Space, menu bar + dock hidden), the same
+  // thing the green button gives — and hand it back on close. Without this
+  // the overlay only fills the app window, leaving the menu bar and dock
+  // showing, which reads as a half-baked "fullscreen".
+  useEffect(() => {
+    const win = getCurrentWindow();
+    void win.setFullscreen(true).catch(() => {});
+    return () => {
+      void win.setFullscreen(false).catch(() => {});
+    };
+  }, []);
+
   // Queue emptied while open (clear queue from the tray, last track
   // removed) means nothing to show, so fold back to the normal layout.
   useEffect(() => {
@@ -136,16 +146,7 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
   if (!track) return null;
 
   const loading = status === "loading" && playing;
-  // Remap the brand tokens to the extracted accent for everything inside
-  // the overlay: the seek fill (`bg-primary`), play button (`bg-brand`),
-  // and active shuffle/repeat icons (`text-brand`) all follow.
-  const accentStyle = accent
-    ? ({
-        "--player-accent": accent,
-        "--brand": "var(--player-accent)",
-        "--primary": "var(--player-accent)",
-      } as React.CSSProperties)
-    : undefined;
+  const accentStyle = accentStyleFor(accent);
 
   return createPortal(
     // The overlay carries its own TooltipProvider for the same reason
@@ -166,9 +167,14 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             on in fullscreen, behind both layouts. */}
         {backdropUrl ? (
           <img
+            key={backdropUrl}
             src={backdropUrl}
             alt=""
             aria-hidden
+            onError={() => {
+              const failed = backdropUrl;
+              if (failed) setFailedArt((prev) => new Set(prev).add(failed));
+            }}
             className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover blur-[80px] saturate-150"
           />
         ) : null}

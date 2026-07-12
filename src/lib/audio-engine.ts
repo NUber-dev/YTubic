@@ -11,6 +11,7 @@ import {
   resolveStreamId,
   useTrackSourceStore,
 } from "@/lib/store/track-source";
+import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
 import { pickThumbnail } from "@/components/shared/thumbnail";
 
 /**
@@ -28,6 +29,9 @@ export function useAudioEngine() {
   // auto-skip after a few consecutive failures so we don't burn through
   // the whole queue if e.g. the network is dead.
   const consecutiveErrorsRef = useRef(0);
+  // videoIds we've already run an audio-hunt for, so the same track doesn't
+  // re-trigger a search on every re-render or seek.
+  const huntedRef = useRef<Set<string>>(new Set());
 
   // Ensure a single <audio> element exists.
   useEffect(() => {
@@ -180,6 +184,39 @@ export function useAudioEngine() {
     const counterpartKind = trackKind === "video" ? "song" : "video";
     ts.setAlternate(videoId, counterpartKind, counterpartId);
   }, [videoId, counterpartId, trackKind]);
+
+  // Auto-hunt a clean "Topic" audio version for music-video uploads that
+  // YouTube didn't already pair with one. This is the automatic form of the
+  // manual "Song" switch: a video upload's stream (padded, long outros,
+  // "N views" metadata) gets replaced by the trimmed album audio, which is
+  // the actual song length. Fires once per id, and only for kind==="video"
+  // with no source record yet — so /next counterpart data (handled above)
+  // and any manual Song/Video choice both take precedence over it.
+  const huntTitle = track?.title;
+  useEffect(() => {
+    if (!videoId || trackKind !== "video") return;
+    if (huntedRef.current.has(videoId)) return;
+    const ts = useTrackSourceStore.getState();
+    if (ts.byVideoId[videoId]) return;
+    huntedRef.current.add(videoId);
+    const s = usePlaybackStore.getState();
+    const cur = s.index >= 0 ? s.queue[s.index] : undefined;
+    const artistsLine = cur?.artists?.map((a) => a.name).join(" ") ?? "";
+    const query = `${huntTitle ?? ""} ${artistsLine}`.trim();
+    if (!query) return;
+    void findAlternateVideoId(query, videoId, "song")
+      .then((altId) => {
+        if (!altId) return;
+        // Bail if a manual choice or /next pairing landed while we searched.
+        const now = useTrackSourceStore.getState();
+        if (now.byVideoId[videoId]) return;
+        now.setAlternate(videoId, "song", altId);
+        now.setSelected(videoId, "song");
+      })
+      .catch(() => {
+        /* stay on the video source; a later manual switch still works */
+      });
+  }, [videoId, trackKind, huntTitle]);
 
   useEffect(() => {
     const el = audioRef.current;

@@ -1809,7 +1809,7 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
         "--no-playlist",
         "--no-warnings",
         "--extractor-args",
-        "youtube:player_client=tv,android_vr",
+        "youtube:player_client=android_vr",
         &url,
     ]);
     // Windows: a console-less GUI process spawning the console-subsystem
@@ -2077,38 +2077,124 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Result<u64, String> {
     Ok(freed)
 }
 
-/// Fetch image bytes with the same SSRF allowlist `cache_cover` uses:
-/// https only, and only from the known art CDNs, so a crafted metadata
-/// URL can't point the server-side fetch at an internal service.
-/// Redirects are disabled so a CDN-looking host can't 302 out of the
-/// allowlist.
-async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("bad url: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err(format!("blocked scheme: {}", parsed.scheme()));
+const ALLOWED_IMAGE_HOST_SUFFIXES: &[&str] = &[
+    "mzstatic.com",
+    "ytimg.com",
+    "ggpht.com",
+    "googleusercontent.com",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImageUrlKind {
+    /// An allowlisted remote CDN over https.
+    Remote,
+    /// The app's own cover server on loopback (http://127.0.0.1:<port>/...).
+    Loopback,
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// SSRF gate: an image URL is fetchable only if it's the app's own loopback
+/// cover server, or https on one of the known art CDNs. Everything else is
+/// rejected so a crafted metadata field can't point the server-side fetch at
+/// an internal service.
+fn classify_image_url(url: &reqwest::Url) -> Result<ImageUrlKind, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "image url missing host".to_string())?;
+    if is_loopback_host(host) {
+        return match url.scheme() {
+            "http" | "https" => Ok(ImageUrlKind::Loopback),
+            scheme => Err(format!("blocked loopback scheme: {scheme}")),
+        };
     }
-    const ALLOWED_HOST_SUFFIXES: &[&str] = &[
-        "mzstatic.com",
-        "ytimg.com",
-        "ggpht.com",
-        "googleusercontent.com",
-    ];
-    let host = parsed.host_str().unwrap_or("");
-    let host_ok = ALLOWED_HOST_SUFFIXES
+    if url.scheme() != "https" {
+        return Err(format!("blocked scheme: {}", url.scheme()));
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host_ok = ALLOWED_IMAGE_HOST_SUFFIXES
         .iter()
         .any(|s| host == *s || host.ends_with(&format!(".{s}")));
-    if !host_ok {
-        return Err(format!("blocked image host: {host}"));
+    if host_ok {
+        Ok(ImageUrlKind::Remote)
+    } else {
+        Err(format!("blocked image host: {host}"))
     }
-    let resp = reqwest::Client::builder()
+}
+
+/// Follow redirects, but only to a target of the SAME kind as the start —
+/// a remote CDN may only 3xx to another allowlisted CDN, and a loopback URL
+/// may only 3xx to loopback. This keeps the old `redirect::none()` SSRF
+/// guarantee (a CDN can't bounce us into an internal host) while still
+/// following the routine 3xx that Google/YT image URLs hand out.
+fn image_redirect_policy(initial: ImageUrlKind) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 8 {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "too many image redirects",
+            ));
+        }
+        match classify_image_url(attempt.url()) {
+            Ok(kind) if kind == initial => attempt.follow(),
+            Ok(_) => attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "blocked cross-context image redirect",
+            )),
+            Err(e) => {
+                attempt.error(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
+            }
+        }
+    })
+}
+
+fn image_referer(url: &reqwest::Url) -> Option<&'static str> {
+    let host = url.host_str()?;
+    if is_loopback_host(host) {
+        return None;
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "mzstatic.com" || host.ends_with(".mzstatic.com") {
+        Some("https://music.apple.com/")
+    } else {
+        Some("https://music.youtube.com/")
+    }
+}
+
+/// Fetch image bytes for cover/accent use. Accepts the app's own loopback
+/// cover server and the allowlisted art CDNs (see `classify_image_url`),
+/// follows same-kind redirects, and sends browser-like headers so a CDN
+/// that 403s a bare client (hotlink protection) still returns the image.
+async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("bad url: {e}"))?;
+    let kind = classify_image_url(&parsed)?;
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(image_redirect_policy(kind))
         .build()
-        .map_err(|e| format!("client: {e}"))?
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("fetch: {e}"))?;
+        .map_err(|e| format!("client: {e}"))?;
+    let mut req = client
+        .get(parsed.clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+             (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        )
+        .header(
+            reqwest::header::ACCEPT,
+            "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        );
+    if let Some(referer) = image_referer(&parsed) {
+        req = req.header(reqwest::header::REFERER, referer);
+    }
+    let resp = req.send().await.map_err(|e| format!("fetch: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -2121,7 +2207,11 @@ async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
 
 /// Fallback accent when the art is near-monochrome or otherwise doesn't
 /// yield a legible color: the app's YouTube-red brand color.
-const ACCENT_FALLBACK: &str = "#FA1F3E";
+// Neutral fallback for near-monochrome art (black-and-white covers, dark
+// photos) where `accent_from_bytes` finds no vibrant hue. A muted grey
+// reads as a deliberate neutral accent; the old brand red looked like a
+// bug against a desaturated cover.
+const ACCENT_FALLBACK: &str = "#71717A";
 
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
     let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
@@ -2299,7 +2389,7 @@ fn spawn_downloader(
             "--no-part",
             "-q",
             "--extractor-args",
-            "youtube:player_client=tv,android_vr",
+            "youtube:player_client=android_vr",
             "-o",
             "-",
         ]);
