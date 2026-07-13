@@ -7,11 +7,11 @@ import { cn } from "@/lib/utils"
 
 // Half-width of the visible break around the thumb. The active fill
 // stops `THUMB_GAP` before the thumb's center and the inactive piece
-// resumes `THUMB_GAP` after it, leaving ~5px of empty space on each
+// resumes `THUMB_GAP` after it, leaving ~9px of empty space on each
 // side of the 6px-thick thumb. Rendering the track as two separately
 // rounded pills (instead of masking a single bar) keeps the cut ends
 // nicely radiused, matching the YouTube/Joji reference.
-const THUMB_GAP = 8
+const THUMB_GAP = 12
 
 // Half of the thumb's thickness in px (w-1.5 / h-1.5 → 6px → 3px half).
 // Radix shifts the thumb inward by this amount near the value

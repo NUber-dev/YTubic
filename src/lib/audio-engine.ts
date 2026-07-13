@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,8 +11,10 @@ import {
   resolveStreamId,
   useTrackSourceStore,
 } from "@/lib/store/track-source";
-import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
+import { findCleanAudioAlternate } from "@/lib/innertube/alternate-source";
 import { pickThumbnail } from "@/components/shared/thumbnail";
+import { useLyricsSources } from "@/lib/lyrics/sources";
+import { shouldSkipOutro } from "@/lib/outro";
 
 /**
  * AudioEngine binds the playback store to a singleton HTMLAudioElement
@@ -32,6 +34,13 @@ export function useAudioEngine() {
   // videoIds we've already run an audio-hunt for, so the same track doesn't
   // re-trigger a search on every re-render or seek.
   const huntedRef = useRef<Set<string>>(new Set());
+  // Long-outro auto-advance bookkeeping: the last sung line's timestamp
+  // for the current track, the videoId we already advanced past (never
+  // twice), and the videoId whose outro the user deliberately seeked
+  // into (respect that — they want to hear it).
+  const lastVocalRef = useRef<number | null>(null);
+  const outroSkippedRef = useRef<string | null>(null);
+  const outroSuppressedRef = useRef<string | null>(null);
 
   // Ensure a single <audio> element exists.
   useEffect(() => {
@@ -185,32 +194,34 @@ export function useAudioEngine() {
     ts.setAlternate(videoId, counterpartKind, counterpartId);
   }, [videoId, counterpartId, trackKind]);
 
-  // Auto-hunt a clean "Topic" audio version for music-video uploads that
-  // YouTube didn't already pair with one. This is the automatic form of the
-  // manual "Song" switch: a video upload's stream (padded, long outros,
-  // "N views" metadata) gets replaced by the trimmed album audio, which is
-  // the actual song length. Fires once per id, and only for kind==="video"
-  // with no source record yet — so /next counterpart data (handled above)
-  // and any manual Song/Video choice both take precedence over it.
+  // Auto-hunt the clean album ("song") version of whatever was queued.
+  // Originally this only rescued kind==="video" rows, but extended/looped
+  // re-uploads also surface as ordinary song rows (a 7:45 "(Remix)" that
+  // keeps rolling minutes after the actual song ends), so it now fires for
+  // any kind and leans on findCleanAudioAlternate's guarantees instead:
+  // artists must exist (a bare title is not identity — a wrong swap here
+  // changes what's PLAYING, worse than wrong lyrics), the found title has
+  // to match, and the duration gate only ever swaps to a meaningfully
+  // shorter album version (or a near-equal one for true video rows).
+  // Fires once per id; /next counterpart data (handled above) and manual
+  // Song/Video choices both take precedence.
   const huntTitle = track?.title;
   useEffect(() => {
-    if (!videoId || trackKind !== "video") return;
+    if (!videoId) return;
     if (huntedRef.current.has(videoId)) return;
     const ts = useTrackSourceStore.getState();
     if (ts.byVideoId[videoId]) return;
     huntedRef.current.add(videoId);
     const s = usePlaybackStore.getState();
     const cur = s.index >= 0 ? s.queue[s.index] : undefined;
-    const artistsLine = cur?.artists?.map((a) => a.name).join(" ") ?? "";
-    // A bare title is not identity: with no artist metadata the search
-    // can land on a different song sharing the name, and unlike a wrong
-    // lyric line this would silently swap what's PLAYING. Skip the
-    // auto-hunt for artist-less tracks — the manual Song/Video switch
-    // in the player menu still works.
-    if (!artistsLine) return;
-    const query = `${huntTitle ?? ""} ${artistsLine}`.trim();
-    if (!query) return;
-    void findAlternateVideoId(query, videoId, "song")
+    if (!cur || cur.videoId !== videoId) return;
+    void findCleanAudioAlternate({
+      videoId,
+      title: cur.title,
+      artists: cur.artists,
+      kind: cur.kind,
+      duration: cur.duration,
+    })
       .then((altId) => {
         if (!altId) return;
         // Bail if a manual choice or /next pairing landed while we searched.
@@ -220,7 +231,7 @@ export function useAudioEngine() {
         now.setSelected(videoId, "song");
       })
       .catch(() => {
-        /* stay on the video source; a later manual switch still works */
+        /* stay on the queued source; a later manual switch still works */
       });
   }, [videoId, trackKind, huntTitle]);
 
@@ -359,6 +370,15 @@ export function useAudioEngine() {
       /* seek failed — non-fatal */
     }
     usePlaybackStore.getState().clearPendingSeek();
+    // A deliberate seek into the tail means the user wants the outro —
+    // disable the long-outro auto-advance for this track.
+    if (
+      videoId &&
+      lastVocalRef.current !== null &&
+      pendingSeek > lastVocalRef.current + 10
+    ) {
+      outroSuppressedRef.current = videoId;
+    }
     {
       // Keep the system Now Playing clock in step with the new playhead.
       const s = usePlaybackStore.getState();
@@ -583,6 +603,49 @@ export function useAudioEngine() {
   // Position state — lets the OS show an accurate progress bar.
   const duration = usePlaybackStore((s) => s.duration);
   const position = usePlaybackStore((s) => s.position);
+
+  // Long-outro auto-advance. Extended uploads and music-video audio can
+  // run minutes past the actual song; when the synced lyrics say the
+  // vocals ended long ago (see shouldSkipOutro's thresholds), move on.
+  // Reuses the same lyric queries the panel fires, so this costs no
+  // extra network beyond what the lyrics UI already does.
+  const { queries: lyricQueries, best: lyricBest } = useLyricsSources(
+    track,
+    !!track,
+  );
+  const lastVocal = useMemo(() => {
+    const data = lyricBest ? lyricQueries[lyricBest]?.data : null;
+    if (!data || data.kind !== "timed" || data.lines.length === 0) {
+      return null;
+    }
+    // Trailing "♪" instrumental markers aren't vocals — walk back to the
+    // last line with real text.
+    for (let i = data.lines.length - 1; i >= 0; i--) {
+      const line = data.lines[i];
+      const text = line.text.trim();
+      if (text && text !== "♪") return line.end ?? line.start;
+    }
+    return null;
+  }, [lyricBest, lyricQueries]);
+  useEffect(() => {
+    lastVocalRef.current = lastVocal;
+  }, [lastVocal]);
+  useEffect(() => {
+    if (!playing || !videoId || !lastVocal) return;
+    if (outroSkippedRef.current === videoId) return;
+    if (outroSuppressedRef.current === videoId) return;
+    if (shouldSkipOutro(position, duration, lastVocal)) {
+      outroSkippedRef.current = videoId;
+      if (import.meta.env.DEV) {
+        console.debug(
+          "[audio] long outro: advancing",
+          videoId,
+          `pos=${Math.round(position)}s lastVocal=${Math.round(lastVocal)}s dur=${Math.round(duration)}s`,
+        );
+      }
+      usePlaybackStore.getState().next();
+    }
+  }, [position, duration, playing, videoId, lastVocal]);
   useEffect(() => {
     if (
       typeof navigator === "undefined" ||
