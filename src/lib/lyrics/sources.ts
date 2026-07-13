@@ -52,9 +52,17 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   const artistName =
     track?.artists?.map((a) => a.name).join(", ") ?? track?.subtitle;
 
-  // v2: matching semantics changed (artist-less tracks now require a
-  // duration match), so bump the key to orphan persisted v1 entries that
-  // may hold a wrong-song match.
+  // A bare title is not identity: with no artist line at all, any provider
+  // match would rest on the title alone, and popular titles are shared by
+  // a dozen unrelated songs (the wrong-Bittersweet bug). Don't query at
+  // all — no lyrics beats confidently-wrong lyrics. The providers keep
+  // their own artist-less duration gates as a second layer for any other
+  // caller.
+  const verifiable = !!artistName?.trim();
+
+  // v2: matching semantics changed (artist-less tracks are no longer
+  // looked up), so bump the keys to orphan persisted v1 entries that may
+  // hold a wrong-song match.
   const lrclib = useQuery({
     queryKey: [
       "lyrics",
@@ -74,7 +82,7 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
         },
         lyricsTimeoutSignal(PROVIDER_TIMEOUT_MS),
       ),
-    enabled: !!track && enabled,
+    enabled: !!track && enabled && verifiable,
     staleTime: ONE_HOUR,
     retry: 1,
   });
@@ -96,7 +104,7 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
         },
         lyricsTimeoutSignal(PROVIDER_TIMEOUT_MS),
       ),
-    enabled: !!track && enabled,
+    enabled: !!track && enabled && verifiable,
     staleTime: ONE_HOUR,
     retry: 1,
   });
@@ -111,7 +119,7 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
         },
         lyricsTimeoutSignal(PROVIDER_TIMEOUT_MS),
       ),
-    enabled: !!track && enabled,
+    enabled: !!track && enabled && verifiable,
     staleTime: ONE_HOUR,
     retry: 1,
   });
