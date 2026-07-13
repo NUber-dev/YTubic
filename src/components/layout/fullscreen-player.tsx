@@ -44,6 +44,67 @@ import { cn } from "@/lib/utils";
 const FULLSCREEN_LYRICS_VIEWPORT_RATIO = 0.45;
 
 /**
+ * Ambient backdrop with the same two-slot cross-fade BackgroundCover
+ * (app-shell) uses. A keyed <img> here remounted on every URL change —
+ * track switches and the mid-track thumbnail→iTunes-cover upgrade both
+ * dropped the backdrop to the black scrim for a frame, which read as a
+ * blink. Failed loads bubble up so the caller can advance its
+ * candidate list.
+ */
+function AmbientBackdrop({
+  url,
+  onError,
+}: {
+  url: string | null;
+  onError: (failedUrl: string) => void;
+}) {
+  const [slotA, setSlotA] = useState<string | null>(null);
+  const [slotB, setSlotB] = useState<string | null>(null);
+  const [active, setActive] = useState<"A" | "B">("A");
+
+  useEffect(() => {
+    if (!url) return;
+    const currentSlot = active === "A" ? slotA : slotB;
+    if (url === currentSlot) return;
+    if (active === "A") {
+      setSlotB(url);
+      setActive("B");
+    } else {
+      setSlotA(url);
+      setActive("A");
+    }
+  }, [url, active, slotA, slotB]);
+
+  const baseClass =
+    "pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover blur-[80px] saturate-150 transition-opacity duration-700 ease-out";
+
+  return (
+    <>
+      {slotA && (
+        <img
+          src={slotA}
+          alt=""
+          aria-hidden
+          onError={() => onError(slotA)}
+          className={baseClass}
+          style={{ opacity: active === "A" ? 1 : 0 }}
+        />
+      )}
+      {slotB && (
+        <img
+          src={slotB}
+          alt=""
+          aria-hidden
+          onError={() => onError(slotB)}
+          className={baseClass}
+          style={{ opacity: active === "B" ? 1 : 0 }}
+        />
+      )}
+    </>
+  );
+}
+
+/**
  * Immersive now-playing view: full-window overlay with the album art
  * blown up and blurred as an ambient backdrop, the artwork itself sharp
  * in the foreground, the synced-lyrics flow beside it when the track has
@@ -165,19 +226,12 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             blurred, darkened for text contrast, plus the noise layer
             BackgroundCover uses to break up banding in the blur. Always
             on in fullscreen, behind both layouts. */}
-        {backdropUrl ? (
-          <img
-            key={backdropUrl}
-            src={backdropUrl}
-            alt=""
-            aria-hidden
-            onError={() => {
-              const failed = backdropUrl;
-              if (failed) setFailedArt((prev) => new Set(prev).add(failed));
-            }}
-            className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover blur-[80px] saturate-150"
-          />
-        ) : null}
+        <AmbientBackdrop
+          url={backdropUrl}
+          onError={(failed) =>
+            setFailedArt((prev) => new Set(prev).add(failed))
+          }
+        />
         <div aria-hidden className="absolute inset-0 bg-black/60" />
         <div aria-hidden className="bg-cover-noise absolute inset-0" />
 
