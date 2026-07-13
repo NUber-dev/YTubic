@@ -735,10 +735,25 @@ export function PlayerBar({
 
             {/* Lyrics flow — fills the rest of the cover-branch flex
                 column. Lives inside the same motion.div as the cover
-                so the whole non-queue body crossfades as one unit. */}
-            <div className="flex min-h-0 flex-1 flex-col px-3">
-              <LyricsBody state={lyricsState} />
-            </div>
+                so the whole non-queue body crossfades as one unit.
+                When the lookup resolves with nothing, the space shows
+                the queue instead of sitting empty under a lone
+                "No lyrics found." — same QueueBody the queue toggle
+                uses, minus its close button. */}
+            {lyricsState.hasTrack &&
+            !lyricsState.isLoading &&
+            !lyricsState.active ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <p className="px-4 pb-2 text-sm text-muted-foreground">
+                  No lyrics found.
+                </p>
+                <QueueBody />
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col px-3">
+                <LyricsBody state={lyricsState} />
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
