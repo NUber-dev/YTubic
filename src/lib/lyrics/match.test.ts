@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hitMatches, normalizeForMatch, tokenOverlap } from "@/lib/lyrics/match";
+import {
+  durationMatches,
+  hitMatches,
+  normalizeForMatch,
+  tokenOverlap,
+} from "@/lib/lyrics/match";
 
 describe("normalizeForMatch", () => {
   it("lowercases, strips punctuation and collapses whitespace", () => {
@@ -70,5 +75,23 @@ describe("hitMatches", () => {
     expect(
       hitMatches(norm("B's on the Table"), norm("Drake, 21 Savage"), norm("B's on the Table"), norm("Drake")),
     ).toBe(true);
+  });
+});
+
+describe("durationMatches", () => {
+  it("accepts durations within the tolerance", () => {
+    expect(durationMatches(419, 421)).toBe(true);
+    expect(durationMatches(180, 184)).toBe(true);
+  });
+
+  it("rejects durations outside the tolerance", () => {
+    // the Bittersweet bug: a 6:59 video vs a ~4 minute unrelated song
+    expect(durationMatches(419, 245)).toBe(false);
+  });
+
+  it("rejects when either side is unknown — unverifiable is not a match", () => {
+    expect(durationMatches(undefined, 200)).toBe(false);
+    expect(durationMatches(200, undefined)).toBe(false);
+    expect(durationMatches(0, 200)).toBe(false);
   });
 });

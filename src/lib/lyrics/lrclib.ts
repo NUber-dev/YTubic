@@ -1,6 +1,10 @@
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
-import { hitMatches, normalizeForMatch } from "@/lib/lyrics/match";
+import {
+  durationMatches,
+  hitMatches,
+  normalizeForMatch,
+} from "@/lib/lyrics/match";
 
 /**
  * LRCLIB (https://lrclib.net) — free, open lyrics database with synced
@@ -102,11 +106,21 @@ async function lrclibSearch(
     ),
   );
   if (matched.length === 0) return null;
+  // A bare title is not identity. When the request carries no artist
+  // (video uploads often have empty metadata), hitMatches waves through
+  // any exact-title hit, so "Bittersweet" by one artist happily returns
+  // some other Bittersweet's lyrics. Make the duration vouch for the
+  // match instead — and with no duration to check either, prefer no
+  // lyrics over confidently-wrong ones.
+  const verified = reqArtist
+    ? matched
+    : matched.filter((rec) => durationMatches(p.duration, rec.duration));
+  if (verified.length === 0) return null;
   // Prefer results with synced lyrics. Then, if we know the duration,
   // prefer the closest one — YTM and LRCLIB versions occasionally
   // differ by a second or two.
-  const synced = matched.filter((r) => r.syncedLyrics);
-  const pool = synced.length > 0 ? synced : matched;
+  const synced = verified.filter((r) => r.syncedLyrics);
+  const pool = synced.length > 0 ? synced : verified;
   if (!p.duration) return pool[0];
   return pool.reduce((best, cur) => {
     const bestDiff = Math.abs((best.duration ?? 0) - (p.duration ?? 0));

@@ -41,6 +41,20 @@ function meaningfulContains(a: string, b: string): boolean {
   return shorter.length >= 5 && longer.includes(shorter);
 }
 
+/** Both durations known and within `tolSec` of each other. Used to gate
+ *  exact-title hits when the requesting track carries no artist metadata
+ *  (video uploads often don't): a title alone is not identity — any
+ *  popular title is shared by a dozen unrelated songs — so the duration
+ *  has to vouch for the match instead. */
+export function durationMatches(
+  reqSec: number | undefined,
+  hitSec: number | undefined,
+  tolSec = 4,
+): boolean {
+  if (!reqSec || !hitSec) return false;
+  return Math.abs(reqSec - hitSec) <= tolSec;
+}
+
 /** Does a search hit plausibly match the requested track? Title must match;
  *  artist agreement is enforced only when both sides are known. */
 export function hitMatches(

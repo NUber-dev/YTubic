@@ -202,6 +202,12 @@ export function useAudioEngine() {
     const s = usePlaybackStore.getState();
     const cur = s.index >= 0 ? s.queue[s.index] : undefined;
     const artistsLine = cur?.artists?.map((a) => a.name).join(" ") ?? "";
+    // A bare title is not identity: with no artist metadata the search
+    // can land on a different song sharing the name, and unlike a wrong
+    // lyric line this would silently swap what's PLAYING. Skip the
+    // auto-hunt for artist-less tracks — the manual Song/Video switch
+    // in the player menu still works.
+    if (!artistsLine) return;
     const query = `${huntTitle ?? ""} ${artistsLine}`.trim();
     if (!query) return;
     void findAlternateVideoId(query, videoId, "song")

@@ -52,10 +52,13 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   const artistName =
     track?.artists?.map((a) => a.name).join(", ") ?? track?.subtitle;
 
+  // v2: matching semantics changed (artist-less tracks now require a
+  // duration match), so bump the key to orphan persisted v1 entries that
+  // may hold a wrong-song match.
   const lrclib = useQuery({
     queryKey: [
       "lyrics",
-      "lrclib",
+      "lrclib-v2",
       track?.title,
       artistName,
       track?.album,
@@ -77,12 +80,19 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   });
 
   const musixmatch = useQuery({
-    queryKey: ["lyrics", "musixmatch", track?.title, artistName],
+    queryKey: [
+      "lyrics",
+      "musixmatch-v2",
+      track?.title,
+      artistName,
+      track?.duration,
+    ],
     queryFn: () =>
       fetchMusixmatchLyrics(
         {
           title: track!.title,
           artist: artistName,
+          duration: track?.duration,
         },
         lyricsTimeoutSignal(PROVIDER_TIMEOUT_MS),
       ),
@@ -92,7 +102,7 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   });
 
   const genius = useQuery({
-    queryKey: ["lyrics", "genius", track?.title, artistName],
+    queryKey: ["lyrics", "genius-v2", track?.title, artistName],
     queryFn: () =>
       fetchGeniusLyrics(
         {

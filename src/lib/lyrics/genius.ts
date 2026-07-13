@@ -49,6 +49,11 @@ export async function fetchGeniusLyrics(
   signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
+  // With no artist to verify against, an exact-title Genius hit can be a
+  // completely different song sharing the name — and Genius search results
+  // carry no duration to vouch for the match (unlike LRCLIB/Musixmatch).
+  // Unverifiable means no lyrics beats confidently-wrong lyrics.
+  if (!p.artist?.trim()) return null;
 
   const url = await findSongUrl(p, signal);
   const text = url ? await scrapeLyrics(url, signal) : null;

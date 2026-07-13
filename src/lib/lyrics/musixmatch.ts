@@ -1,7 +1,11 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
-import { hitMatches, normalizeForMatch } from "@/lib/lyrics/match";
+import {
+  durationMatches,
+  hitMatches,
+  normalizeForMatch,
+} from "@/lib/lyrics/match";
 
 /**
  * Musixmatch — unofficial reverse-engineered web-desktop client. The
@@ -36,6 +40,9 @@ const TOKEN_STORAGE_KEY = "musixmatch-user-token";
 type MusixmatchParams = {
   title: string;
   artist?: string;
+  /** Duration in seconds — vouches for exact-title hits when no artist
+   *  metadata exists to verify against (see findTrackId). */
+  duration?: number;
 };
 
 type CachedToken = { token: string; loadedAt: number };
@@ -129,6 +136,7 @@ type MxmSearchBody = {
       has_subtitles?: number;
       has_lyrics?: number;
       instrumental?: number;
+      track_length?: number;
     };
   }>;
 };
@@ -240,12 +248,20 @@ async function findTrackId(
         normalizeForMatch(t.track?.artist_name ?? ""),
       ),
     );
+    // A bare title is not identity: with no request artist to verify
+    // against, hitMatches passes any exact-title hit, so a different
+    // song with the same name slips through. Require the track length
+    // to vouch for the match instead; no duration to check means no
+    // lyrics rather than confidently-wrong ones.
+    const verified = reqArtist
+      ? list
+      : list.filter((t) => durationMatches(p.duration, t.track?.track_length));
     // Prefer a track with synced subtitles; fall back to any track with
     // lyrics. The result list is already sorted by rating descending, so
     // the first hit in either pool is the best one.
-    const synced = list.find((t) => t.track?.has_subtitles === 1);
+    const synced = verified.find((t) => t.track?.has_subtitles === 1);
     if (synced?.track?.track_id) return synced.track.track_id;
-    const plain = list.find((t) => t.track?.has_lyrics === 1);
+    const plain = verified.find((t) => t.track?.has_lyrics === 1);
     if (plain?.track?.track_id) return plain.track.track_id;
     return null;
   } catch {
