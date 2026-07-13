@@ -744,9 +744,6 @@ export function PlayerBar({
             !lyricsState.isLoading &&
             !lyricsState.active ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <p className="px-4 pb-2 text-sm text-muted-foreground">
-                  No lyrics found.
-                </p>
                 <QueueBody />
               </div>
             ) : (
