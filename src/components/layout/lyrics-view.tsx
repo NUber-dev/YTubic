@@ -8,6 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -121,6 +122,9 @@ export type LyricsViewState = {
   setPref: (p: Pref) => void;
   best: LyricsSource | null;
   availability: Record<LyricsSource, Availability>;
+  /** Browser search query for the no-lyrics escape hatch, e.g.
+   *  `"Paheli" Farhan Khan lyrics`; null when there's no track. */
+  searchQuery: string | null;
   /** Per-track sync nudge in seconds; positive = lyrics fire later. */
   offset: number;
   nudgeOffset: (deltaSeconds: number) => void;
@@ -192,6 +196,18 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
   const activeSource: LyricsSource | null = pref === "auto" ? best : pref;
   const active = activeSource ? (queries[activeSource].data ?? null) : null;
 
+  // Escape hatch for tracks no lyric DB covers yet: a ready-made web
+  // search the empty state can hand to the browser.
+  const searchQuery = track
+    ? [
+        `"${track.title}"`,
+        track.artists?.map((a) => a.name).join(" ") ?? "",
+        "lyrics",
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : null;
+
   return {
     active,
     isLoading,
@@ -200,6 +216,7 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
     setPref,
     best,
     availability,
+    searchQuery,
     offset,
     nudgeOffset,
     resetOffset,
@@ -226,9 +243,24 @@ export function LyricsBody({
   }
   if (!state.active) {
     return (
-      <p className="px-4 py-2 text-sm text-muted-foreground">
-        No lyrics found.
-      </p>
+      <div className="flex flex-col items-start gap-1 px-4 py-2 text-sm text-muted-foreground">
+        <p>No lyrics found.</p>
+        {state.searchQuery && (
+          <button
+            type="button"
+            onClick={() =>
+              void openUrl(
+                `https://www.google.com/search?q=${encodeURIComponent(
+                  state.searchQuery ?? "",
+                )}`,
+              ).catch(() => {})
+            }
+            className="underline underline-offset-2 transition-colors hover:text-foreground"
+          >
+            Search the web
+          </button>
+        )}
+      </div>
     );
   }
   if (state.active.kind === "timed") {
