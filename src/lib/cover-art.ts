@@ -26,7 +26,10 @@ import { invoke } from "@tauri-apps/api/core";
 // the dead "100000x100000-999" pattern (now HTTP 400). Bumping the prefix
 // orphans those entries so every track re-resolves to the working
 // 3000x3000bb URL (the stale v1 keys are a few KB of inert localStorage).
-const CACHE_KEY_PREFIX = "ytm-cover-itunes-v2:";
+// v3: keys carry the album and results are album-verified, so a song
+// no longer wears a different release's art (Portrait Of You showing
+// the Saroor cover). Old v2 entries are orphaned.
+const CACHE_KEY_PREFIX = "ytm-cover-itunes-v3:";
 const POSITIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const NEGATIVE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const REQUEST_TIMEOUT_MS = 5000;
@@ -37,10 +40,21 @@ type CacheEntry = { url: string | null; expiresAt: number };
 // during a single render pass should share one network request.
 const inflight = new Map<string, Promise<string | null>>();
 
-function cacheKey(artist: string, title: string): string {
+function cacheKey(artist: string, title: string, album?: string): string {
   return `${CACHE_KEY_PREFIX}${artist.toLowerCase().trim()}|${title
     .toLowerCase()
-    .trim()}`;
+    .trim()}|${(album ?? "").toLowerCase().trim()}`;
+}
+
+/** Loose text match for iTunes collection names: lowercase, strip
+ *  parentheticals and punctuation. "Saroor (Original Motion...)" and
+ *  "saroor" should compare equal. */
+function normalizeAlbum(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\(.*?\)|\[.*?\]/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
 function readCache(key: string): CacheEntry | null {
@@ -132,9 +146,10 @@ function upgradeITunesArtwork(url: string): string {
 export async function lookupITunesCover(
   artist: string,
   title: string,
+  album?: string,
 ): Promise<string | null> {
   if (!artist.trim() || !title.trim()) return null;
-  const key = cacheKey(artist, title);
+  const key = cacheKey(artist, title, album);
 
   const cached = readCache(key);
   if (cached) return cached.url;
@@ -145,7 +160,7 @@ export async function lookupITunesCover(
   const promise = (async () => {
     try {
       const term = encodeURIComponent(`${artist} ${title}`);
-      const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=1`;
+      const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=5`;
       const res = await tauriFetch(url, {
         method: "GET",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -155,9 +170,23 @@ export async function lookupITunesCover(
         return null;
       }
       const json = (await res.json()) as {
-        results?: { artworkUrl100?: string }[];
+        results?: { artworkUrl100?: string; collectionName?: string }[];
       };
-      const artwork100 = json.results?.[0]?.artworkUrl100;
+      const rows = json.results ?? [];
+      // iTunes ranks by popularity, not by which release the song
+      // belongs to, so the first hit is often a different album. When
+      // the track knows its album, only a matching collection may
+      // supply art; a known album with no match keeps the YT thumbnail
+      // rather than wearing another release's cover. Album-less tracks
+      // keep the old first-hit behavior.
+      const want = album ? normalizeAlbum(album) : "";
+      const hit = want
+        ? rows.find((r) => {
+            const got = normalizeAlbum(r.collectionName ?? "");
+            return got === want || got.includes(want) || want.includes(got);
+          })
+        : rows[0];
+      const artwork100 = hit?.artworkUrl100;
       const result = artwork100 ? upgradeITunesArtwork(artwork100) : null;
       writeCache(key, result);
       return result;

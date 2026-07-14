@@ -62,13 +62,18 @@ export function useITunesCover(track: QueueTrack | undefined): string | null {
   const [url, setUrl] = useState<string | null>(null);
   const artistKey = track?.artists?.map((a) => a.name).join(", ") ?? "";
   const titleKey = track?.title ?? "";
+  const albumKey = track?.album ?? "";
 
   useEffect(() => {
     setUrl(null);
     if (!artistKey || !titleKey) return;
     let cancelled = false;
     (async () => {
-      const itunes = await lookupITunesCover(artistKey, titleKey);
+      const itunes = await lookupITunesCover(
+        artistKey,
+        titleKey,
+        albumKey || undefined,
+      );
       if (cancelled || !itunes) return;
       const cached = await cacheCoverToDisk(itunes);
       if (cancelled) return;
@@ -77,7 +82,7 @@ export function useITunesCover(track: QueueTrack | undefined): string | null {
     return () => {
       cancelled = true;
     };
-  }, [artistKey, titleKey]);
+  }, [artistKey, titleKey, albumKey]);
 
   return url;
 }
