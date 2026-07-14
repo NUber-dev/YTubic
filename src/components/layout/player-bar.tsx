@@ -83,6 +83,35 @@ export function useITunesCover(track: QueueTrack | undefined): string | null {
 }
 
 /**
+ * Gate the iTunes cover upgrade to the first moments of a track. The
+ * YT thumbnail and the iTunes cover are sometimes entirely different
+ * artworks (Russ "3:15" — yellow digits vs the beige violin), so a
+ * late-arriving upgrade visibly REPLACED the art (and backdrop and
+ * accent with it) mid-track. If the lookup resolves fast (memory/disk
+ * cache — every repeat play), it applies from the first paint; if it
+ * misses the window, this play keeps the YT art and the upgrade wins
+ * from the next play onward. Art never changes mid-track.
+ */
+const COVER_LATCH_WINDOW_MS = 450;
+
+export function useLatchedCover(
+  track: QueueTrack | undefined,
+  cover: string | null,
+): string | null {
+  const [latched, setLatched] = useState<string | null>(null);
+  const deadlineRef = useRef(0);
+  useEffect(() => {
+    deadlineRef.current = performance.now() + COVER_LATCH_WINDOW_MS;
+    setLatched(null);
+  }, [track?.videoId]);
+  useEffect(() => {
+    if (!cover) return;
+    if (performance.now() <= deadlineRef.current) setLatched(cover);
+  }, [cover]);
+  return latched;
+}
+
+/**
  * Vibrant accent hex pulled from the cover art by a Rust command (a webview
  * canvas read taints on the CORS-less art CDNs, so it's done server-side).
  * Returns null until it resolves, so callers keep the brand default until
@@ -96,6 +125,77 @@ export function useITunesCover(track: QueueTrack | undefined): string | null {
 // (network/host reject) so the UI shows a neutral grey rather than snapping
 // back to brand red — red is reserved for tracks with no artwork at all.
 const ACCENT_NEUTRAL = "#71717A";
+
+/**
+ * Near-greyscale or extreme-lightness accents — white, grey, or black
+ * album art — tint the seek fill and play button into the same grey as
+ * the track behind them, which reads as a broken bar (Gulaab). Apple
+ * Music renders such covers with plain white controls; do the same.
+ */
+function legibleAccent(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  let r = (n >> 16) & 255;
+  let g = (n >> 8) & 255;
+  let b = n & 255;
+  const rl = r / 255;
+  const gl = g / 255;
+  const bl = b / 255;
+  const max = Math.max(rl, gl, bl);
+  const min = Math.min(rl, gl, bl);
+  const l = (max + min) / 2;
+  const d = max - min;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1) || 1);
+  if (s < 0.22 || l > 0.82) return "#ffffff";
+  // The backdrop is the SAME art the accent came from, so a dark accent
+  // can never contrast with it (red fill on red cover). Lift dark
+  // accents in HSL — lightness up, saturation floored — so the fill
+  // reads on top of the art while staying inside its color family.
+  // (A plain blend toward white desaturated instead: Starboy's dark
+  // red turned pink, matching nothing on the cover.)
+  const lum = 0.2126 * rl + 0.7152 * gl + 0.0722 * bl;
+  if (lum < 0.5) {
+    let h = 0;
+    if (d !== 0) {
+      if (max === rl) h = ((gl - bl) / d + (gl < bl ? 6 : 0)) / 6;
+      else if (max === gl) h = ((bl - rl) / d + 2) / 6;
+      else h = ((rl - gl) / d + 4) / 6;
+    }
+    const s2 = Math.max(s, 0.65);
+    const l2 = 0.58;
+    const q = l2 < 0.5 ? l2 * (1 + s2) : l2 + s2 - l2 * s2;
+    const p2 = 2 * l2 - q;
+    const channel = (t: number) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p2 + (q - p2) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p2 + (q - p2) * (2 / 3 - t) * 6;
+      return p2;
+    };
+    r = Math.round(channel(h + 1 / 3) * 255);
+    g = Math.round(channel(h) * 255);
+    b = Math.round(channel(h - 1 / 3) * 255);
+    return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+  }
+  return hex;
+}
+
+/** Black or white for icons sitting ON the accent fill. A plain
+ *  luminance threshold is enough here — accents are either vivid
+ *  (white icon) or the white clamp above (black icon). */
+function accentForeground(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return "#ffffff";
+  const n = parseInt(m[1], 16);
+  const lum =
+    (0.2126 * ((n >> 16) & 255) +
+      0.7152 * ((n >> 8) & 255) +
+      0.0722 * (n & 255)) /
+    255;
+  return lum > 0.6 ? "#18181b" : "#ffffff";
+}
 
 export function useAccentColor(
   urls: ReadonlyArray<string | null | undefined>,
@@ -119,7 +219,7 @@ export function useAccentColor(
       for (const url of candidates) {
         try {
           const hex = await invoke<string>("dominant_accent_color", { url });
-          if (!cancelled) setAccent(hex);
+          if (!cancelled) setAccent(legibleAccent(hex));
           return;
         } catch {
           /* try the next candidate */
@@ -144,6 +244,12 @@ export function accentStyleFor(accent: string | null): CSSProperties | undefined
   return accent
     ? ({
         "--player-accent": accent,
+        // Icon color for controls filled with the accent (play button):
+        // near-black on light accents (the white-clamped ones above),
+        // white on everything else. Consumers use
+        // `text-[var(--player-accent-fg,white)]` so the brand default
+        // keeps its white icon before the accent resolves.
+        "--player-accent-fg": accentForeground(accent),
         "--brand": "var(--player-accent)",
         "--primary": "var(--player-accent)",
       } as CSSProperties)
@@ -342,6 +448,7 @@ export function ProgressSlider({
         max={Math.max(duration, 1)}
         step={1}
         disabled={disabled}
+        thumbless
         onValueChange={([v]) => setScrub(v)}
         onValueCommit={([v]) => {
           seek(v);
@@ -356,7 +463,10 @@ export function ProgressSlider({
 export function VolumeControl({
   direction = "horizontal",
 }: {
-  direction?: "horizontal" | "vertical";
+  /** "horizontal"/"vertical" are hover-popover variants for the
+   *  compact bars; "inline" renders a persistent icon+slider row
+   *  (the Apple Music fullscreen volume). */
+  direction?: "horizontal" | "vertical" | "inline";
 }) {
   const { volume, muted } = usePlaybackStore(
     useShallow((s) => ({ volume: s.volume, muted: s.muted })),
@@ -386,6 +496,37 @@ export function VolumeControl({
     direction === "vertical"
       ? "absolute bottom-full left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1 px-3 pb-2 transition-opacity duration-150"
       : "absolute left-full top-1/2 z-10 flex -translate-y-1/2 items-center gap-0 py-3 pl-1 transition-opacity duration-150";
+
+  if (direction === "inline") {
+    return (
+      <div
+        className="flex w-full items-center gap-2.5"
+        onWheel={(e) => {
+          const delta = e.deltaY < 0 ? 0.05 : -0.05;
+          const next = Math.max(0, Math.min(1, volume + delta));
+          setVolume(next);
+        }}
+      >
+        <button
+          type="button"
+          aria-label={muted ? "Unmute" : "Mute"}
+          onClick={toggleMute}
+          className="text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Icon className="size-4" />
+        </button>
+        <Slider
+          value={[pct]}
+          max={100}
+          step={1}
+          className="[&_[data-slot=slider-track]]:bg-white/20"
+          aria-label="Volume"
+          onValueChange={([v]) => setVolume(v / 100)}
+        />
+        <Volume2Icon aria-hidden className="size-4 text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -506,7 +647,7 @@ export function PlayerBar({
   const [scrub, setScrub] = useState<number | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  const iTunesCover = useITunesCover(track);
+  const iTunesCover = useLatchedCover(track, useITunesCover(track));
   // Accent for the whole player surface, pulled from the cover art (same
   // source the fullscreen view uses) so the seek fill, play button, and
   // active toggles match the art here too instead of staying brand red.
@@ -696,7 +837,7 @@ export function PlayerBar({
             aria-label={playing ? "Pause" : "Play"}
             onClick={toggle}
             disabled={!hasTrack}
-            className="size-12 rounded-full bg-brand text-white hover:bg-brand/90"
+            className="size-12 rounded-full bg-brand text-[var(--player-accent-fg,white)] hover:bg-brand/90"
           >
             {loading ? (
               <Loader2Icon className="animate-spin" />

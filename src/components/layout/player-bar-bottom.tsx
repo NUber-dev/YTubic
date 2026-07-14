@@ -38,6 +38,7 @@ import {
   formatTime,
   repeatLabel,
   useITunesCover,
+  useLatchedCover,
 } from "@/components/layout/player-bar";
 import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
 import { cn } from "@/lib/utils";
@@ -77,7 +78,7 @@ export function PlayerBarBottom() {
   const cycleRepeat = usePlaybackStore((s) => s.cycleRepeat);
 
   const [scrub, setScrub] = useState<number | null>(null);
-  const iTunesCover = useITunesCover(track);
+  const iTunesCover = useLatchedCover(track, useITunesCover(track));
   const lyricsState = useLyricsView(track);
   const { onPointerDown: onCoverPointerDown } = usePlayerCoverDrag();
 
@@ -184,7 +185,7 @@ export function PlayerBarBottom() {
             aria-label={playing ? "Pause" : "Play"}
             onClick={toggle}
             disabled={!hasTrack}
-            className="size-12 rounded-full bg-brand text-white hover:bg-brand/90"
+            className="size-12 rounded-full bg-brand text-[var(--player-accent-fg,white)] hover:bg-brand/90"
           >
             {loading ? (
               <Loader2Icon className="animate-spin" />

@@ -26,8 +26,14 @@ function Slider({
   value,
   min = 0,
   max = 100,
+  thumbless = false,
   ...props
-}: React.ComponentProps<typeof SliderPrimitive.Root>) {
+}: React.ComponentProps<typeof SliderPrimitive.Root> & {
+  /** Apple-Music-style bar: continuous two-tone rail with no visible
+   *  knob and no break — dragging still works, the whole rail is the
+   *  handle. Used by the playback progress bar; volume keeps the knob. */
+  thumbless?: boolean;
+}) {
   const _values = React.useMemo(
     () =>
       Array.isArray(value)
@@ -46,8 +52,13 @@ function Slider({
   // by +half, at 100% by -half, linear in between.
   const thumbOffsetPx = (THUMB_HALF_PX * (50 - thumbPct)) / 50
   const centerExpr = `calc(${thumbPct}% + ${thumbOffsetPx}px)`
-  const activeSize = `calc(${centerExpr} - ${THUMB_GAP}px)`
-  const inactiveStart = `calc(${centerExpr} + ${THUMB_GAP}px)`
+  const gap = thumbless ? 0 : THUMB_GAP
+  const activeSize = thumbless
+    ? centerExpr
+    : `calc(${centerExpr} - ${gap}px)`
+  const inactiveStart = thumbless
+    ? centerExpr
+    : `calc(${centerExpr} + ${gap}px)`
 
   return (
     <SliderPrimitive.Root
@@ -76,13 +87,21 @@ function Slider({
           "relative grow data-[orientation=horizontal]:h-1.5 data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-1.5"
         )}
       >
-        {/* Active (filled) pill — grows from the start to the thumb gap. */}
+        {/* Active (filled) pill — grows from the start to the thumb gap.
+            In thumbless mode the inner end squares off so the two
+            segments butt-join into one continuous rail — two rounded
+            ends meeting at the same coordinate leave a notch. */}
         <div
           data-slot="slider-range"
           aria-hidden
           className={cn(
-            "absolute rounded-full bg-primary",
-            isVertical ? "inset-x-0 bottom-0" : "inset-y-0 left-0"
+            "absolute bg-primary",
+            isVertical ? "inset-x-0 bottom-0" : "inset-y-0 left-0",
+            thumbless
+              ? isVertical
+                ? "rounded-b-full"
+                : "rounded-l-full"
+              : "rounded-full"
           )}
           style={isVertical ? { height: activeSize } : { width: activeSize }}
         />
@@ -94,8 +113,13 @@ function Slider({
           data-slot="slider-track"
           aria-hidden
           className={cn(
-            "absolute rounded-full bg-muted",
-            isVertical ? "inset-x-0 top-0" : "inset-y-0 right-0"
+            "absolute bg-muted",
+            isVertical ? "inset-x-0 top-0" : "inset-y-0 right-0",
+            thumbless
+              ? isVertical
+                ? "rounded-t-full"
+                : "rounded-r-full"
+              : "rounded-full"
           )}
           style={
             isVertical
@@ -108,7 +132,9 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          className="block shrink-0 rounded-full bg-white shadow-[0_0_3px_rgba(255,255,255,0.35),0_0_8px_rgba(255,255,255,0.15)] transition-shadow hover:shadow-[0_0_5px_rgba(255,255,255,0.5),0_0_12px_rgba(255,255,255,0.25)] focus-visible:shadow-[0_0_5px_rgba(255,255,255,0.5),0_0_12px_rgba(255,255,255,0.25)] focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50 data-[orientation=horizontal]:h-5 data-[orientation=horizontal]:w-1.5 data-[orientation=vertical]:h-1.5 data-[orientation=vertical]:w-5"
+          className={thumbless
+            ? "block size-0 overflow-hidden focus-visible:outline-hidden"
+            : "block shrink-0 rounded-full bg-white shadow-[0_0_3px_rgba(255,255,255,0.35),0_0_8px_rgba(255,255,255,0.15)] transition-shadow hover:shadow-[0_0_5px_rgba(255,255,255,0.5),0_0_12px_rgba(255,255,255,0.25)] focus-visible:shadow-[0_0_5px_rgba(255,255,255,0.5),0_0_12px_rgba(255,255,255,0.25)] focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50 data-[orientation=horizontal]:h-5 data-[orientation=horizontal]:w-1.5 data-[orientation=vertical]:h-1.5 data-[orientation=vertical]:w-5"}
         />
       ))}
     </SliderPrimitive.Root>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { motion } from "motion/react";
@@ -30,18 +30,21 @@ import {
   repeatLabel,
   useAccentColor,
   useITunesCover,
+  useLatchedCover,
 } from "@/components/layout/player-bar";
 import {
   Thumbnail,
   thumbnailUrlsBySize,
 } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
+import { getMediaElement } from "@/lib/audio-engine";
 import { cn } from "@/lib/utils";
 
-// Local copy of the lyrics-feel resting ratio so this view centers the
-// active line just below middle on its tall canvas without depending on
-// the lyrics component's inline-panel default.
-const FULLSCREEN_LYRICS_VIEWPORT_RATIO = 0.45;
+// Where the active line rests in the fullscreen lyric pane. Apple
+// Music parks it near the TOP of the pane — past lines exit
+// immediately and the visible window below is all upcoming text — so
+// this is much higher than the inline panel's just-below-center feel.
+const FULLSCREEN_LYRICS_VIEWPORT_RATIO = 0.22;
 
 /**
  * Ambient backdrop with the same two-slot cross-fade BackgroundCover
@@ -105,6 +108,79 @@ function AmbientBackdrop({
 }
 
 /**
+ * Two-slot crossfade for the foreground artwork. The art used to swap
+ * hard twice per track change — once when the queue flipped (the new
+ * thumbnail paints instantly) and again when the iTunes high-res
+ * upgrade landed — which read as a flash against the slower ambient
+ * crossfade behind it. The old art holds underneath while the new one
+ * fades in.
+ */
+function CrossfadeArt({
+  slotKey,
+  className,
+  children,
+}: {
+  slotKey: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  const prevRef = useRef<{ key: string; node: ReactNode } | null>(null);
+  const lastRef = useRef<{ key: string; node: ReactNode } | null>(null);
+  const [, force] = useState(0);
+  if (lastRef.current && lastRef.current.key !== slotKey) {
+    prevRef.current = lastRef.current;
+  }
+  lastRef.current = { key: slotKey, node: children };
+  useEffect(() => {
+    if (!prevRef.current) return;
+    const t = setTimeout(() => {
+      prevRef.current = null;
+      force((x) => x + 1);
+    }, 450);
+    return () => clearTimeout(t);
+  }, [slotKey]);
+  return (
+    <div className={cn("relative", className)}>
+      {prevRef.current ? (
+        <div aria-hidden className="absolute inset-0">
+          {prevRef.current.node}
+        </div>
+      ) : null}
+      <motion.div
+        key={slotKey}
+        initial={{ opacity: prevRef.current ? 0 : 1 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.35, ease: "easeOut" }}
+      >
+        {lastRef.current.node}
+      </motion.div>
+    </div>
+  );
+}
+
+/**
+ * Adopts the audio engine's singleton <video> element as a visible
+ * surface. The element lives detached for audio-only streams and keeps
+ * playing when unmounted — mounting it here only makes its frames
+ * visible; playback ownership stays with the engine.
+ */
+function VideoSurface({ className }: { className?: string }) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    const el = getMediaElement();
+    if (!host || !el) return;
+    el.className = "h-full w-full object-contain";
+    host.appendChild(el);
+    return () => {
+      el.className = "";
+      el.remove();
+    };
+  }, []);
+  return <div ref={hostRef} className={className} />;
+}
+
+/**
  * Immersive now-playing view: full-window overlay with the album art
  * blown up and blurred as an ambient backdrop, the artwork itself sharp
  * in the foreground, the synced-lyrics flow beside it when the track has
@@ -141,7 +217,8 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
   const cycleRepeat = usePlaybackStore((s) => s.cycleRepeat);
 
   const [scrub, setScrub] = useState<number | null>(null);
-  const iTunesCover = useITunesCover(track);
+  const streamKind = usePlaybackStore((s) => s.streamKind);
+  const iTunesCover = useLatchedCover(track, useITunesCover(track));
   const lyricsState = useLyricsView(track);
 
   // Reserve the lyrics pane while a lookup is still in flight or once it
@@ -208,6 +285,87 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
 
   const loading = status === "loading" && playing;
   const accentStyle = accentStyleFor(accent);
+  const artistLine =
+    track.artists?.map((a) => a.name).join(", ") ?? track.subtitle ?? "";
+
+  // Seek + transport cluster. Rendered in one of two slots: pinned to
+  // the window bottom when the lyrics pane fills the stage, or stacked
+  // directly under the art+meta column when there are no lyrics — a
+  // lyric-less track otherwise strands the controls at the bottom with
+  // a dead band between them and the title (Apple Music groups art,
+  // meta and controls as one centered unit in that state).
+  const controls = (
+    <>
+      <ProgressSlider
+        position={position}
+        duration={knownDuration}
+        scrub={scrub}
+        setScrub={setScrub}
+        seek={seek}
+        disabled={knownDuration <= 0}
+      />
+      <div className="-mt-1 flex justify-between text-xs tabular-nums text-muted-foreground">
+        <span>{formatTime(scrub ?? position)}</span>
+        {/* Remaining, not total — the Apple Music fullscreen reading. */}
+        <span>
+          -{formatTime(Math.max(0, knownDuration - (scrub ?? position)))}
+        </span>
+      </div>
+      <div className="relative -mt-1 flex items-center justify-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Shuffle"
+          aria-pressed={shuffle}
+          onClick={() => setShuffle(!shuffle)}
+          className={cn(shuffle && "text-brand")}
+        >
+          <ShuffleIcon />
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="Previous" onClick={prev}>
+          <SkipBackIcon className="fill-current" />
+        </Button>
+        <Button
+          size="icon"
+          aria-label={playing ? "Pause" : "Play"}
+          onClick={toggle}
+          className="size-12 rounded-full bg-brand text-[var(--player-accent-fg,white)] hover:bg-brand/90"
+        >
+          {loading ? (
+            <Loader2Icon className="animate-spin" />
+          ) : playing ? (
+            <PauseIcon className="fill-current" />
+          ) : (
+            <PlayIcon className="fill-current" />
+          )}
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="Next" onClick={next}>
+          <SkipForwardIcon className="fill-current" />
+        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={repeatLabel(repeat)}
+              aria-pressed={repeat !== "off"}
+              onClick={cycleRepeat}
+              className={cn(repeat !== "off" && "text-brand")}
+            >
+              {repeat === "one" ? <Repeat1Icon /> : <RepeatIcon />}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{repeatLabel(repeat)}</TooltipContent>
+        </Tooltip>
+      </div>
+      {/* Persistent volume slider under the transport, Apple Music
+          style — the old absolute-right vertical popover belonged to
+          the pinned-strip layout. */}
+      <div className="mt-1 px-1">
+        <VolumeControl direction="inline" />
+      </div>
+    </>
+  );
 
   return createPortal(
     // The overlay carries its own TooltipProvider for the same reason
@@ -232,11 +390,25 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             setFailedArt((prev) => new Set(prev).add(failed))
           }
         />
-        <div aria-hidden className="absolute inset-0 bg-black/60" />
+        {/* Light scrim only — Apple Music's fullscreen keeps the blurred
+            art vivid and bright; a heavy black wash buried it. */}
+        <div aria-hidden className="absolute inset-0 bg-black/30" />
+        {/* On notched MacBooks a native-fullscreen Space reserves a black
+            band beside the camera housing that apps cannot paint. Fade
+            the backdrop to black toward the top edge so that band blends
+            into the scene instead of reading as a hard cut (Apple Music
+            gets this for free by having black chrome). */}
+        <div
+          aria-hidden
+          className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/60 via-black/25 to-transparent"
+        />
         <div aria-hidden className="bg-cover-noise absolute inset-0" />
 
         <div className="relative z-10 flex h-full min-h-0 flex-col px-[6vw] pt-(--titlebar-h)">
-          <div className="flex justify-end pt-3">
+          {/* Exit chevron floats top-right instead of occupying a flex
+              row, so the stage really is the full height and a
+              lyric-less layout centers as one unit. */}
+          <div className="absolute right-[2vw] top-[calc(var(--titlebar-h)+0.75rem)] z-20">
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -262,103 +434,59 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
               showLyrics && "gap-[5vw]",
             )}
           >
-            <div className="shrink-0">
-              <Thumbnail
-                thumbnails={track.thumbnails}
-                alt={track.title}
-                className="size-[min(52vh,34vw)] rounded-lg border border-hairline object-cover shadow-2xl"
-                targetSize={1024}
-                highRes
-                overrideHighRes={iTunesCover}
-              />
+            {/* Player column — Apple Music's fullscreen groups art,
+                meta, seek, transport and volume as one unit on the
+                left with the lyrics filling the rest of the stage.
+                Without lyrics the same column simply centers alone. */}
+            <div
+              className={cn(
+                "flex min-w-0 shrink-0 flex-col",
+                showLyrics ? "w-[min(32vw,50vh)]" : "w-[min(38vw,56vh)]",
+              )}
+            >
+              {streamKind === "video" ? (
+                <VideoSurface className="aspect-video w-full overflow-hidden rounded-lg border border-hairline bg-black shadow-2xl" />
+              ) : (
+                <CrossfadeArt
+                  className="w-full"
+                  slotKey={`${track.videoId}:${iTunesCover ? "hi" : "lo"}`}
+                >
+                  <Thumbnail
+                    thumbnails={track.thumbnails}
+                    alt={track.title}
+                    className="aspect-square w-full rounded-lg border border-hairline object-cover shadow-2xl"
+                    targetSize={1024}
+                    highRes
+                    overrideHighRes={iTunesCover}
+                  />
+                </CrossfadeArt>
+              )}
+              <div
+                className={cn(
+                  "mt-4 flex min-w-0 flex-col gap-0.5",
+                  !showLyrics && "items-center text-center",
+                )}
+              >
+                <span className="max-w-full truncate text-xl font-semibold">
+                  {track.title}
+                </span>
+                <span className="max-w-full truncate text-sm text-muted-foreground">
+                  {artistLine}
+                </span>
+              </div>
+              <div className="mt-3 flex w-full flex-col gap-2">{controls}</div>
             </div>
             {/* Bump the line size for the big canvas. The descendant
                 selector outweighs the component's own `text-lg`, so the
                 shared lyrics component stays untouched. */}
             {showLyrics ? (
-              <div className="flex h-[min(58vh,40rem)] w-[min(38rem,42vw)] min-w-0 flex-col [&_.lyrics-line]:text-2xl">
+              <div className="flex h-[min(66vh,46rem)] w-[min(44rem,44vw)] min-w-0 flex-col [&_.lyrics-line]:my-0 [&_.lyrics-line]:py-3 [&_.lyrics-line]:text-4xl [&_.lyrics-line]:font-bold [&_.lyrics-line]:leading-[1.15] [&_.lyrics-plain]:text-3xl [&_.lyrics-plain]:font-bold [&_.lyrics-plain]:leading-snug [&_.lyrics-plain]:text-foreground/85">
                 <LyricsBody
                   state={lyricsState}
                   viewportRatio={FULLSCREEN_LYRICS_VIEWPORT_RATIO}
                 />
               </div>
             ) : null}
-          </div>
-
-          {/* Bottom strip: meta, progress, transport. */}
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 pb-7">
-            <div className="flex flex-col items-center gap-0.5 text-center">
-              <span className="max-w-full truncate text-lg font-semibold">
-                {track.title}
-              </span>
-              <span className="max-w-full truncate text-sm text-muted-foreground">
-                {track.artists?.map((a) => a.name).join(", ") ??
-                  track.subtitle ??
-                  ""}
-              </span>
-            </div>
-            <ProgressSlider
-              position={position}
-              duration={knownDuration}
-              scrub={scrub}
-              setScrub={setScrub}
-              seek={seek}
-              disabled={knownDuration <= 0}
-            />
-            <div className="-mt-1 flex justify-between text-xs tabular-nums text-muted-foreground">
-              <span>{formatTime(scrub ?? position)}</span>
-              <span>{formatTime(knownDuration)}</span>
-            </div>
-            <div className="relative -mt-1 flex items-center justify-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="Shuffle"
-                aria-pressed={shuffle}
-                onClick={() => setShuffle(!shuffle)}
-                className={cn(shuffle && "text-brand")}
-              >
-                <ShuffleIcon />
-              </Button>
-              <Button variant="ghost" size="icon" aria-label="Previous" onClick={prev}>
-                <SkipBackIcon className="fill-current" />
-              </Button>
-              <Button
-                size="icon"
-                aria-label={playing ? "Pause" : "Play"}
-                onClick={toggle}
-                className="size-12 rounded-full bg-brand text-white hover:bg-brand/90"
-              >
-                {loading ? (
-                  <Loader2Icon className="animate-spin" />
-                ) : playing ? (
-                  <PauseIcon className="fill-current" />
-                ) : (
-                  <PlayIcon className="fill-current" />
-                )}
-              </Button>
-              <Button variant="ghost" size="icon" aria-label="Next" onClick={next}>
-                <SkipForwardIcon className="fill-current" />
-              </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={repeatLabel(repeat)}
-                    aria-pressed={repeat !== "off"}
-                    onClick={cycleRepeat}
-                    className={cn(repeat !== "off" && "text-brand")}
-                  >
-                    {repeat === "one" ? <Repeat1Icon /> : <RepeatIcon />}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{repeatLabel(repeat)}</TooltipContent>
-              </Tooltip>
-              <div className="absolute right-0">
-                <VolumeControl direction="vertical" />
-              </div>
-            </div>
           </div>
         </div>
       </motion.div>

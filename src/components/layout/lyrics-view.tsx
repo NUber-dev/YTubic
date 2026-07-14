@@ -273,6 +273,10 @@ function findActiveIdx(lines: TimedLine[], position: number): number {
   return active;
 }
 
+/** Empty timed lines shorter than this render as whitespace between
+ *  stanzas; longer ones are real instrumental breaks and show ♪. */
+const BREAK_NOTE_MIN_S = 8;
+
 /** How far from the top of the viewport the active line should sit,
  *  as a fraction of the visible height. 0.5 = perfectly centered;
  *  0.45 keeps it just above dead center so a little more upcoming text
@@ -307,11 +311,26 @@ function TimedLyrics({
   const position = usePlaybackStore((s) => s.position);
   const seek = usePlaybackStore((s) => s.seek);
 
+  // A short break marker (invisible spacer) can become the "active"
+  // line between stanzas, which made the highlight vanish for a few
+  // seconds. Hold the previous sung line instead; real instrumental
+  // breaks (>= BREAK_NOTE_MIN_S, rendered as a visible note) still
+  // take the highlight themselves.
+  const isSpacerLine = (l: TimedLine) =>
+    !l.text && (l.end ?? Infinity) - l.start < BREAK_NOTE_MIN_S;
+
   // Positive offset = lyrics fire later, i.e. the playhead is treated
   // as being earlier in the song. Kept in a ref too so the mount-snap
   // effect below (deps: [lines]) reads the current value without
   // re-snapping on every nudge.
-  const activeIdx = findActiveIdx(lines, position - offset);
+  const rawActiveIdx = findActiveIdx(lines, position - offset);
+  let activeIdx = rawActiveIdx;
+  while (activeIdx > 0 && isSpacerLine(lines[activeIdx])) activeIdx--;
+  // Before the first line's time the column showed every line dim with
+  // nothing highlighted — a dead pane at track start. Cue the first
+  // line as active during the intro, the way Apple Music points at
+  // what's coming.
+  if (activeIdx < 0 && lines.length > 0) activeIdx = 0;
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const prevActiveRef = useRef(activeIdx);
@@ -404,23 +423,60 @@ function TimedLyrics({
       <div
         ref={scrollRef}
         className={cn(
-          "lyrics-no-scrollbar flex h-full flex-col gap-1 overflow-y-auto px-1 pt-0 pb-16",
-          // Mask kicks in only after the karaoke has moved past the
-          // first line — that way the first line stays crisp at the
-          // top of the column while the song hasn't started or is on
-          // line 0.
-          activeIdx >= 1 && "lyrics-mask",
+          "lyrics-no-scrollbar group flex h-full flex-col gap-0 overflow-y-auto px-1 pt-0 pb-16",
+          // Full mask kicks in only after the karaoke has moved past
+          // the first line — that way the first line stays crisp at
+          // the top of the column while the song hasn't started or is
+          // on line 0. The bottom melt is always on so upcoming lines
+          // never cut off hard against the pane edge.
+          activeIdx >= 1 ? "lyrics-mask" : "lyrics-mask-bottom",
         )}
       >
         {lines.map((line, i) => {
           const isActive = i === activeIdx;
           const isPast = i < activeIdx;
+          // Distance ahead of the karaoke, for the visibility falloff.
+          // Before the song starts (activeIdx -1) the first lines get
+          // the same gentle ramp instead of all rendering dim.
+          const ahead = i - activeIdx;
+          // Continuous falloff, not a cliff: each upcoming line keeps a
+          // little less presence than the previous, all the way down,
+          // so the column melts into the pane's bottom mask the way
+          // Apple Music's does. A hard cutoff after a few lines left a
+          // blank hole between the last readable line and the pane
+          // edge. Fed through a CSS var so the group-hover reveal
+          // (a class) can still win over it.
+          const fall = isActive
+            ? 1
+            : isPast
+              ? 0.35
+              : Math.max(0.1, 0.8 - 0.115 * ahead);
+          // Empty timed lines are the LRC's stanza/interlude markers.
+          // Short ones render as pure whitespace so consecutive sung
+          // lines read as verse blocks (the Apple Music grouping);
+          // only a window long enough to be a real instrumental break
+          // earns the ♪ placeholder. The spacer keeps data-line-idx so
+          // the auto-scroll can still target it when it goes active.
+          if (!line.text) {
+            const windowS = (line.end ?? Infinity) - line.start;
+            if (windowS < BREAK_NOTE_MIN_S) {
+              return (
+                <div
+                  key={i}
+                  data-line-idx={i}
+                  aria-hidden
+                  className="h-7 shrink-0"
+                />
+              );
+            }
+          }
           return (
             <button
               key={i}
               type="button"
               data-line-idx={i}
               onClick={() => seek(line.start + offset)}
+              style={{ "--line-o": String(fall) } as React.CSSProperties}
               className={cn(
                 // Same font-size on every line so the active line can't
                 // grow into a second row and shove neighbours around.
@@ -436,12 +492,34 @@ function TimedLyrics({
                 // (not `transform`), so it's listed explicitly in the
                 // transition. Both branches set a `scale-*` so the
                 // browser has a defined start AND end to interpolate.
-                "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left text-lg font-[650] leading-snug transition-[scale,color] duration-[1260ms] ease-in-out hover:bg-black/30",
+                // Apple-Music treatment: the active line is crisp and
+                // bright; every other line is dimmed AND softly blurred,
+                // past lines slightly more so. Blur eases with the same
+                // clock as the color so lines melt in/out while the
+                // column scrolls. Hovering the column sharpens all lines
+                // (via group-hover below) so scanning ahead stays easy.
+                // Apple Music shows a WINDOW, not the whole sheet: past
+                // lines vanish, the active line is crisp, and only the
+                // next few lines are visible with a steep falloff.
+                // Hovering the column (group-hover, fast duration)
+                // brings everything back for scanning/seeking.
+                // NOTE: `filter` is deliberately NOT in the transition
+                // list. Animating blur forces WebKit to re-rasterize
+                // every line's layer each frame, which starves the
+                // rAF scroll (the column visibly stutter-jumped on
+                // every line change). Snapped blur under motion is
+                // imperceptible; scroll stays pure compositing.
+                "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left text-lg font-[650] leading-snug opacity-(--line-o) transition-[scale,color,opacity] duration-[1260ms] ease-in-out hover:bg-black/30 hover:blur-none group-hover:duration-200",
                 isActive
-                  ? "scale-[1.06] text-foreground"
+                  ? "scale-[1.04] text-foreground blur-none"
                   : isPast
-                    ? "scale-100 text-muted-foreground/40"
-                    : "scale-100 text-muted-foreground/70",
+                    ? "scale-100 text-muted-foreground/45 blur-[2px]"
+                    : ahead === 1
+                      ? "scale-100 text-muted-foreground/60 blur-[1px]"
+                      : ahead === 2
+                        ? "scale-100 text-muted-foreground/55 blur-[1.5px]"
+                        : "scale-100 text-muted-foreground/50 blur-[2px]",
+                !isActive && "group-hover:opacity-80 group-hover:blur-none",
               )}
             >
               {line.text || "♪"}
@@ -514,7 +592,7 @@ function TimedLyrics({
 
 function PlainLyrics({ text }: { text: string }) {
   return (
-    <div className="lyrics-mask app-scroll h-full overflow-y-auto whitespace-pre-wrap px-2 pt-0 pb-12 text-lg font-medium leading-relaxed text-foreground/90">
+    <div className="lyrics-plain lyrics-mask app-scroll h-full overflow-y-auto whitespace-pre-wrap px-2 pt-0 pb-12 text-lg font-medium leading-relaxed text-foreground/90">
       {text}
     </div>
   );

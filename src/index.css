@@ -223,23 +223,40 @@
     );
   }
 
-  /* Top/bottom fade for the lyrics column. Applied only once the
-     karaoke has progressed past the first line — before that we want
-     the first line crisp at the top of the column. */
+  /* Top/bottom fade for the lyrics column. The bottom ramp is long so
+     upcoming lines dissolve well before the container edge instead of
+     cutting off against whatever sits below the pane. The full mask is
+     applied only once the karaoke has progressed past the first line —
+     before that we want the first line crisp at the top of the column,
+     so the pre-start state uses the bottom-only variant. */
   .lyrics-mask {
     mask-image: linear-gradient(
       to bottom,
       transparent 0%,
       black 14%,
-      black 86%,
-      transparent 100%
+      black 68%,
+      transparent 97%
     );
     -webkit-mask-image: linear-gradient(
       to bottom,
       transparent 0%,
       black 14%,
-      black 86%,
-      transparent 100%
+      black 68%,
+      transparent 97%
+    );
+  }
+  .lyrics-mask-bottom {
+    mask-image: linear-gradient(
+      to bottom,
+      black 0%,
+      black 68%,
+      transparent 97%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      black 0%,
+      black 68%,
+      transparent 97%
     );
   }
 
