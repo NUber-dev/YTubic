@@ -9,6 +9,19 @@
 
 /** Normalize a title/artist for fuzzy comparison: drop parentheticals,
  *  featurings, and punctuation; lowercase; collapse whitespace. */
+/** Like normalizeForMatch but KEEPS parenthetical qualifiers (remix,
+ *  live, acoustic...) as plain tokens. Two records that collapse to
+ *  the same stripped title — "Die For You" vs "Die For You (Remix)" —
+ *  stay distinguishable here, so version picks don't ride on a 1s
+ *  duration difference. */
+export function normalizeKeepingQualifiers(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\bfeat\.?\b.*$/i, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
 export function normalizeForMatch(s: string): string {
   return s
     .toLowerCase()

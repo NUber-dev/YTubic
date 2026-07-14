@@ -63,10 +63,19 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   // v2: matching semantics changed (artist-less tracks are no longer
   // looked up), so bump the keys to orphan persisted v1 entries that may
   // hold a wrong-song match.
+  // lrclib-v3: synced records now outrank /get's plain-only duplicates
+  // and one endpoint failing no longer drops the other's hit — orphan
+  // v2 entries that cached a plain result while a synced row existed.
+  // lrclib-v4: version-qualified titles (remix/live) now outrank
+  // duration closeness — orphan v3 entries that cached the wrong
+  // edit's timings (original lyrics on the remix upload).
+  // lrclib-v5: timestamps now rescale to the track's listed length
+  // (sped-up/slowed re-uploads) — orphan v4 entries holding unscaled
+  // timings.
   const lrclib = useQuery({
     queryKey: [
       "lyrics",
-      "lrclib-v2",
+      "lrclib-v5",
       track?.title,
       artistName,
       track?.album,
