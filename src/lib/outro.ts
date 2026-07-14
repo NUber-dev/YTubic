@@ -27,3 +27,21 @@ export function shouldSkipOutro(
   if (durationSec - lastVocalSec <= OUTRO_TAIL_MIN_S) return false;
   return positionSec >= lastVocalSec + OUTRO_GRACE_S;
 }
+
+/**
+ * WKWebView (AVFoundation) reads yt-dlp's un-remuxed DASH m4a headers
+ * at exactly DOUBLE the real length (yt-dlp normally repairs these with
+ * ffmpeg, which we don't ship; Chromium reads the sample tables and is
+ * fine — this is macOS-only). The real audio plays 1:1 and the phantom
+ * second half is silence. When the element's claim is ~2x the entry's
+ * own listed length, the listed length is the truth.
+ */
+export function correctedDuration(
+  metaSec: number | undefined,
+  elementSec: number,
+): number {
+  if (!metaSec || metaSec < 30) return elementSec;
+  const ratio = elementSec / metaSec;
+  if (ratio > 1.8 && ratio < 2.2) return metaSec;
+  return elementSec;
+}

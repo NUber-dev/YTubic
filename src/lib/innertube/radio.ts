@@ -43,6 +43,23 @@ function parsePanelTracks(json: YtNode): ShelfItem[] {
   return tracks;
 }
 
+/**
+ * Authoritative duration for a single video, read from its own /next
+ * panel row. Used for tracks queued off surfaces that don't carry a
+ * length (home cards) — without a metadata length the doubled-header
+ * clamp in the audio engine has no reference and a 2x file plays out
+ * at twice its real length.
+ */
+export async function fetchPanelDuration(
+  videoId: string,
+): Promise<number | undefined> {
+  const tracks = parsePanelTracks(
+    await rawNext({ videoId, isAudioOnly: true }),
+  );
+  const hit = tracks.find((t) => t.id === videoId);
+  return hit?.duration;
+}
+
 export async function fetchRadio(videoId: string): Promise<ShelfItem[]> {
   const tracks = parsePanelTracks(
     await rawNext({

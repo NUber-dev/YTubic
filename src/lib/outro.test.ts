@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldSkipOutro } from "@/lib/outro";
+import { correctedDuration, shouldSkipOutro } from "@/lib/outro";
 
 describe("shouldSkipOutro", () => {
   it("skips deep into a long dead tail (No Guidance 8:41, vocals end ~4:35)", () => {
@@ -20,5 +20,19 @@ describe("shouldSkipOutro", () => {
     expect(shouldSkipOutro(400, 521, null)).toBe(false);
     expect(shouldSkipOutro(400, 0, 275)).toBe(false);
     expect(shouldSkipOutro(400, 521, 600)).toBe(false);
+  });
+});
+
+describe("correctedDuration", () => {
+  it("collapses the doubled AVFoundation reading to the listed length", () => {
+    expect(correctedDuration(223, 445.14)).toBe(223);
+    expect(correctedDuration(261, 521.35)).toBe(261);
+  });
+
+  it("trusts the element when the ratio is not the 2x signature", () => {
+    expect(correctedDuration(223, 224.9)).toBe(224.9);
+    expect(correctedDuration(223, 700)).toBe(700);
+    expect(correctedDuration(undefined, 445)).toBe(445);
+    expect(correctedDuration(10, 21)).toBe(21);
   });
 });

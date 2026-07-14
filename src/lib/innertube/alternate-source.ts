@@ -1,4 +1,5 @@
 import { fetchSearch } from "./search";
+import { fetchRadio } from "./radio";
 import { normalizeForMatch, tokenOverlap } from "@/lib/lyrics/match";
 import type { SourceKind } from "@/lib/store/track-source";
 import type { MinimalArtist, ShelfItemKind } from "./types";
@@ -79,27 +80,44 @@ export async function findCleanAudioAlternate(track: {
     "songs",
   );
   const reqTitle = normalizeForMatch(track.title);
+  const reqArtists = normalizeForMatch(artistsLine);
+  const passes = (item: {
+    kind: ShelfItemKind;
+    id: string;
+    title: string;
+    artists?: MinimalArtist[];
+    duration?: number;
+  }): boolean => {
+    if (item.kind !== "song") return false;
+    if (item.id === track.videoId) return false;
+    const hitTitle = normalizeForMatch(item.title ?? "");
+    if (hitTitle !== reqTitle && tokenOverlap(reqTitle, hitTitle) < 0.6) {
+      return false;
+    }
+    if (item.artists?.length) {
+      const hitArtists = normalizeForMatch(
+        item.artists.map((a) => a.name).join(" "),
+      );
+      if (tokenOverlap(reqArtists, hitArtists) === 0) return false;
+    }
+    return cleanAudioSwapOk(track.kind, track.duration, item.duration);
+  };
   for (const shelf of results.shelves) {
     for (const item of shelf.items) {
-      if (item.kind !== "song") continue;
-      if (item.id === track.videoId) continue;
-      const hitTitle = normalizeForMatch(item.title ?? "");
-      if (hitTitle !== reqTitle && tokenOverlap(reqTitle, hitTitle) < 0.6) {
-        continue;
-      }
-      if (item.artists?.length) {
-        const hitArtists = normalizeForMatch(
-          item.artists.map((a) => a.name).join(" "),
-        );
-        if (tokenOverlap(normalizeForMatch(artistsLine), hitArtists) === 0) {
-          continue;
-        }
-      }
-      if (!cleanAudioSwapOk(track.kind, track.duration, item.duration)) {
-        continue;
-      }
-      return item.id;
+      if (passes(item)) return item.id;
     }
+  }
+  // Search often surfaces only the canonical entry (which for some songs
+  // IS the extended album cut). The track's own radio reliably lists the
+  // other uploads of the same song — the shorter album/single version
+  // shows up there when search hides it. Same gates apply.
+  try {
+    const radio = await fetchRadio(track.videoId);
+    for (const item of radio) {
+      if (passes(item)) return item.id;
+    }
+  } catch {
+    /* radio is best-effort — no swap is fine */
   }
   return null;
 }

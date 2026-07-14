@@ -1809,7 +1809,7 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
         "--no-playlist",
         "--no-warnings",
         "--extractor-args",
-        "youtube:player_client=android_vr",
+        "youtube:player_client=android_vr,ios",
         &url,
     ]);
     // Windows: a console-less GUI process spawning the console-subsystem
@@ -2389,7 +2389,7 @@ fn spawn_downloader(
             "--no-part",
             "-q",
             "--extractor-args",
-            "youtube:player_client=android_vr",
+            "youtube:player_client=android_vr,ios",
             "-o",
             "-",
         ]);
