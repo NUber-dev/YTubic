@@ -110,6 +110,24 @@ export function useAudioEngine() {
     const onEnded = () => {
       store().next();
     };
+    // External pause/play — the system Now Playing widget or WebKit's
+    // built-in media session can pause the element directly, bypassing
+    // the store, which left the UI showing a stale playing state. Sync
+    // the element's actual state back. Track changes pause the element
+    // too, but by the time the queued pause event runs the status is
+    // already "loading", so the ready-guard keeps auto-play intact.
+    const onElPause = () => {
+      const s = store();
+      if (s.status === "ready" && s.playing && !el.ended) {
+        s.setPlaying(false);
+      }
+    };
+    const onElPlay = () => {
+      const s = store();
+      if (s.status === "ready" && !s.playing) {
+        s.setPlaying(true);
+      }
+    };
     const onError = () => {
       const mediaErr = el.error;
       const codeLabels: Record<number, string> = {
@@ -205,6 +223,8 @@ export function useAudioEngine() {
     el.addEventListener("timeupdate", onTimeUpdate);
     el.addEventListener("durationchange", onDurationChange);
     el.addEventListener("ended", onEnded);
+    el.addEventListener("pause", onElPause);
+    el.addEventListener("play", onElPlay);
     el.addEventListener("error", onError);
     el.addEventListener("playing", onPlaying);
     el.addEventListener("waiting", onWaiting);
@@ -212,6 +232,8 @@ export function useAudioEngine() {
       el.removeEventListener("timeupdate", onTimeUpdate);
       el.removeEventListener("durationchange", onDurationChange);
       el.removeEventListener("ended", onEnded);
+      el.removeEventListener("pause", onElPause);
+      el.removeEventListener("play", onElPlay);
       el.removeEventListener("error", onError);
       el.removeEventListener("playing", onPlaying);
       el.removeEventListener("waiting", onWaiting);
@@ -665,6 +687,32 @@ export function useAudioEngine() {
     return () => {
       cancelled = true;
       dispose?.();
+    };
+  }, []);
+
+  // System media commands on macOS route through WKWebView's media
+  // session — upstream removed these handlers when souvlaki took over
+  // on Windows, which left the mac widget's buttons acting on the
+  // element directly and desyncing the store. Mac-only: Windows keeps
+  // the souvlaki media-control path.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.mediaSession) return;
+    if (!navigator.userAgent.includes("Mac")) return;
+    const api = navigator.mediaSession;
+    const store = usePlaybackStore.getState;
+    api.setActionHandler("play", () => store().setPlaying(true));
+    api.setActionHandler("pause", () => store().setPlaying(false));
+    api.setActionHandler("previoustrack", () => store().prev());
+    api.setActionHandler("nexttrack", () => store().next());
+    api.setActionHandler("seekto", (details) => {
+      if (typeof details.seekTime === "number") store().seek(details.seekTime);
+    });
+    return () => {
+      api.setActionHandler("play", null);
+      api.setActionHandler("pause", null);
+      api.setActionHandler("previoustrack", null);
+      api.setActionHandler("nexttrack", null);
+      api.setActionHandler("seekto", null);
     };
   }, []);
 
