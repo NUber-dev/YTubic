@@ -308,6 +308,16 @@ function BackgroundCover() {
           className="bg-cover-noise pointer-events-none absolute inset-0"
         />
       )}
+      {/* Fade the ambient toward black at the window's top edge so the
+          boundary with the (black) menu-bar strip above the window reads
+          as a gradient rather than a hard line — the same treatment the
+          fullscreen player uses for the notch band. */}
+      {(slotA || slotB) && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-36 bg-gradient-to-b from-black via-black/35 to-transparent"
+        />
+      )}
     </>
   );
 }

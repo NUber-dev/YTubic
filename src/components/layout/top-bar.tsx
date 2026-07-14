@@ -87,6 +87,10 @@ const IS_MAC =
 export function TopBar() {
   const router = useRouter();
   const [maximized, setMaximized] = useState(false);
+  // Native fullscreen auto-hides the traffic lights, so the left inset
+  // that keeps controls clear of them must collapse there or it reads
+  // as a dead gap before the first button.
+  const [fullscreen, setFullscreenState] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
 
@@ -98,6 +102,9 @@ export function TopBar() {
     win.isMaximized().then((m) => {
       if (!cancelled) setMaximized(m);
     });
+    win.isFullscreen().then((f) => {
+      if (!cancelled) setFullscreenState(f);
+    });
     // Mirrors the cancelled-flag pattern used in audio-engine / app-shell:
     // `.onResized` is async, so its `.then` may resolve AFTER cleanup ran
     // in StrictMode's mount → unmount → remount cycle. Without the flag the
@@ -106,6 +113,9 @@ export function TopBar() {
       .onResized(() => {
         win.isMaximized().then((m) => {
           if (!cancelled) setMaximized(m);
+        });
+        win.isFullscreen().then((f) => {
+          if (!cancelled) setFullscreenState(f);
         });
       })
       .then((u) => {
@@ -129,7 +139,7 @@ export function TopBar() {
         {/* On macOS the native traffic lights overlay the top-left corner
             (trafficLightPosition x:14 + ~54px of buttons), so the nav
             cluster starts clear of them. */}
-        <div className={IS_MAC ? "flex items-center gap-1 pl-[78px]" : "flex items-center gap-1 pl-2"}>
+        <div className={IS_MAC && !fullscreen ? "flex items-center gap-1 pl-[78px]" : "flex items-center gap-1 pl-2"}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
