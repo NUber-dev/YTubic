@@ -1,3 +1,4 @@
+import { artistLineFromSubtitle } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { isPremium } from "@/lib/store/premium";
 import type { QueueTrack } from "@/lib/store/playback";
@@ -109,7 +110,9 @@ export async function saveTrackMeta(
   if (metaWritten.has(videoId)) return;
   metaWritten.add(videoId);
   const artist =
-    track.artists?.map((a) => a.name).join(", ") || track.subtitle || null;
+    track.artists?.map((a) => a.name).join(", ") ||
+    artistLineFromSubtitle(track.subtitle) ||
+    null;
   try {
     await invoke("set_cache_meta", { videoId, title: track.title, artist });
   } catch {

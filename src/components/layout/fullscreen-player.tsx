@@ -38,7 +38,7 @@ import {
 } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { getMediaElement } from "@/lib/audio-engine";
-import { cn } from "@/lib/utils";
+import { cn, artistLineFromSubtitle } from "@/lib/utils";
 
 // Where the active line rests in the fullscreen lyric pane. Apple
 // Music parks it near the TOP of the pane — past lines exit
@@ -285,8 +285,9 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
 
   const loading = status === "loading" && playing;
   const accentStyle = accentStyleFor(accent);
-  const artistLine =
-    track.artists?.map((a) => a.name).join(", ") ?? track.subtitle ?? "";
+  const artistLine = track.artists?.length
+    ? track.artists.map((a) => a.name).join(", ")
+    : artistLineFromSubtitle(track.subtitle) || (track.subtitle ?? "");
 
   // Seek + transport cluster. Rendered in one of two slots: pinned to
   // the window bottom when the lyrics pane fills the stage, or stacked

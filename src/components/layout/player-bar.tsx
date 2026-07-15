@@ -39,7 +39,7 @@ import { Thumbnail, thumbnailUrlsBySize } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
 import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
-import { cn } from "@/lib/utils";
+import { cn, artistLineFromSubtitle } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import {
@@ -789,7 +789,10 @@ export function PlayerBar({
             {track ? (
               <ArtistLinks
                 artists={track.artists}
-                fallback={track.subtitle ?? ""}
+                fallback={
+                  artistLineFromSubtitle(track.subtitle) ||
+                  (track.subtitle ?? "")
+                }
                 className="truncate text-sm text-muted-foreground"
               />
             ) : (

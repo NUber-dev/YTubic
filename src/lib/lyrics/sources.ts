@@ -1,3 +1,4 @@
+import { artistLineFromSubtitle } from "@/lib/utils";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchLrclibLyrics } from "@/lib/lyrics/lrclib";
 import { fetchMusixmatchLyrics } from "@/lib/lyrics/musixmatch";
@@ -49,8 +50,13 @@ function lyricsTimeoutSignal(ms: number): AbortSignal {
  * reaches "No lyrics found." instead of hanging on one dead source.
  */
 export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean) {
-  const artistName =
-    track?.artists?.map((a) => a.name).join(", ") ?? track?.subtitle;
+  // Subtitle fallback goes through artistLineFromSubtitle: tracks played
+  // from search cards / next-up rows carry the whole decorated line
+  // ("Song • Don Toliver • 3:47") as their subtitle, and querying every
+  // provider with that as the artist guarantees three misses.
+  const artistName = track?.artists?.length
+    ? track.artists.map((a) => a.name).join(", ")
+    : artistLineFromSubtitle(track?.subtitle);
 
   // A bare title is not identity: with no artist line at all, any provider
   // match would rest on the title alone, and popular titles are shared by

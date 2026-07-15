@@ -41,7 +41,7 @@ import {
   useLatchedCover,
 } from "@/components/layout/player-bar";
 import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
-import { cn } from "@/lib/utils";
+import { cn, artistLineFromSubtitle } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 
@@ -147,7 +147,10 @@ export function PlayerBarBottom() {
             {track ? (
               <ArtistLinks
                 artists={track.artists}
-                fallback={track.subtitle ?? ""}
+                fallback={
+                  artistLineFromSubtitle(track.subtitle) ||
+                  (track.subtitle ?? "")
+                }
                 className="truncate text-sm text-muted-foreground leading-tight"
               />
             ) : (

@@ -1,3 +1,4 @@
+import { artistLineFromSubtitle } from "@/lib/utils";
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { currentTrack, usePlaybackStore } from "@/lib/store/playback";
@@ -34,8 +35,7 @@ export function usePlaybackNotifications(): void {
 
     const artists =
       track?.artists?.map((a) => a.name).join(", ") ||
-      track?.subtitle ||
-      "";
+      artistLineFromSubtitle(track?.subtitle);
     invoke("notify_track", {
       title: track?.title ?? "Now playing",
       body: artists,

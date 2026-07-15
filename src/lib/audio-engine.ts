@@ -1,3 +1,4 @@
+import { artistLineFromSubtitle } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
@@ -944,7 +945,7 @@ export function useAudioEngine() {
 
 function buildArtistLabel(track: QueueTrack): string {
   if (track.artists?.length) return track.artists.map((a) => a.name).join(", ");
-  return track.subtitle ?? "";
+  return artistLineFromSubtitle(track.subtitle);
 }
 
 /**
