@@ -75,6 +75,45 @@ function collectTracks(resp: YtNode, seenIds: Set<string>): ShelfItem[] {
 }
 
 /**
+ * The playlist's OWN track shelf. YTM appends a "Suggestions" section to
+ * editable playlists whose rows use the exact same renderer as saved
+ * tracks, and on a short playlist the suggestions shelf is the only one
+ * carrying a continuation. Walking the whole response therefore swallows
+ * recommendations as if they were playlist members (a 6-track playlist
+ * rendering 13, then growing on scroll). Scope row collection and the
+ * continuation pointer to this shelf; when a response genuinely has no
+ * playlist shelf (radio-style lists handled by the /next fallback), the
+ * caller falls back to the whole-response walk.
+ */
+function findPlaylistShelf(json: YtNode): YtNode | null {
+  const SHELF_KEYS = [
+    "musicPlaylistShelfRenderer",
+    "musicPlaylistShelfContinuation",
+  ];
+  const seen = new WeakSet<object>();
+  let result: YtNode | null = null;
+  const walk = (node: unknown) => {
+    if (result || !node || typeof node !== "object") return;
+    if (seen.has(node as object)) return;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const c of node) walk(c);
+      return;
+    }
+    const n = node as YtNode;
+    for (const key of SHELF_KEYS) {
+      if (n[key] && typeof n[key] === "object") {
+        result = n[key];
+        return;
+      }
+    }
+    for (const k of Object.keys(n)) walk(n[k]);
+  };
+  walk(json);
+  return result;
+}
+
+/**
  * Fetch a playlist's header + first ~100 tracks. Subsequent pages are
  * loaded lazily via `fetchPlaylistContinuation` as the user scrolls —
  * this keeps first-paint fast and matches how the real YT Music web
@@ -107,9 +146,11 @@ export async function fetchPlaylistFirstPage(
   const secondText = readRuns(header.secondSubtitle);
   const trackCount = parseTrackCount(secondText);
 
+  const shelf = findPlaylistShelf(json);
+  const trackScope = shelf ?? json;
   const seenIds = new Set<string>();
-  let tracks = collectTracks(json, seenIds);
-  let continuationToken = findContinuationToken(json);
+  let tracks = collectTracks(trackScope, seenIds);
+  let continuationToken = findContinuationToken(trackScope);
 
   // Fallback: "radio-style" community playlists (RDCLAK5..., RDAMPL...,
   // RDAT...) are computed lazily — /browse returns only a header, and
@@ -167,8 +208,11 @@ export async function fetchPlaylistContinuation(
   token: string,
 ): Promise<PlaylistNextPage> {
   const json = await rawBrowseContinuation(token);
-  const tracks = collectTracks(json, new Set());
-  const next = findContinuationToken(json);
+  // Same scoping as the first page: a continuation response can carry a
+  // trailing suggestions section too.
+  const scope = findPlaylistShelf(json) ?? json;
+  const tracks = collectTracks(scope, new Set());
+  const next = findContinuationToken(scope);
   return {
     tracks,
     continuationToken: next === token ? undefined : next,

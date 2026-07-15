@@ -65,6 +65,13 @@ const NAV_BTN_CLS =
 const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// On macOS the window uses native decorations with an overlay title bar
+// (tauri.macos.conf.json), so the OS draws traffic lights top-left and the
+// Windows-style min/max/close cells must not render. The WKWebView UA
+// always contains "Macintosh" — no plugin needed for the platform check.
+const IS_MAC =
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
+
 /**
  * Custom title bar. The native window frame is disabled
  * (`decorations: false` in tauri.conf.json) so we draw the strip
@@ -80,6 +87,10 @@ const IS_TAURI =
 export function TopBar() {
   const router = useRouter();
   const [maximized, setMaximized] = useState(false);
+  // Native fullscreen auto-hides the traffic lights, so the left inset
+  // that keeps controls clear of them must collapse there or it reads
+  // as a dead gap before the first button.
+  const [fullscreen, setFullscreenState] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
 
@@ -91,6 +102,9 @@ export function TopBar() {
     win.isMaximized().then((m) => {
       if (!cancelled) setMaximized(m);
     });
+    win.isFullscreen().then((f) => {
+      if (!cancelled) setFullscreenState(f);
+    });
     // Mirrors the cancelled-flag pattern used in audio-engine / app-shell:
     // `.onResized` is async, so its `.then` may resolve AFTER cleanup ran
     // in StrictMode's mount → unmount → remount cycle. Without the flag the
@@ -99,6 +113,9 @@ export function TopBar() {
       .onResized(() => {
         win.isMaximized().then((m) => {
           if (!cancelled) setMaximized(m);
+        });
+        win.isFullscreen().then((f) => {
+          if (!cancelled) setFullscreenState(f);
         });
       })
       .then((u) => {
@@ -119,7 +136,10 @@ export function TopBar() {
         data-tauri-drag-region
         className="relative z-30 flex h-9 shrink-0 select-none items-center"
       >
-        <div className="flex items-center gap-1 pl-2">
+        {/* On macOS the native traffic lights overlay the top-left corner
+            (trafficLightPosition x:14 + ~54px of buttons), so the nav
+            cluster starts clear of them. */}
+        <div className={IS_MAC && !fullscreen ? "flex items-center gap-1 pl-[78px]" : "flex items-center gap-1 pl-2"}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -196,6 +216,7 @@ export function TopBar() {
             almost anywhere in the bar to move the window. */}
         <div data-tauri-drag-region className="h-full flex-1" />
 
+        {IS_MAC ? null : (
         <div className="flex h-full items-center">
           <button
             type="button"
@@ -222,6 +243,7 @@ export function TopBar() {
             <CloseGlyph />
           </button>
         </div>
+        )}
       </header>
 
       <ReportIssueDialog open={reportOpen} onOpenChange={setReportOpen} />

@@ -55,6 +55,12 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+# Already in the dependency tree via tauri's `image-png` feature; declared
+# here so we can decode album art server-side and pull a vibrant accent
+# color for the fullscreen player (a client-side <canvas> read taints on
+# the CORS-less art CDNs and throws in WKWebView). jpeg is what the art
+# hosts serve; other formats ride in through feature unification.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # OS media controls: on Windows this is the System Media Transport Controls
 # (the media tile in Quick Settings / the volume flyout, the lock screen, and
 # the hardware media keys). We create the SMTC ourselves from the host process
@@ -80,6 +86,28 @@ windows-sys = { version = "0.59", features = [
     # Menu shortcut) to "YTubic" instead of "Unknown app". See src/appid.rs.
     "Win32_UI_Shell",
 ] }
+
+# macOS system Now Playing (Control Center / media keys / AirPods). A
+# Tauri WKWebView doesn't bridge the JS MediaSession API to the system
+# the way WebView2 does for Windows, so we drive MediaPlayer.framework
+# directly. objc2 + objc2-foundation are already in the tree via tauri;
+# declared here so we can use them, plus the MediaPlayer bindings.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSDictionary",
+    "NSValue",
+] }
+objc2-media-player = { version = "0.3", features = [
+    "MPNowPlayingInfoCenter",
+    "MPRemoteCommandCenter",
+    "MPRemoteCommand",
+    "MPRemoteCommandEvent",
+    "MPMediaItem",
+    "block2",
+] }
+block2 = "0.6"
 
 [dev-dependencies]
 # ServiceExt::oneshot for the stream-server routing test.

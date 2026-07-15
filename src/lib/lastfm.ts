@@ -1,3 +1,4 @@
+import { artistLineFromSubtitle } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "@/lib/store/settings";
 
@@ -26,7 +27,7 @@ export function lastfmArtist(track: LastfmTrackMeta | undefined): string {
   if (!track) return "";
   const raw = track.artists?.length
     ? track.artists.map((a) => a.name).join(", ")
-    : (track.subtitle ?? "");
+    : artistLineFromSubtitle(track.subtitle);
   return raw.replace(/\s*-\s*Topic$/i, "").trim();
 }
 

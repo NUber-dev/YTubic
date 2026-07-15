@@ -67,6 +67,20 @@ export function pickHighResThumbnail(
   return sorted[sorted.length - 1].url;
 }
 
+/**
+ * All thumbnail URLs, largest first, deduped. Used to build a fallback
+ * chain for the fullscreen backdrop + accent: the single largest variant
+ * (a maxres upgrade) sometimes 404s, so callers walk down to the next size
+ * on failure instead of falling flat to black + red.
+ */
+export function thumbnailUrlsBySize(thumbnails: YtThumbnail[]): string[] {
+  const urls = [...thumbnails]
+    .sort((a, b) => (b.width ?? 0) - (a.width ?? 0))
+    .map((t) => t.url)
+    .filter(Boolean);
+  return [...new Set(urls)];
+}
+
 type Props = {
   thumbnails: YtThumbnail[];
   alt: string;

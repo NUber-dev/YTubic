@@ -24,6 +24,7 @@ use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
+mod now_playing;
 mod appid;
 mod discord;
 mod lastfm;
@@ -787,7 +788,17 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         .min_inner_size(420.0, 560.0)
         .center()
         .data_directory(webview_data.clone())
-        .user_agent(YT_LOGIN_UA)
+        .user_agent(
+            // Windows UA fools Google under WebView2, but on macOS the engine
+            // is WKWebView: a Safari UA matches the real engine fingerprint,
+            // which consumer-account risk checks care about.
+            if cfg!(target_os = "macos") {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+                 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+            } else {
+                YT_LOGIN_UA
+            },
+        )
         // Must match the session-keeper's args (shared profile folder).
         .additional_browser_args(YT_WEBVIEW_ARGS)
         // Surface the current origin in the title so the user can spot
@@ -1985,8 +1996,11 @@ async fn delete_cache_entries(
         let mut out = std::collections::HashSet::new();
         while let Ok(Some(e)) = rd.next_entry().await {
             if let Some(name) = e.file_name().to_str() {
+                // A track cached only as video (`<id>.video.mp4`) still
+                // has to be swept, so enumerate every variant.
                 let id = name
-                    .strip_suffix(".webm")
+                    .strip_suffix(".video.mp4")
+                    .or_else(|| name.strip_suffix(".webm"))
                     .or_else(|| name.strip_suffix(".meta.json"))
                     .or_else(|| name.strip_suffix(".part"));
                 if let Some(id) = id {
@@ -2005,13 +2019,17 @@ async fn delete_cache_entries(
     };
 
     for id in targets {
-        let path = dir.join(format!("{id}.webm"));
-        if let Ok(meta) = tokio::fs::metadata(&path).await {
-            freed += meta.len();
+        // Both stream variants for the id, plus stray .part files from
+        // crashed downloads.
+        for video in [false, true] {
+            let (part_name, final_name) = stream_file_names(&id, video);
+            let path = dir.join(final_name);
+            if let Ok(meta) = tokio::fs::metadata(&path).await {
+                freed += meta.len();
+            }
+            let _ = tokio::fs::remove_file(&path).await;
+            let _ = tokio::fs::remove_file(dir.join(part_name)).await;
         }
-        let _ = tokio::fs::remove_file(&path).await;
-        // Stray .part file from a crashed download, if any.
-        let _ = tokio::fs::remove_file(dir.join(format!("{id}.part"))).await;
         // Metadata sidecar, if one was written.
         let _ = tokio::fs::remove_file(dir.join(format!("{id}.meta.json"))).await;
     }
@@ -2064,6 +2082,35 @@ async fn ensure_ytdlp(app: tauri::AppHandle) {
     ytdlp::ensure(app).await;
 }
 
+/// yt-dlp format selectors for the audio-only stream.
+///
+/// macOS renders playback in WKWebView, which only decodes a narrow set
+/// of codecs. Prefer AAC-in-mp4 (m4a) first, then Opus/webm, and as a
+/// last resort a progressive muxed mp4 (`b[ext=mp4][acodec!=none]`, i.e.
+/// itag 18 h264+aac) so a video-only upload with no audio-only format
+/// still has its audio play instead of erroring — same as real YT Music.
+/// Other platforms keep their original webm-first selection unchanged;
+/// WebView2 / WebKitGTK decode Opus fine and the extra ladder isn't
+/// needed there.
+#[cfg(target_os = "macos")]
+const AUDIO_FORMAT: &str = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio[ext=webm]/bestaudio/b[ext=mp4][acodec!=none]";
+#[cfg(not(target_os = "macos"))]
+const AUDIO_FORMAT: &str = "bestaudio[ext=webm]/bestaudio";
+
+/// yt-dlp format selectors for the music-video stream. Progressive
+/// (muxed) only: we pipe yt-dlp's stdout straight through, and merging
+/// separate video+audio tracks would need ffmpeg, which we don't ship —
+/// so no `bestvideo+bestaudio`, and no bare `best` (that can resolve to
+/// an adaptive video-only file). On macOS the selection is pinned to
+/// h264-in-mp4 (`vcodec^=avc1`) with itag 18 as the floor, which is what
+/// WKWebView can actually decode. Other platforms get a webm progressive
+/// last resort on top of that.
+#[cfg(target_os = "macos")]
+const VIDEO_FORMAT: &str = "b[ext=mp4][vcodec^=avc1][acodec!=none]/18";
+#[cfg(not(target_os = "macos"))]
+const VIDEO_FORMAT: &str =
+    "b[ext=mp4][vcodec^=avc1][acodec!=none]/18/b[ext=webm][acodec!=none]";
+
 /// Run yt-dlp to resolve a videoId into metadata JSON.
 #[tauri::command]
 fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
@@ -2075,11 +2122,11 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
     command.args([
         "-j",
         "-f",
-        "bestaudio",
+        AUDIO_FORMAT,
         "--no-playlist",
         "--no-warnings",
         "--extractor-args",
-        "youtube:player_client=tv,android_vr",
+        "youtube:player_client=android_vr,ios",
         &url,
     ]);
     // Windows: a console-less GUI process spawning the console-subsystem
@@ -2141,10 +2188,9 @@ struct StreamServer {
     ytdlp_bin: PathBuf,
 }
 
-/// Read the `ephemeral` query flag from a stream/prefetch request.
-/// True when `?ephemeral=1` (or `=true`) appears — used to route the
-/// download to `ephemeral_dir` instead of the persistent cache.
-fn is_ephemeral(req: &Request) -> bool {
+/// Read a boolean query flag (`?name=1` / `?name=true`) off a stream/
+/// prefetch request.
+fn query_flag(req: &Request, name: &str) -> bool {
     let Some(query) = req.uri().query() else {
         return false;
     };
@@ -2152,8 +2198,36 @@ fn is_ephemeral(req: &Request) -> bool {
         let mut it = kv.splitn(2, '=');
         let key = it.next().unwrap_or("");
         let val = it.next().unwrap_or("");
-        key == "ephemeral" && (val == "1" || val == "true")
+        key == name && (val == "1" || val == "true")
     })
+}
+
+/// `?ephemeral=1` routes the download to `ephemeral_dir` instead of the
+/// persistent cache.
+fn is_ephemeral(req: &Request) -> bool {
+    query_flag(req, "ephemeral")
+}
+
+/// `?video=1` asks for the music-video stream (progressive h264/mp4)
+/// instead of the audio-only one. Cached side by side with the audio
+/// variant under a distinct filename.
+fn is_video(req: &Request) -> bool {
+    query_flag(req, "video")
+}
+
+/// On-disk names for one videoId's cached stream + its in-flight part
+/// file. Audio keeps the historical `.webm` name (regardless of actual
+/// container — see `sniff_stream_mime`); the video variant lives next
+/// to it so the same id can have both cached.
+fn stream_file_names(video_id: &str, video: bool) -> (String, String) {
+    if video {
+        (
+            format!("{video_id}.video.part"),
+            format!("{video_id}.video.mp4"),
+        )
+    } else {
+        (format!("{video_id}.part"), format!("{video_id}.webm"))
+    }
 }
 
 /// Hash a URL into a stable hex filename. Uses Rust's stdlib
@@ -2320,6 +2394,259 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Result<u64, String> {
     Ok(freed)
 }
 
+const ALLOWED_IMAGE_HOST_SUFFIXES: &[&str] = &[
+    "mzstatic.com",
+    "ytimg.com",
+    "ggpht.com",
+    "googleusercontent.com",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImageUrlKind {
+    /// An allowlisted remote CDN over https.
+    Remote,
+    /// The app's own cover server on loopback (http://127.0.0.1:<port>/...).
+    Loopback,
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
+/// SSRF gate: an image URL is fetchable only if it's the app's own loopback
+/// cover server, or https on one of the known art CDNs. Everything else is
+/// rejected so a crafted metadata field can't point the server-side fetch at
+/// an internal service.
+fn classify_image_url(url: &reqwest::Url) -> Result<ImageUrlKind, String> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| "image url missing host".to_string())?;
+    if is_loopback_host(host) {
+        return match url.scheme() {
+            "http" | "https" => Ok(ImageUrlKind::Loopback),
+            scheme => Err(format!("blocked loopback scheme: {scheme}")),
+        };
+    }
+    if url.scheme() != "https" {
+        return Err(format!("blocked scheme: {}", url.scheme()));
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host_ok = ALLOWED_IMAGE_HOST_SUFFIXES
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+    if host_ok {
+        Ok(ImageUrlKind::Remote)
+    } else {
+        Err(format!("blocked image host: {host}"))
+    }
+}
+
+/// Follow redirects, but only to a target of the SAME kind as the start —
+/// a remote CDN may only 3xx to another allowlisted CDN, and a loopback URL
+/// may only 3xx to loopback. This keeps the old `redirect::none()` SSRF
+/// guarantee (a CDN can't bounce us into an internal host) while still
+/// following the routine 3xx that Google/YT image URLs hand out.
+fn image_redirect_policy(initial: ImageUrlKind) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= 8 {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "too many image redirects",
+            ));
+        }
+        match classify_image_url(attempt.url()) {
+            Ok(kind) if kind == initial => attempt.follow(),
+            Ok(_) => attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "blocked cross-context image redirect",
+            )),
+            Err(e) => {
+                attempt.error(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
+            }
+        }
+    })
+}
+
+fn image_referer(url: &reqwest::Url) -> Option<&'static str> {
+    let host = url.host_str()?;
+    if is_loopback_host(host) {
+        return None;
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "mzstatic.com" || host.ends_with(".mzstatic.com") {
+        Some("https://music.apple.com/")
+    } else {
+        Some("https://music.youtube.com/")
+    }
+}
+
+/// Fetch image bytes for cover/accent use. Accepts the app's own loopback
+/// cover server and the allowlisted art CDNs (see `classify_image_url`),
+/// follows same-kind redirects, and sends browser-like headers so a CDN
+/// that 403s a bare client (hotlink protection) still returns the image.
+async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("bad url: {e}"))?;
+    let kind = classify_image_url(&parsed)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(image_redirect_policy(kind))
+        .build()
+        .map_err(|e| format!("client: {e}"))?;
+    let mut req = client
+        .get(parsed.clone())
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
+             (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        )
+        .header(
+            reqwest::header::ACCEPT,
+            "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        );
+    if let Some(referer) = image_referer(&parsed) {
+        req = req.header(reqwest::header::REFERER, referer);
+    }
+    let resp = req.send().await.map_err(|e| format!("fetch: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read body: {e}"))?
+        .to_vec())
+}
+
+/// Fallback accent when the art is near-monochrome or otherwise doesn't
+/// yield a legible color: the app's YouTube-red brand color.
+// Neutral fallback for near-monochrome art (black-and-white covers, dark
+// photos) where `accent_from_bytes` finds no vibrant hue. A muted grey
+// reads as a deliberate neutral accent; the old brand red looked like a
+// bug against a desaturated cover.
+const ACCENT_FALLBACK: &str = "#71717A";
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d.abs() < f64::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - r).abs() < f64::EPSILON {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if (max - g).abs() < f64::EPSILON {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } * 60.0;
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    if s.abs() < f64::EPSILON {
+        let v = (l * 255.0).round() as u8;
+        return (v, v, v);
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let hk = h / 360.0;
+    let tc = |mut t: f64| {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 1.0 / 2.0 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    (
+        (tc(hk + 1.0 / 3.0) * 255.0).round() as u8,
+        (tc(hk) * 255.0).round() as u8,
+        (tc(hk - 1.0 / 3.0) * 255.0).round() as u8,
+    )
+}
+
+/// Downscale the art and pick a vibrant dominant color. Pixels outside a
+/// legible lightness band or below a saturation floor are dropped so the
+/// accent reads as white-on-color over the dark ambient backdrop; the
+/// survivors are bucketed by hue and the saturation-weighted average of
+/// the heaviest bucket wins. Returns `None` for near-monochrome art so
+/// the caller can fall back to the brand red.
+fn accent_from_bytes(bytes: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let small = img.thumbnail(64, 64).to_rgb8();
+    let mut sum = [[0f64; 3]; 12];
+    let mut weight = [0f64; 12];
+    for p in small.pixels() {
+        let (h, s, l) = rgb_to_hsl(p[0], p[1], p[2]);
+        if !(0.20..=0.75).contains(&l) || s < 0.35 {
+            continue;
+        }
+        let bucket = ((h / 30.0).floor() as usize) % 12;
+        sum[bucket][0] += p[0] as f64 * s;
+        sum[bucket][1] += p[1] as f64 * s;
+        sum[bucket][2] += p[2] as f64 * s;
+        weight[bucket] += s;
+    }
+    let best = weight
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)?;
+    if weight[best] <= 0.0 {
+        return None;
+    }
+    let r = (sum[best][0] / weight[best]).round() as u8;
+    let g = (sum[best][1] / weight[best]).round() as u8;
+    let b = (sum[best][2] / weight[best]).round() as u8;
+    // Force the winner into the legible band: floor the saturation so a
+    // muted average still shows as a color, and clamp lightness so it's
+    // neither lost on black nor washed out under white text.
+    let (h, s, l) = rgb_to_hsl(r, g, b);
+    let (rr, gg, bb) = hsl_to_rgb(h, s.max(0.5), l.clamp(0.45, 0.70));
+    Some(format!("#{rr:02X}{gg:02X}{bb:02X}"))
+}
+
+/// Album-art accent color for the fullscreen player. Fetches the art and
+/// computes a vibrant dominant color off-thread. Always resolves (falls
+/// back to brand red) so the frontend can set it unconditionally.
+#[tauri::command]
+async fn dominant_accent_color(url: String) -> Result<String, String> {
+    let bytes = fetch_image_bytes(&url).await?;
+    let color = tokio::task::spawn_blocking(move || accent_from_bytes(&bytes))
+        .await
+        .map_err(|e| format!("join: {e}"))?;
+    Ok(color.unwrap_or_else(|| ACCENT_FALLBACK.to_string()))
+}
+
+/// Push the current track into the macOS system Now Playing panel
+/// (title / artist / album / times / play state). A no-op off macOS
+/// (see `now_playing`).
+#[tauri::command]
+fn set_now_playing(info: now_playing::NowPlayingInfo) {
+    now_playing::apply(&info);
+}
+
 #[derive(Default)]
 struct StreamServerState {
     port: Arc<Mutex<Option<u16>>>,
@@ -2344,15 +2671,18 @@ async fn get_stream_base_url(
 }
 
 /// Spawn a yt-dlp downloader that writes into the shared memory buffer
-/// AND to a `<videoId>.part` file on disk. On successful exit, renames
-/// .part → .webm. Updates `state.complete` + pings `notify` on every
-/// new chunk.
+/// AND to a part file on disk (names per `stream_file_names`). On
+/// successful exit, renames the part file to its final name. Updates
+/// `state.complete` + pings `notify` on every new chunk.
 ///
-/// `target_dir` selects which on-disk pool to write to (persistent or
-/// ephemeral). `map_key` is the prefixed key in `srv.downloads` so a
-/// single videoId can be in-flight independently for both pools.
+/// `video` picks the music-video stream (progressive h264/mp4) over the
+/// audio-only one. `target_dir` selects which on-disk pool to write to
+/// (persistent or ephemeral). `map_key` is the prefixed key in
+/// `srv.downloads` so a single videoId can be in-flight independently
+/// for every pool/variant combination.
 fn spawn_downloader(
     video_id: String,
+    video: bool,
     target_dir: PathBuf,
     map_key: String,
     srv: StreamServer,
@@ -2361,15 +2691,16 @@ fn spawn_downloader(
     let downloads = srv.downloads.clone();
     tokio::spawn(async move {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        let part_path = target_dir.join(format!("{video_id}.part"));
-        let final_path = target_dir.join(format!("{video_id}.webm"));
+        let (part_name, final_name) = stream_file_names(&video_id, video);
+        let part_path = target_dir.join(part_name);
+        let final_path = target_dir.join(final_name);
         let _ = tokio::fs::create_dir_all(&target_dir).await;
         let _ = tokio::fs::remove_file(&part_path).await; // clean stale
 
         let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
         cmd.args([
             "-f",
-            "bestaudio[ext=webm]/bestaudio",
+            if video { VIDEO_FORMAT } else { AUDIO_FORMAT },
             "--no-playlist",
             "--no-warnings",
             "--no-part",
@@ -2388,7 +2719,7 @@ fn spawn_downloader(
             "--socket-timeout",
             "15",
             "--extractor-args",
-            "youtube:player_client=tv,android_vr",
+            "youtube:player_client=android_vr,ios",
             "-o",
             "-",
         ]);
@@ -2511,20 +2842,23 @@ fn spawn_downloader(
 }
 
 /// Read the first 16 bytes of a completed track file and map the
-/// container magic to the right `audio/*` mime. Every track is saved
-/// with a `.webm` extension regardless of what yt-dlp actually
-/// produced, so we can't trust the extension.
-async fn sniff_audio_mime(path: &std::path::Path) -> &'static str {
+/// container magic to the right mime. Audio tracks are saved with a
+/// `.webm` extension regardless of what yt-dlp actually produced, so we
+/// can't trust the extension; the `video` flag only switches the
+/// top-level type, the container still comes from the magic bytes.
+async fn sniff_stream_mime(path: &std::path::Path, video: bool) -> &'static str {
     let mut buf = [0u8; 16];
     if let Ok(mut f) = tokio::fs::File::open(path).await {
         let _ = f.read(&mut buf).await;
     }
     if &buf[4..8] == b"ftyp" {
-        "audio/mp4"
+        if video { "video/mp4" } else { "audio/mp4" }
     } else if &buf[..4] == &[0x1A, 0x45, 0xDF, 0xA3] {
-        "audio/webm"
+        if video { "video/webm" } else { "audio/webm" }
     } else if &buf[..3] == b"ID3" {
         "audio/mpeg"
+    } else if video {
+        "video/mp4"
     } else {
         "audio/webm"
     }
@@ -2542,17 +2876,21 @@ async fn stream_handler(
     }
 
     let ephemeral = is_ephemeral(&req);
+    let video = is_video(&req);
     let target_dir = if ephemeral {
         srv.ephemeral_dir.clone()
     } else {
         srv.cache_dir.clone()
     };
-    let map_key = if ephemeral {
-        format!("e:{video_id}")
-    } else {
-        format!("p:{video_id}")
-    };
-    let final_path = target_dir.join(format!("{video_id}.webm"));
+    // Four independent in-flight pools: {persistent, ephemeral} ×
+    // {audio, video} — the same id may legitimately be downloading in
+    // more than one of them.
+    let map_key = format!(
+        "{}{}:{video_id}",
+        if ephemeral { "e" } else { "p" },
+        if video { "v" } else { "" },
+    );
+    let final_path = target_dir.join(stream_file_names(&video_id, video).1);
 
     // If the full file isn't on disk yet, start (or attach to) the
     // download and block until it completes. Attempting to progressively
@@ -2582,7 +2920,7 @@ async fn stream_handler(
         .unwrap_or("")
         .to_string();
     eprintln!(
-        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral}",
+        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral} video={video}",
         final_path.exists()
     );
 
@@ -2600,6 +2938,7 @@ async fn stream_handler(
                 drop(map);
                 spawn_downloader(
                     video_id.clone(),
+                    video,
                     target_dir.clone(),
                     map_key.clone(),
                     srv.clone(),
@@ -2642,7 +2981,7 @@ async fn stream_handler(
     // to m4a when a video has no webm audio — serving that as
     // `video/webm` (what tower-http guesses from the extension) makes
     // Chromium refuse to decode.
-    let sniffed_ct = sniff_audio_mime(&final_path).await;
+    let sniffed_ct = sniff_stream_mime(&final_path, video).await;
     let mut resp = ServeFile::new(&final_path)
         .oneshot(req)
         .await
@@ -2726,17 +3065,18 @@ async fn prefetch_handler(
         return StatusCode::BAD_REQUEST;
     }
     let ephemeral = is_ephemeral(&req);
+    let video = is_video(&req);
     let target_dir = if ephemeral {
         srv.ephemeral_dir.clone()
     } else {
         srv.cache_dir.clone()
     };
-    let map_key = if ephemeral {
-        format!("e:{video_id}")
-    } else {
-        format!("p:{video_id}")
-    };
-    let final_path = target_dir.join(format!("{video_id}.webm"));
+    let map_key = format!(
+        "{}{}:{video_id}",
+        if ephemeral { "e" } else { "p" },
+        if video { "v" } else { "" },
+    );
+    let final_path = target_dir.join(stream_file_names(&video_id, video).1);
     if final_path.exists() {
         return StatusCode::OK;
     }
@@ -2756,7 +3096,7 @@ async fn prefetch_handler(
         map.insert(map_key.clone(), state.clone());
         state
     };
-    spawn_downloader(video_id, target_dir, map_key, srv.clone(), state);
+    spawn_downloader(video_id, video, target_dir, map_key, srv.clone(), state);
     StatusCode::ACCEPTED
 }
 
@@ -3017,6 +3357,7 @@ pub fn run() {
             cache_cover,
             cover_cache_stats,
             clear_cover_cache,
+            dominant_accent_color,
             quit_app,
             set_close_behavior,
             autostart_set,
@@ -3028,6 +3369,7 @@ pub fn run() {
             focus_main_window,
             open_player_window,
             close_player_window,
+            set_now_playing,
             media::media_update,
             media::media_clear,
             discord::discord_update,
@@ -3091,6 +3433,9 @@ pub fn run() {
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
             let handle = app.handle().clone();
+            // Register macOS system Now Playing remote-command handlers
+            // (Control Center / media keys / AirPods). No-op off macOS.
+            now_playing::init(app.handle());
             eprintln!("[stream-server] cache dir: {cache_dir:?}");
             eprintln!("[stream-server] ephemeral dir: {ephemeral_dir:?}");
             eprintln!("[stream-server] cover dir: {cover_dir:?}");
@@ -3136,6 +3481,12 @@ pub fn run() {
             // volume flyout, plus the hardware media keys). setup() runs on the
             // main thread, which souvlaki requires and where the main window's
             // HWND is available.
+            // souvlaki drives SMTC on Windows. macOS has its own
+            // MPRemoteCommandCenter bridge (now_playing.rs); letting both
+            // register would fight over the system Now Playing entry, so
+            // souvlaki stays Windows-only. media_update/media_clear no-op
+            // when init never ran (CONTROLS stays None).
+            #[cfg(windows)]
             media::init(app.handle());
             if let Err(e) = build_tray(app.handle()) {
                 eprintln!("[tray] build failed: {e}");

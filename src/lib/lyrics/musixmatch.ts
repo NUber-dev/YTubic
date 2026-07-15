@@ -1,6 +1,11 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
+import {
+  durationMatches,
+  hitMatches,
+  normalizeForMatch,
+} from "@/lib/lyrics/match";
 
 /**
  * Musixmatch — unofficial reverse-engineered web-desktop client. The
@@ -35,6 +40,9 @@ const TOKEN_STORAGE_KEY = "musixmatch-user-token";
 type MusixmatchParams = {
   title: string;
   artist?: string;
+  /** Duration in seconds — vouches for exact-title hits when no artist
+   *  metadata exists to verify against (see findTrackId). */
+  duration?: number;
 };
 
 type CachedToken = { token: string; loadedAt: number };
@@ -81,7 +89,7 @@ function invalidateToken(): void {
   }
 }
 
-async function fetchToken(): Promise<string | null> {
+async function fetchToken(signal?: AbortSignal): Promise<string | null> {
   const cached = loadStoredToken();
   if (cached && Date.now() - cached.loadedAt < TOKEN_TTL_MS) {
     return cached.token;
@@ -91,6 +99,7 @@ async function fetchToken(): Promise<string | null> {
     const r = await tauriFetch(url, {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (!r.ok) return null;
     const json = (await r.json()) as MxmEnvelope<{ user_token?: string }>;
@@ -127,6 +136,7 @@ type MxmSearchBody = {
       has_subtitles?: number;
       has_lyrics?: number;
       instrumental?: number;
+      track_length?: number;
     };
   }>;
 };
@@ -141,30 +151,44 @@ type MxmLyricsBody = {
 
 export async function fetchMusixmatchLyrics(
   p: MusixmatchParams,
+  signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
 
   // Two-pass to handle token expiry: if any call returns 401, drop the
-  // cached token and retry once with a fresh one.
-  let result = await tryFetch(p);
+  // cached token and retry once with a fresh one. Both passes share the
+  // caller's signal, so the provider's total time budget stays bounded.
+  let result = await tryFetch(p, signal);
   if (result === "auth-failure") {
     invalidateToken();
-    result = await tryFetch(p);
+    result = await tryFetch(p, signal);
+  }
+  // Every step above swallows its own fetch errors into null, which
+  // would cache a mid-chain timeout as a permanent "no lyrics" for an
+  // hour. Rethrow instead so react-query treats it as the transient
+  // failure it is (retry now, re-fetch on the next mount).
+  if (signal?.aborted && (result === null || result === "auth-failure")) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Musixmatch timed out");
   }
   return result === "auth-failure" ? null : result;
 }
 
 type TryFetchResult = Lyrics | null | "auth-failure";
 
-async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
-  const token = await fetchToken();
+async function tryFetch(
+  p: MusixmatchParams,
+  signal?: AbortSignal,
+): Promise<TryFetchResult> {
+  const token = await fetchToken(signal);
   if (!token) return null;
 
-  const trackId = await findTrackId(p, token);
+  const trackId = await findTrackId(p, token, signal);
   if (trackId === "auth-failure") return "auth-failure";
   if (!trackId) return null;
 
-  const subtitle = await getSubtitle(trackId, token);
+  const subtitle = await getSubtitle(trackId, token, signal);
   if (subtitle === "auth-failure") return "auth-failure";
   if (subtitle) {
     const lines = parseLRC(subtitle);
@@ -173,7 +197,7 @@ async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
     }
   }
 
-  const plain = await getPlainLyrics(trackId, token);
+  const plain = await getPlainLyrics(trackId, token, signal);
   if (plain === "auth-failure") return "auth-failure";
   if (plain) return { kind: "plain", text: plain, source: "Musixmatch" };
 
@@ -183,6 +207,7 @@ async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
 async function findTrackId(
   p: MusixmatchParams,
   token: string,
+  signal?: AbortSignal,
 ): Promise<number | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.search`);
   url.searchParams.set("q_track", p.title);
@@ -199,6 +224,7 @@ async function findTrackId(
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     // A stale/flagged token can be rejected at the HTTP layer (401/403),
     // not only via the envelope status_code — treat both as auth failures
@@ -207,13 +233,35 @@ async function findTrackId(
     if (!r.ok) return null;
     const json = (await r.json()) as MxmEnvelope<MxmSearchBody>;
     if (json?.message?.header?.status_code === 401) return "auth-failure";
-    const list = json?.message?.body?.track_list ?? [];
+    const rawList = json?.message?.body?.track_list ?? [];
+    // track.search is fuzzy and returns something even when Musixmatch
+    // lacks this track, which surfaces a confidently-wrong different song.
+    // Keep only hits whose title/artist plausibly match the request before
+    // the synced/plain preference picks the "best" one.
+    const reqTitle = normalizeForMatch(p.title);
+    const reqArtist = normalizeForMatch(p.artist ?? "");
+    const list = rawList.filter((t) =>
+      hitMatches(
+        reqTitle,
+        reqArtist,
+        normalizeForMatch(t.track?.track_name ?? ""),
+        normalizeForMatch(t.track?.artist_name ?? ""),
+      ),
+    );
+    // A bare title is not identity: with no request artist to verify
+    // against, hitMatches passes any exact-title hit, so a different
+    // song with the same name slips through. Require the track length
+    // to vouch for the match instead; no duration to check means no
+    // lyrics rather than confidently-wrong ones.
+    const verified = reqArtist
+      ? list
+      : list.filter((t) => durationMatches(p.duration, t.track?.track_length));
     // Prefer a track with synced subtitles; fall back to any track with
     // lyrics. The result list is already sorted by rating descending, so
     // the first hit in either pool is the best one.
-    const synced = list.find((t) => t.track?.has_subtitles === 1);
+    const synced = verified.find((t) => t.track?.has_subtitles === 1);
     if (synced?.track?.track_id) return synced.track.track_id;
-    const plain = list.find((t) => t.track?.has_lyrics === 1);
+    const plain = verified.find((t) => t.track?.has_lyrics === 1);
     if (plain?.track?.track_id) return plain.track.track_id;
     return null;
   } catch {
@@ -224,6 +272,7 @@ async function findTrackId(
 async function getSubtitle(
   trackId: number,
   token: string,
+  signal?: AbortSignal,
 ): Promise<string | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.subtitle.get`);
   url.searchParams.set("track_id", String(trackId));
@@ -236,6 +285,7 @@ async function getSubtitle(
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (r.status === 401 || r.status === 403) return "auth-failure";
     if (!r.ok) return null;
@@ -251,6 +301,7 @@ async function getSubtitle(
 async function getPlainLyrics(
   trackId: number,
   token: string,
+  signal?: AbortSignal,
 ): Promise<string | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.lyrics.get`);
   url.searchParams.set("track_id", String(trackId));
@@ -262,6 +313,7 @@ async function getPlainLyrics(
     const r = await tauriFetch(url.toString(), {
       method: "GET",
       headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+      signal,
     });
     if (r.status === 401 || r.status === 403) return "auth-failure";
     if (!r.ok) return null;

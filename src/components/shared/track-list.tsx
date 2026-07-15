@@ -133,7 +133,7 @@ export function TrackList({
     count: tracks.length,
     getScrollElement: () => scrollEl,
     estimateSize: () => ROW_SIZE,
-    overscan: 8,
+    overscan: 16,
     scrollMargin,
     getItemKey: (i) => `${tracks[i].id}:${i}`,
   });

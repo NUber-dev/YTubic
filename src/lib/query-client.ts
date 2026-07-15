@@ -36,7 +36,7 @@ export function shouldPersistQuery(queryKey: readonly unknown[]): boolean {
     head === "album" ||
     // The playlist route keys its data as "playlist-pages" (not "playlist"),
     // so the old entry never matched and playlists were never persisted.
-    head === "playlist-pages" ||
+    head === "playlist-pages-v2" ||
     // Persisted so heart fills are correct on reload — fetching the
     // full list is 7+ continuation round-trips, you don't want to pay
     // that on every cold start.

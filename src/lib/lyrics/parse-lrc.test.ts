@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { scaleTimedLines } from "@/lib/lyrics/lrclib";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
 
 describe("parseLRC", () => {
@@ -46,5 +47,26 @@ describe("parseLRC", () => {
   it("returns [] for empty / untimed input", () => {
     expect(parseLRC("")).toEqual([]);
     expect(parseLRC("no timestamps here")).toEqual([]);
+  });
+});
+
+describe("scaleTimedLines", () => {
+  const lines = [
+    { start: 100, end: 110, text: "a" },
+    { start: 110, text: "b" },
+  ];
+  it("rescales to a sped-up upload's listed length", () => {
+    const out = scaleTimedLines(lines, 238, 179);
+    expect(out[0].start).toBeCloseTo(100 * (179 / 238), 3);
+    expect(out[0].end).toBeCloseTo(110 * (179 / 238), 3);
+    expect(out[1].end).toBeUndefined();
+  });
+  it("leaves near-1 ratios and unknown durations alone", () => {
+    expect(scaleTimedLines(lines, 238, 240)).toEqual(lines);
+    expect(scaleTimedLines(lines, undefined, 179)).toEqual(lines);
+    expect(scaleTimedLines(lines, 238, 30)).toEqual(lines);
+  });
+  it("refuses extreme ratios (different cut, not a tempo edit)", () => {
+    expect(scaleTimedLines(lines, 238, 500)).toEqual(lines);
   });
 });

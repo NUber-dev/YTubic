@@ -51,7 +51,10 @@ function PlaylistPageView() {
   const { id } = Route.useParams();
 
   const query = useInfiniteQuery<AnyPage, Error>({
-    queryKey: ["playlist-pages", id],
+    // v2: the continuation walker used to leak YTM's "Suggestions"
+    // section into the track list (6-track playlist rendering 13);
+    // orphan persisted v1 pages that hold recommendation rows.
+    queryKey: ["playlist-pages-v2", id],
     initialPageParam: undefined,
     queryFn: async ({ pageParam }) => {
       if (!pageParam) return fetchPlaylistFirstPage(id);

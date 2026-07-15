@@ -109,7 +109,7 @@ export function LikeDislikeButtons({
       void qc.invalidateQueries({ queryKey: ["library", "liked-songs-pages"] });
       void qc.invalidateQueries({
         predicate: (q) =>
-          q.queryKey[0] === "playlist-pages" &&
+          q.queryKey[0] === "playlist-pages-v2" &&
           typeof q.queryKey[1] === "string" &&
           (q.queryKey[1] as string).includes("LM"),
       });

@@ -12,6 +12,12 @@ export type TrackSources = {
   video?: string;
   /** Currently active source for this track. */
   selected: SourceKind;
+  /** True once the USER flipped the source (Switch to video/song).
+   *  Counterpart seeding also writes `selected`, so this is the only
+   *  signal that distinguishes "user asked for the video" — which
+   *  should stream the real video file and show it — from a seeded
+   *  default, which must stay audio-only. */
+  chosen?: boolean;
 };
 
 type State = {
@@ -78,10 +84,10 @@ export const useTrackSourceStore = create<State>()(
           if (!existing) {
             // No record yet — synthesize a stub so the choice is sticky
             // even before we've resolved the alternate.
-            const fresh: TrackSources = { song: id, selected };
+            const fresh: TrackSources = { song: id, selected, chosen: true };
             return { byVideoId: capByVideoId({ ...s.byVideoId, [id]: fresh }) };
           }
-          const updated = { ...existing, selected };
+          const updated = { ...existing, selected, chosen: true };
           const next = { ...s.byVideoId, [existing.song]: updated };
           if (existing.video) next[existing.video] = updated;
           return { byVideoId: next };
@@ -137,4 +143,19 @@ export function resolveStreamId(
   if (!rec) return displayedId;
   if (rec.selected === "video" && rec.video) return rec.video;
   return rec.song;
+}
+
+/**
+ * Whether the stream for `displayedId` should be the actual video file
+ * (progressive h264, `?video=1` on the local server) instead of the
+ * audio-only download. Requires the user's explicit switch — seeded
+ * records with `selected: "video"` (video-native queue items) keep
+ * streaming audio-only until the user asks for the video.
+ */
+export function wantsVideoStream(
+  displayedId: string,
+  byVideoId: Record<string, TrackSources>,
+): boolean {
+  const rec = byVideoId[displayedId];
+  return !!rec && rec.selected === "video" && rec.chosen === true;
 }

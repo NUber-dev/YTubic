@@ -13,6 +13,18 @@ export type QueueTrack = {
   thumbnails: Thumbnail[];
   /** Original duration from browse responses, may be undefined until /player resolves. */
   duration?: number;
+  /**
+   * Whether this row is a plain song (audio-track version) or a music
+   * video, when known. Lets the Source toggle keep a video-native track
+   * on its own id instead of searching for a different clip.
+   */
+  kind?: "song" | "video";
+  /**
+   * videoId of the song<->video counterpart from InnerTube's /next
+   * pairing, when exposed. Used to seed the Source toggle with the real
+   * other version rather than a fuzzy search.
+   */
+  counterpartId?: string;
 };
 
 export type RepeatMode = "off" | "all" | "one";
@@ -31,6 +43,10 @@ export type PlaybackState = {
   error?: string;
   /** Resolved stream URL for the current track (set by AudioEngine). */
   streamUrl?: string;
+  /** Whether the current stream is the real video file (user switched
+   *  to the video source) or the audio-only download. The fullscreen
+   *  player uses this to swap the artwork for the live video surface. */
+  streamKind: "audio" | "video";
 
   // Transport
   playing: boolean;
@@ -69,6 +85,10 @@ export type PlaybackState = {
   // Actions — status (used by AudioEngine)
   setStatus: (status: LoadStatus, error?: string) => void;
   setStreamUrl: (url?: string) => void;
+  setStreamKind: (kind: "audio" | "video") => void;
+  /** Fill in a queue track's duration when it arrived without one
+   *  (home-card queues). Only writes missing durations. */
+  patchTrackDuration: (videoId: string, seconds: number) => void;
   setPosition: (position: number) => void;
   setDuration: (duration: number) => void;
   seek: (seconds: number) => void;
@@ -92,6 +112,8 @@ function shelfItemToTrack(item: ShelfItem | QueueTrack): QueueTrack | null {
     album: item.album,
     thumbnails: item.thumbnails,
     duration: item.duration,
+    kind: item.kind,
+    counterpartId: item.counterpartId,
   };
 }
 
@@ -114,6 +136,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   status: "idle",
   error: undefined,
   streamUrl: undefined,
+  streamKind: "audio",
 
   playing: false,
   volume: 0.8,
@@ -365,6 +388,18 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
 
   setStatus: (status, error) => set({ status, error }),
   setStreamUrl: (streamUrl) => set({ streamUrl }),
+  setStreamKind: (streamKind) => set({ streamKind }),
+  patchTrackDuration: (videoId, seconds) =>
+    set((s) => {
+      if (!(seconds > 0)) return s;
+      let changed = false;
+      const queue = s.queue.map((t) => {
+        if (t.videoId !== videoId || t.duration) return t;
+        changed = true;
+        return { ...t, duration: seconds };
+      });
+      return changed ? { queue } : s;
+    }),
   setPosition: (position) => set({ position }),
   setDuration: (duration) => set({ duration }),
   seek: (seconds) =>

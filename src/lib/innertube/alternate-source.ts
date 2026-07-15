@@ -1,5 +1,8 @@
 import { fetchSearch } from "./search";
+import { fetchRadio } from "./radio";
+import { normalizeForMatch, tokenOverlap } from "@/lib/lyrics/match";
 import type { SourceKind } from "@/lib/store/track-source";
+import type { MinimalArtist, ShelfItemKind } from "./types";
 
 /**
  * Find the alternate-source videoId for a track. Given a song's videoId
@@ -28,6 +31,93 @@ export async function findAlternateVideoId(
       if (item.id === currentVideoId) continue;
       return item.id;
     }
+  }
+  return null;
+}
+
+/**
+ * Duration sanity for the automatic clean-audio hunt. The manual Song/
+ * Video toggle trusts YT's ranking because the user asked for the swap;
+ * the AUTO hunt swaps silently, so it must never trade the queued track
+ * for something that isn't obviously the same song in its album form.
+ *
+ * - video uploads: the song version is normally a little shorter (no
+ *   intro/outro padding), so accept anything up to slightly longer.
+ * - song/unknown rows: only rescue clearly-extended uploads (slowed,
+ *   looped, "extended mix" re-uploads) — the album version must be at
+ *   least a minute shorter, otherwise leave the queued version alone.
+ */
+export function cleanAudioSwapOk(
+  currentKind: ShelfItemKind | undefined,
+  currentDurationSec: number | undefined,
+  altDurationSec: number | undefined,
+): boolean {
+  if (!currentDurationSec || !altDurationSec) return false;
+  if (altDurationSec < 60) return false;
+  if (currentKind === "video") {
+    return altDurationSec <= currentDurationSec + 30;
+  }
+  return altDurationSec <= currentDurationSec - 60;
+}
+
+/**
+ * Automatic-hunt variant of `findAlternateVideoId`: find the clean album
+ * ("song") version of a queued track, with the title verified against the
+ * request and the duration gated by `cleanAudioSwapOk`. Returns null when
+ * nothing passes — no swap is always safer than a wrong swap.
+ */
+export async function findCleanAudioAlternate(track: {
+  videoId: string;
+  title: string;
+  artists?: MinimalArtist[];
+  kind?: ShelfItemKind;
+  duration?: number;
+}): Promise<string | null> {
+  const artistsLine = track.artists?.map((a) => a.name).join(" ") ?? "";
+  if (!artistsLine.trim() || !track.title.trim()) return null;
+  const results = await fetchSearch(
+    `${track.title} ${artistsLine}`.trim(),
+    "songs",
+  );
+  const reqTitle = normalizeForMatch(track.title);
+  const reqArtists = normalizeForMatch(artistsLine);
+  const passes = (item: {
+    kind: ShelfItemKind;
+    id: string;
+    title: string;
+    artists?: MinimalArtist[];
+    duration?: number;
+  }): boolean => {
+    if (item.kind !== "song") return false;
+    if (item.id === track.videoId) return false;
+    const hitTitle = normalizeForMatch(item.title ?? "");
+    if (hitTitle !== reqTitle && tokenOverlap(reqTitle, hitTitle) < 0.6) {
+      return false;
+    }
+    if (item.artists?.length) {
+      const hitArtists = normalizeForMatch(
+        item.artists.map((a) => a.name).join(" "),
+      );
+      if (tokenOverlap(reqArtists, hitArtists) === 0) return false;
+    }
+    return cleanAudioSwapOk(track.kind, track.duration, item.duration);
+  };
+  for (const shelf of results.shelves) {
+    for (const item of shelf.items) {
+      if (passes(item)) return item.id;
+    }
+  }
+  // Search often surfaces only the canonical entry (which for some songs
+  // IS the extended album cut). The track's own radio reliably lists the
+  // other uploads of the same song — the shorter album/single version
+  // shows up there when search hides it. Same gates apply.
+  try {
+    const radio = await fetchRadio(track.videoId);
+    for (const item of radio) {
+      if (passes(item)) return item.id;
+    }
+  } catch {
+    /* radio is best-effort — no swap is fine */
   }
   return null;
 }

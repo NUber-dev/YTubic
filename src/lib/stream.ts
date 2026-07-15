@@ -1,3 +1,4 @@
+import { artistLineFromSubtitle } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { isPremium } from "@/lib/store/premium";
 import type { QueueTrack } from "@/lib/store/playback";
@@ -39,13 +40,20 @@ export function getStreamBaseUrl(): Promise<string> {
   return baseUrlPromise;
 }
 
-function ephemeralSuffix(): string {
-  return isPremium() ? "" : "?ephemeral=1";
-}
-
-export async function streamUrlFor(videoId: string): Promise<string> {
+export async function streamUrlFor(
+  videoId: string,
+  opts?: {
+    /** Ask the server for the progressive music-video file (`?video=1`)
+     *  instead of the audio-only download. */
+    video?: boolean;
+  },
+): Promise<string> {
   const base = await getStreamBaseUrl();
-  return `${base}/stream/${encodeURIComponent(videoId)}${ephemeralSuffix()}`;
+  const params = new URLSearchParams();
+  if (!isPremium()) params.set("ephemeral", "1");
+  if (opts?.video) params.set("video", "1");
+  const qs = params.toString();
+  return `${base}/stream/${encodeURIComponent(videoId)}${qs ? `?${qs}` : ""}`;
 }
 
 const prefetched = new Set<string>();
@@ -102,7 +110,9 @@ export async function saveTrackMeta(
   if (metaWritten.has(videoId)) return;
   metaWritten.add(videoId);
   const artist =
-    track.artists?.map((a) => a.name).join(", ") || track.subtitle || null;
+    track.artists?.map((a) => a.name).join(", ") ||
+    artistLineFromSubtitle(track.subtitle) ||
+    null;
   try {
     await invoke("set_cache_meta", { videoId, title: track.title, artist });
   } catch {

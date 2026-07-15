@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { artistLineFromSubtitle } from "@/lib/utils";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,8 +12,13 @@ import { openPremiumGate } from "@/lib/store/premium-gate";
 import {
   resolveStreamId,
   useTrackSourceStore,
+  wantsVideoStream,
 } from "@/lib/store/track-source";
+import { findCleanAudioAlternate } from "@/lib/innertube/alternate-source";
+import { fetchPanelDuration } from "@/lib/innertube/radio";
 import { pickThumbnail } from "@/components/shared/thumbnail";
+import { useLyricsSources } from "@/lib/lyrics/sources";
+import { correctedDuration, shouldSkipOutro } from "@/lib/outro";
 
 /**
  * AudioEngine binds the playback store to a singleton HTMLAudioElement
@@ -23,8 +29,15 @@ import { pickThumbnail } from "@/components/shared/thumbnail";
  *
  * Mount this hook once, near the root. It owns the <audio> element's lifecycle.
  */
+// The engine's singleton element, exposed so the fullscreen player can
+// adopt it as a visible surface when the current stream is a video file.
+let mediaElSingleton: HTMLVideoElement | null = null;
+export function getMediaElement(): HTMLVideoElement | null {
+  return mediaElSingleton;
+}
+
 export function useAudioEngine() {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<HTMLVideoElement | null>(null);
   // Guard against stale stream resolutions when the user skips mid-fetch.
   const resolveTokenRef = useRef(0);
   // Counts how many tracks have failed in a row without a successful
@@ -32,6 +45,19 @@ export function useAudioEngine() {
   // auto-skip after a few consecutive failures so we don't burn through
   // the whole queue if e.g. the network is dead.
   const consecutiveErrorsRef = useRef(0);
+  // videoIds we've already run an audio-hunt for, so the same track doesn't
+  // re-trigger a search on every re-render or seek.
+  const huntedRef = useRef<Set<string>>(new Set());
+  // Long-outro auto-advance bookkeeping: the last sung line's timestamp
+  // for the current track, the videoId we already advanced past (never
+  // twice), and the videoId whose outro the user deliberately seeked
+  // into (respect that — they want to hear it).
+  const lastVocalRef = useRef<number | null>(null);
+  // Raw element-reported duration (pre-correction) so the end guard can
+  // recognise the doubled-header case even after the store was clamped.
+  const rawElDurationRef = useRef(0);
+  const outroSkippedRef = useRef<string | null>(null);
+  const outroSuppressedRef = useRef<string | null>(null);
   // Remembers the `videoId:index` we've already auto-retried once, so a
   // track that keeps failing falls through to the normal error/skip path
   // instead of looping. Cleared on a successful `playing`.
@@ -41,18 +67,26 @@ export function useAudioEngine() {
   // stream URL after a transient failure (e.g. a googlevideo 403).
   const [retryNonce, setRetryNonce] = useState(0);
 
-  // Ensure a single <audio> element exists.
+  // Ensure a single media element exists. It's a <video> element, not
+  // new Audio(): for audio-only streams the two behave identically, but
+  // when the user switches a track to its video source the same element
+  // carries the picture and the fullscreen player adopts it as a live
+  // surface (getMediaElement above).
   useEffect(() => {
     if (audioRef.current) return;
-    const el = new Audio();
+    const el = document.createElement("video");
     el.preload = "auto";
+    el.playsInline = true;
     // Note: do NOT set crossOrigin — googlevideo.com doesn't return CORS
     // headers, and setting it makes the media fail to load in the webview.
     audioRef.current = el;
+    mediaElSingleton = el;
     return () => {
       el.pause();
       el.src = "";
+      el.remove();
       audioRef.current = null;
+      mediaElSingleton = null;
     };
   }, []);
 
@@ -67,11 +101,54 @@ export function useAudioEngine() {
     };
     const onDurationChange = () => {
       if (Number.isFinite(el.duration) && el.duration > 0) {
-        store().setDuration(el.duration);
+        rawElDurationRef.current = el.duration;
+        const cur = store();
+        const meta =
+          cur.index >= 0 ? cur.queue[cur.index]?.duration : undefined;
+        cur.setDuration(correctedDuration(meta, el.duration));
+      } else if (el.duration === Infinity) {
+        // Streaming containers (progressively served webm) report
+        // Infinity until fully buffered, which left the bar showing the
+        // LISTED length while the real file ran longer, so the bar pinned
+        // at full with audio still playing. The seekable range end is
+        // the truth the server actually has; it grows monotonically to
+        // the real length as the download completes.
+        syncSeekableDuration();
       }
     };
+    const syncSeekableDuration = () => {
+      if (el.duration !== Infinity || el.seekable.length === 0) return;
+      const end = el.seekable.end(el.seekable.length - 1);
+      if (!Number.isFinite(end) || end <= 0) return;
+      const cur = store();
+      if (end > cur.duration + 0.5) {
+        rawElDurationRef.current = end;
+        const meta =
+          cur.index >= 0 ? cur.queue[cur.index]?.duration : undefined;
+        cur.setDuration(correctedDuration(meta, end));
+      }
+    };
+    const onProgress = () => syncSeekableDuration();
     const onEnded = () => {
       store().next();
+    };
+    // External pause/play — the system Now Playing widget or WebKit's
+    // built-in media session can pause the element directly, bypassing
+    // the store, which left the UI showing a stale playing state. Sync
+    // the element's actual state back. Track changes pause the element
+    // too, but by the time the queued pause event runs the status is
+    // already "loading", so the ready-guard keeps auto-play intact.
+    const onElPause = () => {
+      const s = store();
+      if (s.status === "ready" && s.playing && !el.ended) {
+        s.setPlaying(false);
+      }
+    };
+    const onElPlay = () => {
+      const s = store();
+      if (s.status === "ready" && !s.playing) {
+        s.setPlaying(true);
+      }
     };
     const onError = () => {
       const mediaErr = el.error;
@@ -86,6 +163,32 @@ export function useAudioEngine() {
             mediaErr.message ? `: ${mediaErr.message}` : ""
           }`
         : "Unknown audio error";
+
+      // A music-video stream the webview can't decode (MEDIA_ERR_DECODE /
+      // MEDIA_ERR_SRC_NOT_SUPPORTED) shouldn't surface a raw error banner
+      // or skip the track. While the video source is the selected one,
+      // drop it back to audio and let the resolve effect retry with the
+      // song stream, which every track has. The selected-source check
+      // keeps this from looping: once we're on audio a repeat failure
+      // falls through to the normal error path below.
+      const errored = store();
+      const cur =
+        errored.index >= 0 ? errored.queue[errored.index] : undefined;
+      if (cur && (mediaErr?.code === 3 || mediaErr?.code === 4)) {
+        const ts = useTrackSourceStore.getState();
+        const selected = ts.byVideoId[cur.videoId]?.selected ?? "song";
+        if (selected === "video") {
+          if (import.meta.env.DEV) {
+            console.warn(
+              "[audio] video stream failed to decode, falling back to audio:",
+              cur.videoId,
+            );
+          }
+          ts.setSelected(cur.videoId, "song");
+          return;
+        }
+      }
+
       if (import.meta.env.DEV) {
         console.error("[audio] element error:", msg, "src=", el.currentSrc);
       }
@@ -141,14 +244,20 @@ export function useAudioEngine() {
 
     el.addEventListener("timeupdate", onTimeUpdate);
     el.addEventListener("durationchange", onDurationChange);
+    el.addEventListener("progress", onProgress);
     el.addEventListener("ended", onEnded);
+    el.addEventListener("pause", onElPause);
+    el.addEventListener("play", onElPlay);
     el.addEventListener("error", onError);
     el.addEventListener("playing", onPlaying);
     el.addEventListener("waiting", onWaiting);
     return () => {
       el.removeEventListener("timeupdate", onTimeUpdate);
       el.removeEventListener("durationchange", onDurationChange);
+      el.removeEventListener("progress", onProgress);
       el.removeEventListener("ended", onEnded);
+      el.removeEventListener("pause", onElPause);
+      el.removeEventListener("play", onElPlay);
       el.removeEventListener("error", onError);
       el.removeEventListener("playing", onPlaying);
       el.removeEventListener("waiting", onWaiting);
@@ -171,12 +280,125 @@ export function useAudioEngine() {
     videoId ? resolveStreamId(videoId, s.byVideoId) : undefined,
   );
 
+  // True only when the user explicitly switched this track to its video
+  // source — then the stream request carries ?video=1 and the element
+  // has real frames to show.
+  const wantVideo = useTrackSourceStore((s) =>
+    videoId ? wantsVideoStream(videoId, s.byVideoId) : false,
+  );
+
+  // Tracks queued from surfaces without a length (home cards) carry no
+  // duration, which leaves the doubled-header clamp with no reference —
+  // a 2x file then displays and scrubs at twice its real length. Fetch
+  // the authoritative length from the track's own /next row once and
+  // patch the queue entry; the re-clamp effect below applies it.
+  useEffect(() => {
+    if (!videoId) return;
+    const cur = usePlaybackStore.getState();
+    const track = cur.index >= 0 ? cur.queue[cur.index] : undefined;
+    if (!track || track.videoId !== videoId || track.duration) return;
+    let cancelled = false;
+    fetchPanelDuration(videoId)
+      .then((secs) => {
+        if (cancelled || !secs) return;
+        usePlaybackStore.getState().patchTrackDuration(videoId, secs);
+      })
+      .catch(() => {
+        /* metadata nicety only — the element duration stays */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId]);
+
+  // Re-apply the header clamp when the metadata length lands AFTER the
+  // element already reported durationchange (the late-fetch above).
+  const liveMetaDuration = usePlaybackStore((s) =>
+    s.index >= 0 ? s.queue[s.index]?.duration : undefined,
+  );
+  useEffect(() => {
+    if (!liveMetaDuration || !rawElDurationRef.current) return;
+    usePlaybackStore
+      .getState()
+      .setDuration(
+        correctedDuration(liveMetaDuration, rawElDurationRef.current),
+      );
+  }, [liveMetaDuration]);
+
   // Reactive Premium check for the gate below. Subscribing (rather than
   // calling isPremium() inside the effect) makes the resolve effect
   // re-run when the status lands after sign-in / the launch-time probe.
   // Without this, a track gated during the "still checking" window would
   // sit silent until the user re-picked it.
   const premiumOk = usePremiumStore((s) => s.status === "premium");
+
+  // Seed the song<->video pairing from InnerTube's own counterpart data
+  // (from a /next `playlistPanelVideoWrapperRenderer`) so the Source
+  // toggle flips to the real other version instead of a fuzzy search that
+  // can land on an unrelated clip. Only when we have a pairing and no
+  // record yet; `selected` lands on whichever kind was queued, so the
+  // default stream doesn't change and no wasteful re-resolve fires.
+  const counterpartId = track?.counterpartId;
+  const trackKind = track?.kind;
+  useEffect(() => {
+    if (!videoId || !counterpartId || !trackKind) return;
+    const ts = useTrackSourceStore.getState();
+    if (ts.byVideoId[videoId]) return;
+    const counterpartKind = trackKind === "video" ? "song" : "video";
+    ts.setAlternate(videoId, counterpartKind, counterpartId);
+  }, [videoId, counterpartId, trackKind]);
+
+  // Auto-hunt the clean album ("song") version of whatever was queued.
+  // Originally this only rescued kind==="video" rows, but extended/looped
+  // re-uploads also surface as ordinary song rows (a 7:45 "(Remix)" that
+  // keeps rolling minutes after the actual song ends), so it now fires for
+  // any kind and leans on findCleanAudioAlternate's guarantees instead:
+  // artists must exist (a bare title is not identity — a wrong swap here
+  // changes what's PLAYING, worse than wrong lyrics), the found title has
+  // to match, and the duration gate only ever swaps to a meaningfully
+  // shorter album version (or a near-equal one for true video rows).
+  // Fires once per id; /next counterpart data (handled above) and manual
+  // Song/Video choices both take precedence.
+  const huntTitle = track?.title;
+  useEffect(() => {
+    // Video rows only. The kind-agnostic expansion was chasing what
+    // turned out to be the doubled-header bug (see correctedDuration) —
+    // and for a normal song row an aggressively shorter "match" is a
+    // sped-up bootleg, not a cleaner version.
+    if (!videoId || trackKind !== "video") return;
+    if (huntedRef.current.has(videoId)) return;
+    const ts = useTrackSourceStore.getState();
+    // A record alone doesn't mean "leave it alone": the counterpart
+    // seeding above creates one for every popular song (song = the row
+    // itself + its music video), which used to block the hunt exactly
+    // where it's most needed. Only back off when the song side already
+    // points elsewhere (a previous hunt or manual pick) or the user
+    // explicitly selected the video source.
+    const rec = ts.byVideoId[videoId];
+    if (rec && (rec.song !== videoId || rec.selected === "video")) return;
+    huntedRef.current.add(videoId);
+    const s = usePlaybackStore.getState();
+    const cur = s.index >= 0 ? s.queue[s.index] : undefined;
+    if (!cur || cur.videoId !== videoId) return;
+    void findCleanAudioAlternate({
+      videoId,
+      title: cur.title,
+      artists: cur.artists,
+      kind: cur.kind,
+      duration: cur.duration,
+    })
+      .then((altId) => {
+        if (!altId) return;
+        // Bail if a manual choice or /next pairing landed while we searched.
+        const now = useTrackSourceStore.getState();
+        if (now.byVideoId[videoId]) return;
+        now.setAlternate(videoId, "song", altId);
+        now.setSelected(videoId, "song");
+      })
+      .catch(() => {
+        /* stay on the queued source; a later manual switch still works */
+      });
+  }, [videoId, trackKind, huntTitle]);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -235,14 +457,16 @@ export function useAudioEngine() {
     // yt-dlp and pipes the audio bytes progressively so playback starts
     // as soon as the first chunk lands (typically ~200ms after the
     // yt-dlp subprocess starts emitting bytes).
-    streamUrlFor(streamVideoId)
+    streamUrlFor(streamVideoId, { video: wantVideo })
       .then((src) => {
         if (token !== resolveTokenRef.current) return;
         if (import.meta.env.DEV) {
           console.debug("[audio] setting src for", videoId, "→", src);
         }
         el.src = src;
-        usePlaybackStore.getState().setStreamUrl(src);
+        const st = usePlaybackStore.getState();
+        st.setStreamUrl(src);
+        st.setStreamKind(wantVideo ? "video" : "audio");
         el.load();
         if (usePlaybackStore.getState().playing) {
           void el.play().catch((e) => {
@@ -275,7 +499,7 @@ export function useAudioEngine() {
     // (sign-in, status re-check) re-resolves a track the gate parked.
     // `retryNonce` so the error handler can force a fresh stream-URL fetch
     // for the current track after a transient failure without changing id.
-  }, [streamVideoId, videoId, index, premiumOk, retryNonce]);
+  }, [streamVideoId, wantVideo, videoId, index, premiumOk, retryNonce]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
@@ -327,6 +551,29 @@ export function useAudioEngine() {
       /* seek failed — non-fatal */
     }
     usePlaybackStore.getState().clearPendingSeek();
+    // A deliberate seek into the tail means the user wants the outro —
+    // disable the long-outro auto-advance for this track.
+    if (
+      videoId &&
+      ((lastVocalRef.current !== null &&
+        pendingSeek > lastVocalRef.current + 10) ||
+        (() => {
+          const cur =
+            usePlaybackStore.getState().queue[
+              usePlaybackStore.getState().index
+            ];
+          return !!cur?.duration && pendingSeek > cur.duration;
+        })())
+    ) {
+      outroSuppressedRef.current = videoId;
+    }
+    {
+      // Keep the system Now Playing clock in step with the new playhead.
+      const s = usePlaybackStore.getState();
+      const cur = s.index >= 0 ? s.queue[s.index] : undefined;
+      const dur = s.duration > 0 ? s.duration : (cur?.duration ?? 0);
+      pushNowPlaying(cur, s.playing, pendingSeek, dur);
+    }
     // repeat-one and error auto-advance re-select the same track and set
     // { pendingSeek: 0, playing: true } without changing `playing` (already
     // true), so the [playing] effect never re-fires. After an `ended` event
@@ -347,6 +594,17 @@ export function useAudioEngine() {
   // "Unknown app" because it belongs to the WebView2 child process. Metadata /
   // state is pushed by the media_update effect lower down; buttons come back
   // via the media-control listener. See src-tauri/src/media.rs.
+
+  // Mirror metadata + play state into the macOS system Now Playing panel
+  // (Control Center / Touch Bar / media keys / AirPods). A WKWebView only
+  // bridges navigator.mediaSession to Windows SMTC, not to macOS, so the
+  // native side handles it. Fires on track change and play/pause; the
+  // seek effect below pushes the new elapsed time.
+  useEffect(() => {
+    const s = usePlaybackStore.getState();
+    const dur = s.duration > 0 ? s.duration : (track?.duration ?? 0);
+    pushNowPlaying(track, playing, s.position, dur);
+  }, [track, playing]);
 
   // Tray menu commands come via a Tauri event. `cancelled` flag
   // protects against StrictMode's mount→unmount→mount race that
@@ -369,6 +627,52 @@ export function useAudioEngine() {
       dispose?.();
     };
   }, []);
+
+  // macOS remote-command events from MPRemoteCommandCenter (Control
+  // Center, media keys, AirPods). The native side emits these; drive the
+  // same store the in-app transport uses. Never fires off macOS.
+  useEffect(() => {
+    let cancelled = false;
+    const disposers: Array<() => void> = [];
+    const keep = (un: () => void) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    };
+    void listen<string>("media-remote", (e) => {
+      const store = usePlaybackStore.getState();
+      switch (e.payload) {
+        case "play":
+          store.setPlaying(true);
+          break;
+        case "pause":
+          store.setPlaying(false);
+          break;
+        case "toggle":
+          store.toggle();
+          break;
+        case "next":
+          store.next();
+          break;
+        case "prev":
+          store.prev();
+          break;
+      }
+    })
+      .then(keep)
+      .catch((e) => console.error("[media-remote] listen failed", e));
+    void listen<number>("media-remote-seek", (e) => {
+      if (typeof e.payload === "number") {
+        usePlaybackStore.getState().seek(e.payload);
+      }
+    })
+      .then(keep)
+      .catch((e) => console.error("[media-remote] listen failed", e));
+    return () => {
+      cancelled = true;
+      disposers.forEach((d) => d());
+    };
+  }, []);
+
 
   // SMTC / media-key button presses arrive from Rust (souvlaki) as a
   // `media-control` event. Drive the store the same way the old
@@ -407,6 +711,32 @@ export function useAudioEngine() {
     return () => {
       cancelled = true;
       dispose?.();
+    };
+  }, []);
+
+  // System media commands on macOS route through WKWebView's media
+  // session — upstream removed these handlers when souvlaki took over
+  // on Windows, which left the mac widget's buttons acting on the
+  // element directly and desyncing the store. Mac-only: Windows keeps
+  // the souvlaki media-control path.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.mediaSession) return;
+    if (!navigator.userAgent.includes("Mac")) return;
+    const api = navigator.mediaSession;
+    const store = usePlaybackStore.getState;
+    api.setActionHandler("play", () => store().setPlaying(true));
+    api.setActionHandler("pause", () => store().setPlaying(false));
+    api.setActionHandler("previoustrack", () => store().prev());
+    api.setActionHandler("nexttrack", () => store().next());
+    api.setActionHandler("seekto", (details) => {
+      if (typeof details.seekTime === "number") store().seek(details.seekTime);
+    });
+    return () => {
+      api.setActionHandler("play", null);
+      api.setActionHandler("pause", null);
+      api.setActionHandler("previoustrack", null);
+      api.setActionHandler("nexttrack", null);
+      api.setActionHandler("seekto", null);
     };
   }, []);
 
@@ -486,6 +816,72 @@ export function useAudioEngine() {
   // and reflect seeks. Live values are read imperatively so this OS sync never
   // re-triggers the resolve / playback effects above.
   const duration = usePlaybackStore((s) => s.duration);
+  const position = usePlaybackStore((s) => s.position);
+
+  // Long-outro auto-advance. Extended uploads and music-video audio can
+  // run minutes past the actual song; when the synced lyrics say the
+  // vocals ended long ago (see shouldSkipOutro's thresholds), move on.
+  // Reuses the same lyric queries the panel fires, so this costs no
+  // extra network beyond what the lyrics UI already does.
+  const { queries: lyricQueries, best: lyricBest } = useLyricsSources(
+    track,
+    !!track,
+  );
+  const lastVocal = useMemo(() => {
+    const data = lyricBest ? lyricQueries[lyricBest]?.data : null;
+    if (!data || data.kind !== "timed" || data.lines.length === 0) {
+      return null;
+    }
+    // Trailing "♪" instrumental markers aren't vocals — walk back to the
+    // last line with real text.
+    for (let i = data.lines.length - 1; i >= 0; i--) {
+      const line = data.lines[i];
+      const text = line.text.trim();
+      if (text && text !== "♪") return line.end ?? line.start;
+    }
+    return null;
+  }, [lyricBest, lyricQueries]);
+  useEffect(() => {
+    lastVocalRef.current = lastVocal;
+  }, [lastVocal]);
+  // Metadata-end guard: some YT entries stream audio whose container
+  // claims a far longer duration than the entry's own listed length
+  // (a "4:21" row whose element reports 8:41). The listed metadata
+  // length is the song; once playback runs meaningfully past it while
+  // the element believes in a much longer file, move on. Seeking past
+  // the listed end disables it for that track (same suppression as the
+  // outro skip — a deliberate listen wins).
+  const metaDuration = track?.duration ?? 0;
+  useEffect(() => {
+    if (!playing || !videoId) return;
+    if (outroSkippedRef.current === videoId) return;
+    if (outroSuppressedRef.current === videoId) return;
+    if (
+      metaDuration > 60 &&
+      rawElDurationRef.current > metaDuration * 1.5 &&
+      position > metaDuration + 2
+    ) {
+      outroSkippedRef.current = videoId;
+      usePlaybackStore.getState().next();
+    }
+  }, [position, duration, metaDuration, playing, videoId]);
+
+  useEffect(() => {
+    if (!playing || !videoId || !lastVocal) return;
+    if (outroSkippedRef.current === videoId) return;
+    if (outroSuppressedRef.current === videoId) return;
+    if (shouldSkipOutro(position, duration, lastVocal)) {
+      outroSkippedRef.current = videoId;
+      if (import.meta.env.DEV) {
+        console.debug(
+          "[audio] long outro: advancing",
+          videoId,
+          `pos=${Math.round(position)}s lastVocal=${Math.round(lastVocal)}s dur=${Math.round(duration)}s`,
+        );
+      }
+      usePlaybackStore.getState().next();
+    }
+  }, [position, duration, playing, videoId, lastVocal]);
   useEffect(() => {
     const push = () => {
       const s = usePlaybackStore.getState();
@@ -549,5 +945,35 @@ export function useAudioEngine() {
 
 function buildArtistLabel(track: QueueTrack): string {
   if (track.artists?.length) return track.artists.map((a) => a.name).join(", ");
-  return track.subtitle ?? "";
+  return artistLineFromSubtitle(track.subtitle);
+}
+
+/**
+ * Push the current track into the macOS system Now Playing panel. The
+ * Rust command is a no-op off macOS, and the invoke is swallowed if the
+ * command isn't registered, so this is safe to call unconditionally.
+ *
+ * MPNowPlayingInfoCenter extrapolates the playhead from `elapsed` +
+ * `playbackRate`, so we only push on track change, play/pause, and seek
+ * rather than on every timeupdate.
+ */
+function pushNowPlaying(
+  track: QueueTrack | undefined,
+  playing: boolean,
+  elapsed: number,
+  duration: number,
+): void {
+  const info = track
+    ? {
+        title: track.title,
+        artist: buildArtistLabel(track),
+        album: track.album ?? "",
+        duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+        elapsed: Math.max(0, elapsed),
+        playbackRate: playing ? 1 : 0,
+      }
+    : { title: "", artist: "", album: "", duration: 0, elapsed: 0, playbackRate: 0 };
+  void invoke("set_now_playing", { info }).catch(() => {
+    /* command only present on the desktop build; ignore otherwise */
+  });
 }
