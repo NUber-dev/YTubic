@@ -13,6 +13,7 @@ import { usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
 import { usePremiumStore } from "@/lib/store/premium";
 import { useSearchHistory } from "@/lib/store/search-history";
 import { useTrackSourceStore } from "@/lib/store/track-source";
+import { toast } from "sonner";
 
 export type AccountSummary = {
   id: string;
@@ -249,3 +250,47 @@ export function switchAccount(id: string): Promise<void> {
 export function removeAccount(id: string): Promise<void> {
   return invoke<void>("remove_account", { id });
 }
+
+/** Global toasts for embedded login polish (insecure browser, Continue). */
+export function useLoginPolishListener(): void {
+  useEffect(() => {
+    let cancelled = false;
+    const disposers: Array<() => void> = [];
+    void listen("login-insecure-browser", () => {
+      toast.error(
+        "Google blocked sign-in in the embedded window. Use Settings → Import session from browser instead.",
+        { duration: 12_000 },
+      );
+    }).then((un) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    });
+    void listen("login-ready", () => {
+      toast("Sign-in cookies detected", {
+        description:
+          "Open music.youtube.com in the login window, then click Continue.",
+        action: {
+          label: "Continue",
+          onClick: () => {
+            void invoke("confirm_login").catch((e) => toast.error(String(e)));
+          },
+        },
+        duration: 20_000,
+      });
+    }).then((un) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    });
+    void listen<string>("login-failed", (event) => {
+      toast.error(event.payload, { duration: 14_000 });
+    }).then((un) => {
+      if (cancelled) un();
+      else disposers.push(un);
+    });
+    return () => {
+      cancelled = true;
+      for (const d of disposers) d();
+    };
+  }, []);
+}
+

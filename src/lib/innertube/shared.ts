@@ -36,6 +36,17 @@ function saveVisitorData(value: string): void {
   }
 }
 
+/** Drop anonymous visitor id — call on sign-in/out so stale data never
+ *  rides along with authenticated cookies (causes 404 / empty library). */
+export function clearVisitorData(): void {
+  cachedVisitorData = null;
+  try {
+    window.localStorage.removeItem(VISITOR_DATA_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Walk an innertube response for `responseContext.visitorData` and update
  * our cache when present. Called from every `innertubePost` so the next
@@ -46,9 +57,9 @@ function captureVisitorData(response: YtNode): void {
   if (typeof vd === "string" && vd.length > 0) saveVisitorData(vd);
 }
 
-function buildContext(): {
+function buildContext(brandId?: string | null): {
   client: Record<string, unknown>;
-  user: unknown;
+  user: Record<string, unknown>;
   request: unknown;
 } {
   const client: Record<string, unknown> = {
@@ -63,9 +74,11 @@ function buildContext(): {
   };
   const visitor = loadVisitorData();
   if (visitor) client.visitorData = visitor;
+  const user: Record<string, unknown> = { lockedSafetyMode: false };
+  if (brandId) user.onBehalfOfUser = brandId;
   return {
     client,
-    user: { lockedSafetyMode: false },
+    user,
     request: { useSsl: true },
   };
 }
@@ -86,64 +99,63 @@ const BASE_HEADERS: Record<string, string> = {
   "X-Goog-AuthUser": "0",
 };
 
-const YTM_ORIGIN = "https://music.youtube.com";
 
-async function sha1Hex(text: string): Promise<string> {
-  const buf = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-1", buf);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
-/**
- * Cookie header plus the active brand-channel page id, as one unit.
- * They describe the same identity, so caching them separately could
- * pair fresh cookies with a stale channel (or vice versa) across a
- * sign-in or a channel switch.
- */
-type AuthContext = { cookie: string; pageId: string | null };
+type InnertubeAuth = { cookieHeader: string; authorization: string };
+const COOKIE_CACHE_TTL_MS = 5 * 60 * 1000;
+let authCache: { value: InnertubeAuth | null; loadedAt: number } | null = null;
+let authPromise: Promise<InnertubeAuth | null> | null = null;
+let cookieEpoch = 0;
 
-const EMPTY_AUTH: AuthContext = { cookie: "", pageId: null };
+const BRAND_CACHE_TTL_MS = 5 * 60 * 1000;
+let brandCache: { value: string | null; loadedAt: number } | null = null;
+let brandPromise: Promise<string | null> | null = null;
+let brandEpoch = 0;
 
-// In-process cache for the auth context. Without it every browse / search
-// / next call invokes the Rust side, which hits disk + DPAPI-decrypts the
-// jar (a 1000-track playlist scroll would do that 10+ times for no gain).
-// TTL keeps us responsive to silent re-logins (different webview session
-// dropping a fresh SID); `resetAuthCache()` is the explicit invalidation
-// path called from `resetInnertube()` after sign-in / sign-out.
-const AUTH_CACHE_TTL_MS = 5 * 60 * 1000;
-let authCache: { value: AuthContext; loadedAt: number } | null = null;
-let authPromise: Promise<AuthContext> | null = null;
-// Bumped by resetAuthCache(). An in-flight load captures the epoch at start
-// and discards its result if a reset happened meanwhile; otherwise the
-// pre-reset value would be written back and served for the whole TTL after
-// a sign-in/out completes mid-fetch.
-let authEpoch = 0;
-
-async function loadAuthContext(): Promise<AuthContext> {
+async function loadActiveBrandId(): Promise<string | null> {
   const now = Date.now();
-  if (authCache && now - authCache.loadedAt < AUTH_CACHE_TTL_MS) {
-    return authCache.value;
+  if (brandCache && now - brandCache.loadedAt < BRAND_CACHE_TTL_MS) {
+    return brandCache.value;
   }
-  if (authPromise) return authPromise;
-  const epoch = authEpoch;
-  authPromise = invoke<AuthContext>("get_auth_context", {
-    host: "music.youtube.com",
-  }).then(
+  if (brandPromise) return brandPromise;
+  const epoch = brandEpoch;
+  brandPromise = invoke<string | null>("get_active_brand_id").then(
     (value) => {
-      authPromise = null;
-      if (epoch !== authEpoch) return EMPTY_AUTH;
-      authCache = { value, loadedAt: Date.now() };
+      brandPromise = null;
+      if (epoch !== brandEpoch) return null;
+      brandCache = { value, loadedAt: Date.now() };
       return value;
     },
     () => {
-      authPromise = null;
-      if (epoch !== authEpoch) return EMPTY_AUTH;
-      authCache = { value: EMPTY_AUTH, loadedAt: Date.now() };
-      return EMPTY_AUTH;
+      brandPromise = null;
+      if (epoch !== brandEpoch) return null;
+      brandCache = { value: null, loadedAt: Date.now() };
+      return null;
     },
   );
+  return brandPromise;
+}
+
+async function loadInnertubeAuth(): Promise<InnertubeAuth | null> {
+  const now = Date.now();
+  if (authCache && now - authCache.loadedAt < COOKIE_CACHE_TTL_MS) {
+    return authCache.value;
+  }
+  if (authPromise) return authPromise;
+  const epoch = cookieEpoch;
+  authPromise = invoke<InnertubeAuth>("get_innertube_auth")
+    .then((value) => {
+      authPromise = null;
+      if (epoch !== cookieEpoch) return null;
+      authCache = { value, loadedAt: Date.now() };
+      return value;
+    })
+    .catch(() => {
+      authPromise = null;
+      if (epoch !== cookieEpoch) return null;
+      authCache = { value: null, loadedAt: Date.now() };
+      return null;
+    });
   return authPromise;
 }
 
@@ -154,7 +166,11 @@ async function loadAuthContext(): Promise<AuthContext> {
 export function resetAuthCache(): void {
   authCache = null;
   authPromise = null;
-  authEpoch++;
+  cookieEpoch++;
+  brandCache = null;
+  brandPromise = null;
+  brandEpoch++;
+  clearVisitorData();
 }
 
 /**
@@ -220,17 +236,13 @@ export async function captureSetCookies(res: Response): Promise<void> {
  * imported; callers fall back to anonymous requests.
  */
 export async function authHeaders(): Promise<Record<string, string>> {
-  const { cookie, pageId } = await loadAuthContext();
-  if (!cookie) return {};
-  const sapisid =
-    cookie.match(/(?:^|;\s*)__Secure-3PAPISID=([^;]+)/)?.[1] ??
-    cookie.match(/(?:^|;\s*)SAPISID=([^;]+)/)?.[1];
-  const headers: Record<string, string> = { Cookie: cookie };
+  const auth = await loadInnertubeAuth();
+  if (!auth?.cookieHeader) return {};
+  const headers: Record<string, string> = { Cookie: auth.cookieHeader };
+  const pageId = await loadActiveBrandId();
   if (pageId) headers["X-Goog-PageId"] = pageId;
-  if (sapisid) {
-    const ts = Math.floor(Date.now() / 1000);
-    const hash = await sha1Hex(`${ts} ${sapisid} ${YTM_ORIGIN}`);
-    headers.Authorization = `SAPISIDHASH ${ts}_${hash}`;
+  if (auth.authorization) {
+    headers.Authorization = auth.authorization;
   }
   return headers;
 }
@@ -241,14 +253,24 @@ export async function innertubePost(
 ): Promise<YtNode> {
   const url = `https://music.youtube.com/youtubei/v1/${endpoint}?prettyPrint=false`;
   const auth = await authHeaders();
-  const visitor = loadVisitorData();
+  const pageId = await loadActiveBrandId();
+  
+  // Never echo a pre-login visitor id with authenticated cookies — it
+  // can make library browse return 404 while account_menu looks fine.
+  const hasAuth = "Cookie" in auth;
+  const visitor = hasAuth ? null : loadVisitorData();
   const visitorHeader: Record<string, string> = visitor
     ? { "X-Goog-Visitor-Id": visitor }
     : {};
+  const clientContext = buildContext(pageId);
+  if (hasAuth && clientContext.client.visitorData) {
+    delete clientContext.client.visitorData;
+  }
+  
   const res = await tauriFetch(url, {
     method: "POST",
     headers: { ...BASE_HEADERS, ...visitorHeader, ...auth },
-    body: JSON.stringify({ context: buildContext(), ...body }),
+    body: JSON.stringify({ context: clientContext, ...body }),
   });
 
   // Before the error bail: Google rotates cookies on 4xx responses too.

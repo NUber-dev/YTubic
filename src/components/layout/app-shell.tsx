@@ -37,6 +37,7 @@ import {
   useAccountMetaBackfill,
   useAccountsChangedListener,
   useLoginSuccessListener,
+  useLoginPolishListener,
 } from "@/lib/store/accounts";
 import { cn } from "@/lib/utils";
 
@@ -88,6 +89,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useWhatsNewOnUpdate();
   usePremiumStatusSync();
   useLoginSuccessListener();
+  useLoginPolishListener();
   useAccountsChangedListener();
   useAccountMetaBackfill();
   useGlobalShortcuts();

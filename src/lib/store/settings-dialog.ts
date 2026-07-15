@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type SettingsTab =
   | "general"
+  | "account"
   | "appearance"
   | "storage"
   | "integrations";

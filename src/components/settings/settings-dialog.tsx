@@ -4,6 +4,7 @@ import {
   PlugIcon,
   Settings2Icon,
   XIcon,
+  UserRoundIcon,
   type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { GeneralTab } from "@/components/settings/general-tab";
+import { AccountTab } from "@/components/settings/account-tab";
 import { AppearanceTab } from "@/components/settings/appearance-tab";
 import { StorageTab } from "@/components/settings/storage-tab";
 import { IntegrationsTab } from "@/components/settings/integrations-tab";
@@ -25,6 +27,7 @@ import { cn } from "@/lib/utils";
 
 const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: Settings2Icon },
+  { id: "account", label: "Account", icon: UserRoundIcon },
   { id: "appearance", label: "Appearance", icon: PaletteIcon },
   { id: "storage", label: "Storage", icon: DatabaseIcon },
   { id: "integrations", label: "Integrations", icon: PlugIcon },
@@ -130,6 +133,7 @@ export function SettingsDialog() {
               back up). */}
           <div className="app-scroll min-w-0 flex-1 overflow-y-auto px-5 pb-5 [overflow-anchor:none]">
             {tab === "general" && <GeneralTab />}
+            {tab === "account" && <AccountTab />}
             {tab === "appearance" && <AppearanceTab />}
             {tab === "storage" && <StorageTab />}
             {tab === "integrations" && <IntegrationsTab />}
