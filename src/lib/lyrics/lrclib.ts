@@ -191,7 +191,12 @@ function mapRecord(r: LrclibRecord, targetDuration?: number): Lyrics | null {
       targetDuration,
     );
     if (lines.length > 0) {
-      return { kind: "timed", lines, source: "LRCLIB" };
+      return {
+        kind: "timed",
+        lines,
+        source: "LRCLIB",
+        recordDurationSec: r.duration,
+      };
     }
   }
   if (typeof r.plainLyrics === "string" && r.plainLyrics.trim()) {

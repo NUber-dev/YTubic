@@ -22,6 +22,7 @@ import {
   type LyricsSource,
 } from "@/lib/lyrics/sources";
 import { usePlaybackStore } from "@/lib/store/playback";
+import { estimateLeadInOffset } from "@/lib/lyrics/auto-align";
 import type { QueueTrack } from "@/lib/store/playback";
 import { cn } from "@/lib/utils";
 
@@ -71,13 +72,21 @@ const OFFSET_LIMIT_S = 15;
  *  track-source store uses for its byVideoId map). */
 const MAX_OFFSET_ENTRIES = 500;
 
-function loadOffsetMap(): Record<string, number> {
+/** A nudge is only meaningful against the lyric record it was tuned
+ *  on. `sig` pins it there: when a better record replaces the old one
+ *  (matcher fixes, cache-key bumps), a stale nudge would silently
+ *  shift the CORRECT timings; that exact thing happened with a -5.5s
+ *  nudge dialed in against wrong lyrics. Legacy plain-number entries
+ *  are ignored for the same reason. */
+type OffsetEntry = { s: number; sig: string };
+
+function loadOffsetMap(): Record<string, OffsetEntry | number> {
   try {
     const raw = localStorage.getItem(OFFSETS_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === "object") {
-      return parsed as Record<string, number>;
+      return parsed as Record<string, OffsetEntry | number>;
     }
   } catch {
     /* corrupted entry, start fresh */
@@ -85,18 +94,33 @@ function loadOffsetMap(): Record<string, number> {
   return {};
 }
 
-function loadOffset(videoId: string): number {
+function loadOffset(videoId: string, recordSig: string | null): number {
   const v = loadOffsetMap()[videoId];
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  if (
+    v &&
+    typeof v === "object" &&
+    Number.isFinite(v.s) &&
+    recordSig !== null &&
+    v.sig === recordSig
+  ) {
+    return v.s;
+  }
+  return 0;
 }
 
-function saveOffset(videoId: string, seconds: number): void {
+function saveOffset(
+  videoId: string,
+  seconds: number,
+  recordSig: string | null,
+): void {
   try {
     const map = loadOffsetMap();
     // Delete-then-set moves the key to the end of insertion order, so
     // the cap below always evicts the least recently adjusted tracks.
     delete map[videoId];
-    if (seconds !== 0) map[videoId] = seconds;
+    if (seconds !== 0 && recordSig !== null) {
+      map[videoId] = { s: seconds, sig: recordSig };
+    }
     const keys = Object.keys(map);
     for (const k of keys.slice(0, Math.max(0, keys.length - MAX_OFFSET_ENTRIES))) {
       delete map[k];
@@ -145,17 +169,20 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
   };
 
   const videoId = track?.videoId;
-  const [offset, setOffsetState] = useState<number>(() =>
-    videoId ? loadOffset(videoId) : 0,
-  );
-  useEffect(() => {
-    setOffsetState(videoId ? loadOffset(videoId) : 0);
-  }, [videoId]);
+  const autoOffsetRef = useRef(0);
+  // The active record's signature lands after the queries resolve;
+  // mirrored in a ref so the user-triggered nudge handlers always see
+  // the current one.
+  const recordSigRef = useRef<string | null>(null);
+  const [offset, setOffsetState] = useState(0);
   const nudgeOffset = (deltaSeconds: number) => {
     if (!videoId) return;
     // Round to the step grid so repeated float adds can't drift into
-    // 0.7500000000000001-style labels.
-    const raw = offset + deltaSeconds;
+    // 0.7500000000000001-style labels. Seed from the auto-alignment
+    // when the user hasn't nudged yet, so the first click fine-tunes
+    // it instead of snapping back to zero.
+    const base = offset !== 0 ? offset : autoOffsetRef.current;
+    const raw = base + deltaSeconds;
     const next = Math.max(
       -OFFSET_LIMIT_S,
       Math.min(
@@ -164,15 +191,31 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
       ),
     );
     setOffsetState(next);
-    saveOffset(videoId, next);
+    saveOffset(videoId, next, recordSigRef.current);
   };
   const resetOffset = () => {
     if (!videoId) return;
     setOffsetState(0);
-    saveOffset(videoId, 0);
+    saveOffset(videoId, 0, recordSigRef.current);
+    setAutoOffset(0);
   };
 
   const { queries, best, isLoading } = useLyricsSources(track, !!track);
+
+  // Auto-alignment for uploads with a padded intro: when the playing
+  // file is a few seconds longer than the recording the timings were
+  // cut for AND the audio itself starts that many seconds in, shift
+  // the lyrics by that lead-in. Applies only while the user hasn't set
+  // their own nudge; a manual nudge always wins.
+  const streamUrl = usePlaybackStore((s) => s.streamUrl);
+  const realDuration = usePlaybackStore((s) => s.duration);
+  const [autoOffset, setAutoOffset] = useState(0);
+  // Mirrored in a ref so nudgeOffset (declared above) can seed from the
+  // current auto value without stale-closure games.
+  autoOffsetRef.current = autoOffset;
+  useEffect(() => {
+    setAutoOffset(0);
+  }, [videoId]);
 
   const availability = useMemo(() => {
     const acc = {} as Record<LyricsSource, Availability>;
@@ -192,6 +235,37 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
   const activeSource: LyricsSource | null = pref === "auto" ? best : pref;
   const active = activeSource ? (queries[activeSource].data ?? null) : null;
 
+  const recordDurationSec =
+    active?.kind === "timed" ? active.recordDurationSec : undefined;
+  const recordSig =
+    active?.kind === "timed"
+      ? `${active.source ?? ""}:${recordDurationSec ?? 0}`
+      : null;
+  recordSigRef.current = recordSig;
+  // Load the saved nudge only once the record it was tuned against is
+  // known, so a nudge pinned to a different record stays ignored.
+  useEffect(() => {
+    setOffsetState(videoId ? loadOffset(videoId, recordSig) : 0);
+  }, [videoId, recordSig]);
+
+  useEffect(() => {
+    if (!videoId || offset !== 0) return;
+    if (!streamUrl || !realDuration || !recordDurationSec) return;
+    let cancelled = false;
+    void estimateLeadInOffset(streamUrl, realDuration, recordDurationSec).then(
+      (o) => {
+        if (!cancelled && o) setAutoOffset(o);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId, streamUrl, realDuration, recordDurationSec, offset]);
+
+  // The user's saved nudge wins outright; the estimated lead-in only
+  // fills the gap while they haven't touched the dial.
+  const effectiveOffset = offset !== 0 ? offset : autoOffset;
+
   return {
     active,
     isLoading,
@@ -200,7 +274,7 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
     setPref,
     best,
     availability,
-    offset,
+    offset: effectiveOffset,
     nudgeOffset,
     resetOffset,
   };
