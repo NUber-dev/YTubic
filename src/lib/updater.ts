@@ -1,27 +1,41 @@
 import { useEffect } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
 import { useUpdateStore } from "@/lib/store/update";
 
 const TOAST_ID = "app-update";
 
-// One check-or-install flow at a time: a second trigger while a download
-// is running must not start a parallel downloadAndInstall.
+/** Upstream's latest release: the real release notes and the official build. */
+export const UPSTREAM_RELEASES_URL =
+  "https://github.com/NUber-dev/YTubic/releases/latest";
+
+// Fork note: this build has NO self-install path, on purpose.
+//
+// The updater endpoint points at the UPSTREAM repo's releases, and those
+// artifacts are the upstream dev's own builds — they carry none of this fork's
+// patches (global volume hotkeys). Installing one would quietly replace this
+// build and drop those features, and it would succeed: upstream signs its
+// artifacts with the key this config already trusts. So we keep the *check*
+// (it's how we learn a new version shipped) and drop `downloadAndInstall`
+// entirely. Updating a fork means merging upstream and rebuilding, which is
+// what ForkUpdateDialog explains on every launch while we're behind.
+
+// One check at a time: a second trigger while one is in flight is a no-op.
 let busy = false;
 
 /**
- * Check GitHub Releases for a newer version. On success the result is
- * pushed into `useUpdateStore`, which the sidebar banner reads. There
- * is no "available" toast anymore, the banner is that surface.
+ * Check upstream's GitHub Releases for a newer version. On success the result
+ * is pushed into `useUpdateStore`, which the launch dialog and the sidebar
+ * banner both read.
  *
- * `silent` is the startup path: no feedback when already up to date or
- * when the check fails (offline, rate-limit). The manual menu path
- * reports those outcomes.
+ * `silent` is the startup path: no feedback when already up to date or when
+ * the check fails (offline, rate-limit). The manual menu path reports those
+ * outcomes.
  *
- * The updater can't run in `tauri dev`, so a manual check there seeds a
- * mock "available" update instead; the whole banner flow can then be
- * reviewed end to end (the install itself is simulated).
+ * The updater can't run in `tauri dev`, so a manual check there seeds a mock
+ * "available" update instead; the dialog and banner can then be reviewed end
+ * to end.
  */
 export async function checkForUpdates({ silent }: { silent: boolean }): Promise<void> {
   if (import.meta.env.DEV) {
@@ -55,97 +69,9 @@ export async function checkForUpdates({ silent }: { silent: boolean }): Promise<
   }
 }
 
-/**
- * Start download + install for the update currently in the store (the
- * banner's click when it's showing "available"/"error"). A real update
- * handle → the plugin does the work; no handle → the dev preview runs a
- * simulated download.
- */
-export async function beginUpdateInstall(): Promise<void> {
-  const { phase, handle } = useUpdateStore.getState();
-  if (phase !== "available" && phase !== "error") return;
-  if (busy) return;
-  busy = true;
-  try {
-    if (handle) await runRealInstall(handle);
-    else await runMockInstall();
-  } finally {
-    busy = false;
-  }
-}
-
-/**
- * Restart into the freshly-installed update (from the banner or the
- * installed toast). In the dev preview there's nothing to restart into,
- * so it just clears the flow and says so.
- */
-export function restartToUpdate(): void {
-  if (useUpdateStore.getState().handle) {
-    void relaunch();
-  } else {
-    useUpdateStore.getState().reset();
-    toast.success("Preview only: a real update would restart here.", {
-      id: TOAST_ID,
-      duration: 4000,
-    });
-  }
-}
-
-async function runRealInstall(update: Update): Promise<void> {
-  const store = useUpdateStore.getState();
-  let total = 0;
-  let received = 0;
-  store.setDownloading(0);
-  try {
-    await update.downloadAndInstall((event) => {
-      switch (event.event) {
-        case "Started":
-          total = event.data.contentLength ?? 0;
-          store.setDownloading(0);
-          break;
-        case "Progress": {
-          received += event.data.chunkLength;
-          const pct = total > 0 ? Math.round((received / total) * 100) : null;
-          store.setDownloading(pct);
-          break;
-        }
-        case "Finished":
-          store.setInstalling();
-          break;
-      }
-    });
-  } catch (e) {
-    // The banner's error phase ("Update failed / Click to retry") is
-    // the surface for this now; no toast.
-    store.setError(String(e));
-    return;
-  }
-  store.setReady();
-}
-
-async function runMockInstall(): Promise<void> {
-  const store = useUpdateStore.getState();
-  store.setDownloading(0);
-
-  // Simulated download: tick 0 -> 100 over ~2.5s.
-  await new Promise<void>((resolve) => {
-    let pct = 0;
-    const timer = window.setInterval(() => {
-      pct += 10;
-      if (pct >= 100) {
-        window.clearInterval(timer);
-        store.setDownloading(100);
-        resolve();
-      } else {
-        store.setDownloading(pct);
-      }
-    }, 250);
-  });
-
-  store.setInstalling();
-  await new Promise<void>((r) => window.setTimeout(r, 800));
-
-  store.setReady();
+/** Open upstream's release notes in the default browser. */
+export function openUpstreamReleaseNotes(): void {
+  openUrl(UPSTREAM_RELEASES_URL).catch((e) => toast.error(String(e)));
 }
 
 /**
