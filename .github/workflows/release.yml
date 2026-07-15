@@ -1,5 +1,6 @@
-# Builds the Windows installer and publishes a draft GitHub Release
-# whenever a `v*` tag is pushed. Publish flow:
+# Builds Windows (NSIS) and Linux (.deb / .AppImage) installers and
+# publishes a draft GitHub Release whenever a `v*` tag is pushed.
+# Publish flow:
 #   git tag v0.1.0 && git push origin v0.1.0
 # → wait for this workflow → review the draft on the Releases page → publish.
 #
@@ -16,7 +17,15 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundle: nsis
+          - os: ubuntu-latest
+            bundle: deb,appimage
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -30,7 +39,23 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev
+
       - run: pnpm install --frozen-lockfile
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -47,3 +72,4 @@ jobs:
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           prerelease: false
+          args: --bundles ${{ matrix.bundle }}
