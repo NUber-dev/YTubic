@@ -59,6 +59,7 @@ jobs:
       # empty string (e.g. on a fork) Tauri still attempts to decode it
       # and fails. Only exporting when non-empty avoids that.
       - name: Export signing keys (if available)
+        shell: bash
         run: |
           if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
             echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
