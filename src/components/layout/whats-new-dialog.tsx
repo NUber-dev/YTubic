@@ -1,3 +1,4 @@
+import { TriangleAlertIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -87,6 +88,14 @@ export function WhatsNewDialog() {
                       </li>
                     ))}
                   </ul>
+                ) : null}
+                {section.alert ? (
+                  <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <p className="text-sm leading-relaxed text-amber-800 dark:text-amber-200">
+                      {section.alert}
+                    </p>
+                  </div>
                 ) : null}
               </div>
             ))}

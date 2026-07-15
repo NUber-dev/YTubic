@@ -25,6 +25,10 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
 mod now_playing;
+mod appid;
+mod discord;
+mod lastfm;
+mod media;
 mod ytdlp;
 
 fn sanitize_video_id(id: &str) -> bool {
@@ -214,6 +218,41 @@ fn accounts_index_path(app: &tauri::AppHandle) -> PathBuf {
 fn account_cookies_path(app: &tauri::AppHandle, id: &str) -> PathBuf {
     accounts_dir(app).join(id).join("cookies.enc")
 }
+
+/// Per-account persistent WebView2 profile. Unlike the throwaway login
+/// profile of old, this survives a successful sign-in: it holds the
+/// live, Google-bound browser session. A periodic hidden reload re-
+/// extracts fresh cookies from it (see `refresh_account_cookies`) so the
+/// snapshot we replay never outlives Google's ~2h leash on *extracted*
+/// cookies. That leash is what made libraries silently empty mid-session.
+fn account_webview_dir(app: &tauri::AppHandle, id: &str) -> PathBuf {
+    accounts_dir(app).join(id).join("webview")
+}
+
+/// Chrome UA the login and refresh WebViews both present to Google. Kept
+/// identical so the session Google issues to the login window is the
+/// same one the refresh window later renews.
+const YT_LOGIN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+     (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
+/// WebView2 browser args shared by the login window and the session-keeper.
+/// Both open the same per-account profile directory, and WebView2 requires
+/// every instance on a shared user-data folder to pass identical args, so
+/// these have to match. They also stop both windows from grabbing the
+/// hardware media keys or running a media session (which would hijack
+/// play/pause from the real player), and block autoplay so a hidden keeper
+/// never starts making sound on its own.
+const YT_WEBVIEW_ARGS: &str = "--disable-features=HardwareMediaKeyHandling,MediaSessionService \
+     --autoplay-policy=user-gesture-required";
+
+/// WebView2 browser args for windows on the DEFAULT user-data folder — the
+/// main window and the floating player. Must stay byte-identical to
+/// `additionalBrowserArgs` in `tauri.conf.json`: WebView2 refuses to create
+/// a second webview on the same user-data folder with different args, so a
+/// mismatch makes `open_player_window` fail and the floating player never
+/// appears. (The first three disabled features are wry's own defaults,
+/// which the conf.json value extends.)
+const APP_WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling,MediaSessionService";
 
 /// Legacy single-account path — kept only for migration. New code
 /// should resolve cookies via `active_cookies_path`.
@@ -721,26 +760,30 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    // Fresh per-attempt WebView profile so Google's auth cookies are
-    // empty at window open. Lives under app_cache_dir (transient by
-    // nature) and gets cleaned up after the window closes.
-    let session_id = generate_account_id();
-    let webview_data = app
-        .path()
-        .app_cache_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("login-sessions")
-        .join(&session_id);
+    // Per-attempt account id, minted up front so the WebView profile can
+    // live at its permanent home from the first keystroke. Still fresh
+    // per attempt (a unique id), so Google's auth cookies are empty at
+    // window open and "add account" starts from a clean sign-in, so
+    // identity isolation is preserved. Unlike the old throwaway temp
+    // profile, we KEEP this one after a successful login: it holds the
+    // live, Google-bound session that `refresh_account_cookies` re-
+    // extracts from periodically, so the replayed snapshot never outlives
+    // Google's ~2h leash on extracted cookies.
+    let account_id = generate_account_id();
+    let webview_data = account_webview_dir(&app, &account_id);
     if let Err(e) = tokio::fs::create_dir_all(&webview_data).await {
         eprintln!("[login] mkdir webview-data: {e}");
     }
+    // Wiped wholesale on cancel/error (profile + any partial jar); kept
+    // on success.
+    let account_dir = accounts_dir(&app).join(&account_id);
 
     let url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F"
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
 
     let win = WebviewWindowBuilder::new(&app, "login", WebviewUrl::External(url))
-        .title("Sign in — accounts.google.com")
+        .title("Sign in - accounts.google.com")
         .inner_size(500.0, 720.0)
         .min_inner_size(420.0, 560.0)
         .center()
@@ -753,21 +796,24 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 \
                  (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
             } else {
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+                YT_LOGIN_UA
             },
         )
+        // Must match the session-keeper's args (shared profile folder).
+        .additional_browser_args(YT_WEBVIEW_ARGS)
         // Surface the current origin in the title so the user can spot
         // a redirect to an unexpected host (anti-phishing).
         .on_page_load(|win, payload| {
             let host = payload.url().host_str().unwrap_or("???");
-            let _ = win.set_title(&format!("Sign in — {host}"));
+            let _ = win.set_title(&format!("Sign in - {host}"));
         })
         .build()
         .map_err(|e| e.to_string())?;
 
     let app_poll = app.clone();
-    let cleanup_dir = webview_data.clone();
+    // Failure paths wipe the whole account dir (profile + jar); on
+    // success we keep it so the live session can be refreshed later.
+    let cleanup_dir = account_dir.clone();
     tauri::async_runtime::spawn(async move {
         // Set to true once we've redirected the webview to YT ourselves.
         // Guards against thrashing if YT auto-sign-in is slow and we
@@ -863,7 +909,9 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 continue;
             }
 
-            let new_id = generate_account_id();
+            // Same id as the persisted WebView profile created above, so
+            // the account row and its live session profile stay paired.
+            let new_id = account_id.clone();
             let cookies_path = account_cookies_path(&app_poll, &new_id);
             if let Some(dir) = cookies_path.parent() {
                 let _ = tokio::fs::create_dir_all(dir).await;
@@ -927,13 +975,163 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             // twice for one login flow.
             let _ = app_poll.emit("login-success", &new_id);
             let _ = win.close();
-            let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
+            // Keep the WebView profile: it's the live session the periodic
+            // refresh re-extracts from. Only cancel/error paths above (and
+            // account removal) delete it.
             return;
         }
     });
 
     let _ = win;
     Ok(())
+}
+
+/// The live "session-keeper" WebView for `id`: a hidden window on
+/// music.youtube.com that reuses the account's persisted profile. As a
+/// real browser engine it stays authenticated from the stored session and
+/// keeps the server-side session (and its rotating cookies) warm, which
+/// plain HTTP replay cannot do. Built ONCE and reused; any keeper left
+/// over from a previously-active account is closed first, so at most one
+/// runs at a time. Returns (window, just_created).
+async fn ensure_session_keeper(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<(tauri::WebviewWindow, bool), String> {
+    if !account_webview_dir(app, id).exists() {
+        return Err(format!("no persisted profile for {id}"));
+    }
+    let label = format!("keeper-{id}");
+    // Close a stale keeper left over from a previously-active account, so
+    // at most one keeper (the active account's) ever runs.
+    for (l, w) in app.webview_windows() {
+        if l.starts_with("keeper-") && l != label {
+            let _ = w.close();
+        }
+    }
+    if let Some(win) = app.get_webview_window(&label) {
+        return Ok((win, false));
+    }
+    let url = "https://music.youtube.com/"
+        .parse::<tauri::Url>()
+        .map_err(|e| e.to_string())?;
+    // Hidden, undecorated, focus-less, off-screen, no taskbar entry. Built
+    // once and reused (not re-created every cycle), so there is no recurring
+    // window creation to flash on screen; the window-state plugin is told to
+    // never restore keeper windows (see `with_filter` in `run`), so a saved
+    // "visible" state can't drag it back on-screen next launch either. The
+    // webview still loads and keeps the session alive regardless of
+    // visibility or position.
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+        .title("YTubic session keeper")
+        .visible(false)
+        .decorations(false)
+        .focused(false)
+        .skip_taskbar(true)
+        .position(-32000.0, -32000.0)
+        .inner_size(1024.0, 768.0)
+        .data_directory(account_webview_dir(app, id))
+        .user_agent(YT_LOGIN_UA)
+        .additional_browser_args(YT_WEBVIEW_ARGS)
+        .build()
+        .map_err(|e| format!("build session-keeper: {e}"))?;
+    // Force-hide on top of visible(false): if WebView2 shows the host window
+    // when the external page finishes loading, this puts it straight back to
+    // hidden so the user never sees a stray music.youtube.com window.
+    let _ = win.hide();
+    Ok((win, true))
+}
+
+/// Refresh the replayed cookie snapshot for `id` from its live session-
+/// keeper WebView. Reloads the keeper to force fresh authenticated
+/// requests (which renews the session and rotates its short-lived
+/// cookies), reads the full cookie set, and overwrites `cookies.enc`. The
+/// keeper window is left OPEN for next time.
+///
+/// This is what survives Google's ~2h leash on *extracted* cookies: the
+/// bound browser session behind the keeper stays live, so the snapshot we
+/// replay never goes stale. Errors (leaving the existing snapshot
+/// untouched) when the account has no persisted profile or its session is
+/// logged out, so we never clobber a usable jar with an empty one.
+async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
+    // Serialize refreshes so the periodic timer and a manual trigger can't
+    // reload the keeper / rewrite the jar on top of each other.
+    let guard = app.state::<RefreshGuard>();
+    let _lock = guard.inner().0.lock().await;
+
+    let (win, created) = ensure_session_keeper(app, id).await?;
+    // A reused keeper is reloaded to force fresh authenticated traffic; a
+    // just-created one is already loading the URL from the builder.
+    if !created {
+        if let Ok(u) = "https://music.youtube.com/".parse::<tauri::Url>() {
+            let _ = win.navigate(u);
+        }
+    }
+
+    // Poll the keeper's cookie store until the full authed set is present
+    // (LOGIN_INFO lands last, as at login), then snapshot it. The keeper
+    // window stays open for the next cycle.
+    let mut captured: Option<Vec<u8>> = None;
+    for tick in 0..12u8 {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let Ok(cookies) = win.cookies() else { continue };
+        let has_yt_auth = cookies.iter().any(|c| {
+            let n = c.name();
+            (n == "__Secure-1PSID" || n == "SAPISID")
+                && c.domain()
+                    .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
+                    .unwrap_or(false)
+        });
+        if !has_yt_auth {
+            continue;
+        }
+        let has_login_info = cookies.iter().any(|c| {
+            c.name() == "LOGIN_INFO"
+                && c.domain()
+                    .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
+                    .unwrap_or(false)
+        });
+        // Give the handshake a few ticks to complete, then take what we
+        // have so a missing LOGIN_INFO can't stall the refresh forever.
+        if !has_login_info && tick < 4 {
+            continue;
+        }
+        captured = Some(cookies_to_netscape(&cookies).into_bytes());
+        break;
+    }
+    let Some(plain) = captured else {
+        return Err("no auth cookies after reload (profile logged out?)".into());
+    };
+    let encrypted = tokio::task::spawn_blocking(move || secure_store::encrypt(&plain))
+        .await
+        .map_err(|e| format!("encrypt join: {e}"))?
+        .map_err(|e| format!("encrypt: {e}"))?;
+    let path = account_cookies_path(app, id);
+    if let Some(dir) = path.parent() {
+        let _ = tokio::fs::create_dir_all(dir).await;
+    }
+    tokio::fs::write(&path, encrypted)
+        .await
+        .map_err(|e| format!("write refreshed cookies: {e}"))?;
+    Ok(())
+}
+
+/// Force an immediate snapshot refresh for the active account. Exposed
+/// for the UI (and manual testing) so a session can be renewed on demand
+/// instead of only when the periodic timer fires. Returns `false` when
+/// nobody is signed in.
+#[tauri::command]
+async fn refresh_active_session(app: tauri::AppHandle) -> Result<bool, String> {
+    let idx = read_index(&app).await;
+    let Some(active) = idx.active else {
+        return Ok(false);
+    };
+    match refresh_account_cookies(&app, &active).await {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            eprintln!("[refresh] {active}: {e}");
+            Err(e)
+        }
+    }
 }
 
 /// Parse a Netscape cookie jar and return a `Cookie:` header value
@@ -1123,6 +1321,9 @@ async fn open_player_window(
     // handler entirely is purely upside. The doc string for this
     // method literally calls out HTML5 DnD on Windows as the use case.
     .disable_drag_drop_handler()
+    // Shares the default user-data folder with the main window, so the
+    // args must match the main window's `additionalBrowserArgs` exactly.
+    .additional_browser_args(APP_WEBVIEW_ARGS)
     .build()
     .map_err(|e| e.to_string())?;
     // Dev builds: orange taskbar icon, same as the main window.
@@ -1233,6 +1434,11 @@ async fn remove_account(app: tauri::AppHandle, id: String) -> Result<(), String>
         .position(|a| a.id == id)
         .ok_or_else(|| format!("no such account: {id}"))?;
     idx.accounts.remove(pos);
+    // Close this account's session-keeper (if running) so its webview
+    // releases the profile directory before we delete it.
+    if let Some(w) = app.get_webview_window(&format!("keeper-{id}")) {
+        let _ = w.close();
+    }
     let dir = accounts_dir(&app).join(&id);
     if dir.exists() {
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -1332,6 +1538,31 @@ async fn update_account_meta(
         if let Ok(bytes) = tokio::fs::read(&this_cookies).await {
             if let Err(e) = tokio::fs::write(&other_cookies, bytes).await {
                 eprintln!("[accounts] copy cookies on dedup: {e}");
+            }
+        }
+        // Re-login replaces the older row's session with the freshly
+        // captured one, so its live WebView profile has to move over too.
+        // Otherwise the renewed account would have no profile to refresh
+        // from and would die at ~2h like the old snapshot-only flow. The
+        // just-closed login window can hold WebView2 file locks for a
+        // beat, so retry the move briefly before giving up.
+        let this_webview = account_webview_dir(&app, &id);
+        if this_webview.exists() {
+            let other_webview = account_webview_dir(&app, &other_id);
+            let _ = tokio::fs::remove_dir_all(&other_webview).await;
+            let mut moved = false;
+            for _ in 0..5u8 {
+                if tokio::fs::rename(&this_webview, &other_webview).await.is_ok() {
+                    moved = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+            if !moved {
+                eprintln!(
+                    "[accounts] could not move webview profile {id} -> {other_id}; \
+                     re-login needed to re-arm session refresh"
+                );
             }
         }
         let _ = tokio::fs::remove_dir_all(accounts_dir(&app).join(&id)).await;
@@ -1468,6 +1699,11 @@ async fn get_auth_context(
 /// without the lock two merges could interleave and drop one.
 #[derive(Default)]
 struct JarWriteLock(tokio::sync::Mutex<()>);
+
+/// Serializes cookie-refresh runs so the periodic keeper reload / jar
+/// rewrite can't overlap between the timer and a manual trigger.
+#[derive(Default)]
+struct RefreshGuard(tokio::sync::Mutex<()>);
 
 /// Merge `Set-Cookie` headers from an InnerTube response into the
 /// active account's jar, mirroring what a browser would do. Google
@@ -1658,6 +1894,42 @@ struct CacheEntry {
     /// Seconds since unix epoch. Frontend formats for display.
     #[serde(rename = "modifiedSecs")]
     modified_secs: u64,
+    /// Track title, if a sidecar was written when it was cached. The
+    /// library walk is the frontend's fallback; without either, it shows
+    /// the raw videoId.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    /// Display artist string (already joined), if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artist: Option<String>,
+}
+
+/// On-disk sidecar written next to a cached `<id>.webm` as
+/// `<id>.meta.json`. The Rust side stores it verbatim; the frontend
+/// supplies the already-formatted display strings.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TrackMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    artist: Option<String>,
+}
+
+/// Best-effort read of a track's metadata sidecar. Any absence or parse
+/// error is treated as "no metadata" — the cache file is still valid
+/// without it.
+async fn read_track_meta(dir: &std::path::Path, video_id: &str) -> TrackMeta {
+    let path = dir.join(format!("{video_id}.meta.json"));
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => serde_json::from_slice::<TrackMeta>(&bytes).unwrap_or(TrackMeta {
+            title: None,
+            artist: None,
+        }),
+        Err(_) => TrackMeta {
+            title: None,
+            artist: None,
+        },
+    }
 }
 
 /// List every finalized track (.webm) currently in the stream cache.
@@ -1689,10 +1961,13 @@ async fn list_cache(app: tauri::AppHandle) -> Result<Vec<CacheEntry>, String> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let sidecar = read_track_meta(&dir, video_id).await;
         entries.push(CacheEntry {
             video_id: video_id.to_string(),
             size: meta.len(),
             modified_secs,
+            title: sidecar.title,
+            artist: sidecar.artist,
         });
     }
     Ok(entries)
@@ -1712,26 +1987,30 @@ async fn delete_cache_entries(
     let mut freed: u64 = 0;
 
     let targets: Vec<String> = if video_ids.is_empty() {
-        // "Clear all" — enumerate on the fly.
+        // "Clear all" — enumerate on the fly. Strip whichever suffix a
+        // file carries so orphaned sidecars / stray .part files (whose
+        // .webm is already gone) get swept too, not just live tracks.
         let mut rd = tokio::fs::read_dir(&dir)
             .await
             .map_err(|e| format!("read_dir: {e}"))?;
-        let mut out = Vec::new();
+        let mut out = std::collections::HashSet::new();
         while let Ok(Some(e)) = rd.next_entry().await {
             if let Some(name) = e.file_name().to_str() {
                 // A track cached only as video (`<id>.video.mp4`) still
-                // has to be swept, so enumerate both variants.
+                // has to be swept, so enumerate every variant.
                 let id = name
                     .strip_suffix(".video.mp4")
-                    .or_else(|| name.strip_suffix(".webm"));
+                    .or_else(|| name.strip_suffix(".webm"))
+                    .or_else(|| name.strip_suffix(".meta.json"))
+                    .or_else(|| name.strip_suffix(".part"));
                 if let Some(id) = id {
-                    if sanitize_video_id(id) && !out.contains(&id.to_string()) {
-                        out.push(id.to_string());
+                    if sanitize_video_id(id) {
+                        out.insert(id.to_string());
                     }
                 }
             }
         }
-        out
+        out.into_iter().collect()
     } else {
         video_ids
             .into_iter()
@@ -1751,8 +2030,46 @@ async fn delete_cache_entries(
             let _ = tokio::fs::remove_file(&path).await;
             let _ = tokio::fs::remove_file(dir.join(part_name)).await;
         }
+        // Metadata sidecar, if one was written.
+        let _ = tokio::fs::remove_file(dir.join(format!("{id}.meta.json"))).await;
     }
     Ok(freed)
+}
+
+/// Persist a cached track's display metadata to `<id>.meta.json` beside
+/// its `.webm`. Called by the frontend when it streams or prefetches a
+/// track into the persistent (Premium) cache — that's the moment it
+/// knows the title/artist, which `list_cache` cannot derive from the
+/// file alone. Idempotent; an empty title is a no-op.
+#[tauri::command]
+async fn set_cache_meta(
+    app: tauri::AppHandle,
+    video_id: String,
+    title: Option<String>,
+    artist: Option<String>,
+) -> Result<(), String> {
+    if !sanitize_video_id(&video_id) {
+        return Err(format!("invalid videoId: {video_id}"));
+    }
+    let title = title.filter(|s| !s.trim().is_empty());
+    // Nothing worth writing — skip rather than leave an empty sidecar.
+    if title.is_none() {
+        return Ok(());
+    }
+    let dir = stream_cache_dir(&app);
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return Err(format!("create_dir_all: {e}"));
+    }
+    let meta = TrackMeta {
+        title,
+        artist: artist.filter(|s| !s.trim().is_empty()),
+    };
+    let bytes = serde_json::to_vec(&meta).map_err(|e| format!("serialize: {e}"))?;
+    let path = dir.join(format!("{video_id}.meta.json"));
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+    Ok(())
 }
 
 /// Make the managed yt-dlp binary available (download on first run,
@@ -2388,6 +2705,19 @@ fn spawn_downloader(
             "--no-warnings",
             "--no-part",
             "-q",
+            // YouTube regularly hands out a signed media URL that then 403s
+            // on the very first byte-range request (token/pot desync or
+            // per-URL throttling). Left alone this surfaces as a one-off
+            // "download failed" that a manual re-click fixes. Retrying the
+            // data download and the extractor a few times clears the vast
+            // majority of these inside a single spawn, before the handler
+            // ever returns 502 to the audio element.
+            "--retries",
+            "5",
+            "--extractor-retries",
+            "3",
+            "--socket-timeout",
+            "15",
             "--extractor-args",
             "youtube:player_client=android_vr,ios",
             "-o",
@@ -2954,6 +3284,12 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Register + pin the app's Windows identity (AppUserModelID) so the SMTC
+    // media tile (and notifications, taskbar) resolve to "YTubic" + icon rather
+    // than "Unknown app". Must run before any window is created. No-op off
+    // Windows.
+    appid::init();
+
     let state = StreamServerState::default();
     let port_handle = state.port.clone();
     let token_handle = state.token.clone();
@@ -2971,6 +3307,13 @@ pub fn run() {
                     tauri_plugin_window_state::StateFlags::all()
                         & !tauri_plugin_window_state::StateFlags::DECORATIONS,
                 )
+                // Never persist or restore the hidden session-keeper windows.
+                // Their saved "visible: true" + on-screen position was being
+                // replayed on the next launch, popping a stray
+                // music.youtube.com window into view until the user minimized
+                // it. Keeping them out of the store lets their builder flags
+                // (hidden, off-screen) hold on every launch.
+                .with_filter(|label| !label.starts_with("keeper-"))
                 .build(),
         )
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -2988,6 +3331,9 @@ pub fn run() {
         .manage(state)
         .manage(CloseBehavior::default())
         .manage(JarWriteLock::default())
+        .manage(RefreshGuard::default())
+        .manage(discord::spawn())
+        .manage(lastfm::LastfmState::default())
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
             resolve_stream_ytdlp,
@@ -2997,6 +3343,7 @@ pub fn run() {
             get_auth_context,
             merge_response_cookies,
             is_logged_in,
+            refresh_active_session,
             clear_cookies,
             list_accounts,
             switch_account,
@@ -3006,6 +3353,7 @@ pub fn run() {
             get_active_account_id,
             list_cache,
             delete_cache_entries,
+            set_cache_meta,
             cache_cover,
             cover_cache_stats,
             clear_cover_cache,
@@ -3022,6 +3370,19 @@ pub fn run() {
             open_player_window,
             close_player_window,
             set_now_playing,
+            media::media_update,
+            media::media_clear,
+            discord::discord_update,
+            discord::discord_clear,
+            discord::discord_set_enabled,
+            lastfm::lastfm_is_configured,
+            lastfm::lastfm_begin_auth,
+            lastfm::lastfm_poll_session,
+            lastfm::lastfm_user_info,
+            lastfm::lastfm_update_now_playing,
+            lastfm::lastfm_scrobble,
+            lastfm::lastfm_love,
+            lastfm::lastfm_flush,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -3064,6 +3425,10 @@ pub fn run() {
             let cache_root = stored_cache_root(app.handle())
                 .unwrap_or_else(|| default_cache_root(app.handle()));
             app.manage(ActiveCacheRoot(cache_root.clone()));
+            // Retry any scrobbles stranded offline on the previous run. Spawns
+            // its own task; a no-op when Last.fm isn't configured or the queue
+            // is empty. See src/lastfm.rs.
+            lastfm::flush_on_startup(app.handle().clone());
             let cache_dir = cache_root.join("stream");
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
@@ -3085,6 +3450,44 @@ pub fn run() {
                 start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
                     .await;
             });
+            // Keep the active account's replayed cookie snapshot fresh.
+            // Google leashes *extracted* cookies to ~2h; reloading the
+            // hidden session-keeper every 20 min renews the bound session
+            // well inside that window, so the library never silently
+            // empties mid-session.
+            // Accounts with no persisted profile (added before this
+            // feature) are skipped until the user signs in again.
+            let refresh_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Let migrations + the stream server settle, and give a
+                // just-completed login time to persist its profile.
+                tokio::time::sleep(Duration::from_secs(20)).await;
+                loop {
+                    let idx = read_index(&refresh_handle).await;
+                    if let Some(active) = idx.active {
+                        if account_webview_dir(&refresh_handle, &active).exists() {
+                            match refresh_account_cookies(&refresh_handle, &active).await {
+                                Ok(()) => {
+                                    eprintln!("[refresh] renewed snapshot for {active}")
+                                }
+                                Err(e) => eprintln!("[refresh] {active}: {e}"),
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(20 * 60)).await;
+                }
+            });
+            // OS media controls (the Windows SMTC tile in Quick Settings / the
+            // volume flyout, plus the hardware media keys). setup() runs on the
+            // main thread, which souvlaki requires and where the main window's
+            // HWND is available.
+            // souvlaki drives SMTC on Windows. macOS has its own
+            // MPRemoteCommandCenter bridge (now_playing.rs); letting both
+            // register would fight over the system Now Playing entry, so
+            // souvlaki stays Windows-only. media_update/media_clear no-op
+            // when init never ran (CONTROLS stays None).
+            #[cfg(windows)]
+            media::init(app.handle());
             if let Err(e) = build_tray(app.handle()) {
                 eprintln!("[tray] build failed: {e}");
             }

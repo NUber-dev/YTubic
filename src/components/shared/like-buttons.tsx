@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { fetchLikedSongs } from "@/lib/innertube/library";
 import { likeTrack, removeRating } from "@/lib/innertube/mutations";
 import type { ShelfItem } from "@/lib/innertube/types";
+import { syncLastfmLove, type LastfmTrackMeta } from "@/lib/lastfm";
 import { cn } from "@/lib/utils";
 
 // Patch the cached liked-songs list optimistically. The server is the
@@ -37,6 +38,9 @@ export function getLikedIdsSet(data: ShelfItem[] | undefined): Set<string> {
 
 type Props = {
   videoId: string;
+  /** Track metadata for the Last.fm loved-track sync. Optional: without it a
+   *  like still works, it just isn't mirrored to Last.fm. */
+  track?: LastfmTrackMeta;
   className?: string;
   /** Compact mode uses size-8 ghost buttons (for track rows). Default
    *  is size-9 (for the player bar). */
@@ -49,6 +53,7 @@ type Props = {
 
 export function LikeDislikeButtons({
   videoId,
+  track,
   className,
   compact,
   hideUnlessLiked,
@@ -94,6 +99,8 @@ export function LikeDislikeButtons({
         });
         toast.success("Added to Liked");
       }
+      // Mirror the like/unlike to Last.fm as a loved / unloved track.
+      syncLastfmLove(track, !wasLiked);
       // The heart-fill cache (["liked-songs"]) is separate from the
       // Library → Songs list (["library","liked-songs-pages"]) and the
       // Liked Songs (LM) playlist page (["playlist-pages", …"LM"…]). Mark

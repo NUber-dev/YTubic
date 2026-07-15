@@ -19,3 +19,12 @@ export function formatRelative(unixSecs: number): string {
   const d = new Date(unixSecs * 1000);
   return d.toLocaleDateString();
 }
+
+/** "Jul 11, 2026, 3:42 PM"-style absolute date + time from unix ms,
+ *  localized to the user's system settings. */
+export function formatDateTime(unixMs: number): string {
+  return new Date(unixMs).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}

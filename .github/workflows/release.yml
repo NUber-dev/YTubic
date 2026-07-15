@@ -36,6 +36,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Baked into the build by src-tauri/build.rs. Add these as repo
+          # Actions secrets. If unset, the released build just ships with
+          # scrobbling disabled and nothing else breaks.
+          YTUBIC_LASTFM_API_KEY: ${{ secrets.YTUBIC_LASTFM_API_KEY }}
+          YTUBIC_LASTFM_API_SECRET: ${{ secrets.YTUBIC_LASTFM_API_SECRET }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "YTubic ${{ github.ref_name }}"

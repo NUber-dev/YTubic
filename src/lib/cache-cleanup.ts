@@ -11,7 +11,10 @@ import {
   type CacheAutoCleanPeriod,
 } from "@/lib/store/settings";
 
-const PERIOD_MS: Record<Exclude<CacheAutoCleanPeriod, "off">, number> = {
+/** How long after the last completed sweep the next one comes due.
+ *  Exported so the Storage settings row can show the same next-run time
+ *  the sweep itself computes — one source of truth for the cadence. */
+export const PERIOD_MS: Record<Exclude<CacheAutoCleanPeriod, "off">, number> = {
   daily: 24 * 60 * 60 * 1000,
   weekly: 7 * 24 * 60 * 60 * 1000,
   monthly: 30 * 24 * 60 * 60 * 1000,

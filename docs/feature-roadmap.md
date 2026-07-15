@@ -2,7 +2,7 @@
 
 Дата: 2026-07-06.
 
-- [ ] API-интеграции (Discord Rich Presence, Last.fm)
+- [x] API-интеграции (Discord Rich Presence, Last.fm)
 - [ ] Crossfade
 - [ ] Queue/playlist view вместо lyrics
 - [ ] Windows controls для музыки (SMTC)

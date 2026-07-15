@@ -1,6 +1,10 @@
 import { create } from "zustand";
 
-export type SettingsTab = "general" | "appearance" | "storage";
+export type SettingsTab =
+  | "general"
+  | "appearance"
+  | "storage"
+  | "integrations";
 
 type State = {
   open: boolean;

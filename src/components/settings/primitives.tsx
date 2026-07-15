@@ -1,5 +1,4 @@
-import type { ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import type { ComponentType, ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -23,7 +22,10 @@ export function SettingRow({
   description,
   control,
 }: {
-  icon: LucideIcon;
+  // Accepts lucide icons and our own SVG brand marks alike (both just take
+  // a className) — lucide has no Discord icon, so the Integrations tab passes
+  // a custom one.
+  icon: ComponentType<{ className?: string }>;
   iconClassName?: string;
   title: string;
   description?: ReactNode;

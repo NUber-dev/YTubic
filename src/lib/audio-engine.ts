@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { fetchRadio } from "@/lib/innertube/radio";
-import { prefetchStream, streamUrlFor } from "@/lib/stream";
+import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 import { usePremiumStore } from "@/lib/store/premium";
+import { useSettingsStore } from "@/lib/store/settings";
 import { openPremiumGate } from "@/lib/store/premium-gate";
 import {
   resolveStreamId,
@@ -20,7 +21,10 @@ import { correctedDuration, shouldSkipOutro } from "@/lib/outro";
 
 /**
  * AudioEngine binds the playback store to a singleton HTMLAudioElement
- * and to the browser MediaSession API (Windows SMTC / macOS Now Playing).
+ * and drives the OS media controls (Windows SMTC) from Rust via souvlaki (see
+ * the media effects below and src-tauri/src/media.rs) rather than the webview's
+ * own media session — that one runs in the WebView2 child process and shows up
+ * as "Unknown app" in the Windows Now Playing tile.
  *
  * Mount this hook once, near the root. It owns the <audio> element's lifecycle.
  */
@@ -53,6 +57,14 @@ export function useAudioEngine() {
   const rawElDurationRef = useRef(0);
   const outroSkippedRef = useRef<string | null>(null);
   const outroSuppressedRef = useRef<string | null>(null);
+  // Remembers the `videoId:index` we've already auto-retried once, so a
+  // track that keeps failing falls through to the normal error/skip path
+  // instead of looping. Cleared on a successful `playing`.
+  const retriedTrackRef = useRef<string | null>(null);
+  // Bumping this re-runs the resolve effect for the *current* track
+  // without any of its real deps changing — used to re-fetch a fresh
+  // stream URL after a transient failure (e.g. a googlevideo 403).
+  const [retryNonce, setRetryNonce] = useState(0);
 
   // Ensure a single media element exists. It's a <video> element, not
   // new Audio(): for audio-only streams the two behave identically, but
@@ -140,6 +152,30 @@ export function useAudioEngine() {
       if (import.meta.env.DEV) {
         console.error("[audio] element error:", msg, "src=", el.currentSrc);
       }
+
+      // One automatic retry of the SAME track before giving up. Most
+      // first-play failures are a transient googlevideo 403 on the media
+      // URL: the stream server drops the failed entry immediately, so a
+      // re-fetch spawns a fresh yt-dlp resolve that usually succeeds —
+      // exactly what a manual re-click does. Only retry a track the user
+      // actively wants playing, and only once per track instance.
+      {
+        const s0 = store();
+        const cur0 = s0.index >= 0 ? s0.queue[s0.index] : undefined;
+        const key0 = cur0 ? `${cur0.videoId}:${s0.index}` : null;
+        if (s0.playing && key0 && retriedTrackRef.current !== key0) {
+          retriedTrackRef.current = key0;
+          if (import.meta.env.DEV) {
+            console.warn("[audio] retrying", key0, "after error:", msg);
+          }
+          store().setStatus("loading");
+          // Small delay so a truly-dead source doesn't hot-loop; also
+          // gives the server a beat to tear down the failed download.
+          window.setTimeout(() => setRetryNonce((n) => n + 1), 400);
+          return;
+        }
+      }
+
       store().setStatus("error", msg);
 
       // Auto-advance: if the user wanted playback and we have a next
@@ -157,6 +193,9 @@ export function useAudioEngine() {
     };
     const onPlaying = () => {
       consecutiveErrorsRef.current = 0;
+      // Track played successfully — allow a fresh auto-retry if it later
+      // fails again (e.g. a mid-stream drop on a much later replay).
+      retriedTrackRef.current = null;
       store().setStatus("ready");
     };
     const onWaiting = () => {
@@ -356,6 +395,18 @@ export function useAudioEngine() {
     const token = ++resolveTokenRef.current;
     usePlaybackStore.getState().setStatus("loading");
 
+    // Persist this track's title/artist beside its cache file so the
+    // Storage tab can name it without depending on the library walk.
+    // Read from the store imperatively (like the rest of this effect) so
+    // the track object doesn't have to join the dependency array.
+    {
+      const st = usePlaybackStore.getState();
+      void saveTrackMeta(
+        streamVideoId,
+        st.index >= 0 ? st.queue[st.index] : undefined,
+      );
+    }
+
     // Playback goes through our local streaming HTTP server. It spawns
     // yt-dlp and pipes the audio bytes progressively so playback starts
     // as soon as the first chunk lands (typically ~200ms after the
@@ -400,7 +451,9 @@ export function useAudioEngine() {
     // index, so the store replays it via pendingSeek instead — see
     // `next()` in store/playback.ts. `premiumOk` so that gaining Premium
     // (sign-in, status re-check) re-resolves a track the gate parked.
-  }, [streamVideoId, wantVideo, videoId, index, premiumOk]);
+    // `retryNonce` so the error handler can force a fresh stream-URL fetch
+    // for the current track after a transient failure without changing id.
+  }, [streamVideoId, wantVideo, videoId, index, premiumOk, retryNonce]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
@@ -490,34 +543,11 @@ export function useAudioEngine() {
     }
   }, [pendingSeek]);
 
-  // MediaSession metadata (Windows SMTC + macOS Now Playing + keyboard media keys).
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !navigator.mediaSession) return;
-
-    if (!track) {
-      navigator.mediaSession.metadata = null;
-      navigator.mediaSession.playbackState = "none";
-      return;
-    }
-
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title,
-      artist: buildArtistLabel(track),
-      album: track.album ?? "",
-      artwork: track.thumbnails.length
-        ? [96, 192, 256, 512].map((size) => ({
-            src: pickThumbnail(track.thumbnails, size) ?? "",
-            sizes: `${size}x${size}`,
-            type: "image/jpeg",
-          }))
-        : [],
-    });
-  }, [track]);
-
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !navigator.mediaSession) return;
-    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
-  }, [playing]);
+  // OS media controls (Windows SMTC) are driven from Rust via souvlaki, not
+  // navigator.mediaSession — the webview's own media session shows up as
+  // "Unknown app" because it belongs to the WebView2 child process. Metadata /
+  // state is pushed by the media_update effect lower down; buttons come back
+  // via the media-control listener. See src-tauri/src/media.rs.
 
   // Mirror metadata + play state into the macOS system Now Playing panel
   // (Control Center / Touch Bar / media keys / AirPods). A WKWebView only
@@ -597,38 +627,44 @@ export function useAudioEngine() {
     };
   }, []);
 
-  // Action handlers once per mount.
+
+  // SMTC / media-key button presses arrive from Rust (souvlaki) as a
+  // `media-control` event. Drive the store the same way the old
+  // navigator.mediaSession action handlers did. `cancelled` guards against
+  // StrictMode's mount→unmount→mount double-listen, like the tray listener.
   useEffect(() => {
-    if (typeof navigator === "undefined" || !navigator.mediaSession) return;
-    const api = navigator.mediaSession;
-    const store = usePlaybackStore.getState;
-    api.setActionHandler("play", () => store().setPlaying(true));
-    api.setActionHandler("pause", () => store().setPlaying(false));
-    api.setActionHandler("previoustrack", () => store().prev());
-    api.setActionHandler("nexttrack", () => store().next());
-    api.setActionHandler("seekto", (details) => {
-      if (typeof details.seekTime === "number") store().seek(details.seekTime);
-    });
-    api.setActionHandler("seekbackward", (details) => {
-      const el = audioRef.current;
-      if (!el) return;
-      const offset = details.seekOffset ?? 10;
-      store().seek(Math.max(0, el.currentTime - offset));
-    });
-    api.setActionHandler("seekforward", (details) => {
-      const el = audioRef.current;
-      if (!el) return;
-      const offset = details.seekOffset ?? 10;
-      store().seek(el.currentTime + offset);
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void listen<{ action: string; position?: number }>("media-control", (e) => {
+      const store = usePlaybackStore.getState();
+      switch (e.payload.action) {
+        case "play":
+          store.setPlaying(true);
+          break;
+        case "pause":
+        case "stop":
+          store.setPlaying(false);
+          break;
+        case "toggle":
+          store.toggle();
+          break;
+        case "next":
+          store.next();
+          break;
+        case "previous":
+          store.prev();
+          break;
+        case "seek":
+          if (typeof e.payload.position === "number") store.seek(e.payload.position);
+          break;
+      }
+    }).then((un) => {
+      if (cancelled) un();
+      else dispose = un;
     });
     return () => {
-      api.setActionHandler("play", null);
-      api.setActionHandler("pause", null);
-      api.setActionHandler("previoustrack", null);
-      api.setActionHandler("nexttrack", null);
-      api.setActionHandler("seekto", null);
-      api.setActionHandler("seekbackward", null);
-      api.setActionHandler("seekforward", null);
+      cancelled = true;
+      dispose?.();
     };
   }, []);
 
@@ -655,6 +691,14 @@ export function useAudioEngine() {
     if (status !== "ready") return;
     if (!nextStreamVideoId) return;
     void prefetchStream(nextStreamVideoId);
+    // Label the prefetched file too — same reasoning as the play path.
+    const st = usePlaybackStore.getState();
+    void saveTrackMeta(
+      nextStreamVideoId,
+      st.index >= 0 && st.index + 1 < st.queue.length
+        ? st.queue[st.index + 1]
+        : undefined,
+    );
   }, [status, nextStreamVideoId]);
 
   // Auto-extend the queue with radio tracks when we're near the end, so
@@ -693,7 +737,12 @@ export function useAudioEngine() {
       });
   }, [autoRadio, qIndex, qLen, seedVideoId]);
 
-  // Position state — lets the OS show an accurate progress bar.
+  // Push metadata + playback state to the OS media controls (Windows SMTC).
+  // Windows interpolates the scrubber between pushes while the state is
+  // Playing, so we don't push on every timeupdate — just on track / play-state
+  // / duration change, plus a light 2s refresh while playing to correct drift
+  // and reflect seeks. Live values are read imperatively so this OS sync never
+  // re-triggers the resolve / playback effects above.
   const duration = usePlaybackStore((s) => s.duration);
   const position = usePlaybackStore((s) => s.position);
 
@@ -762,23 +811,64 @@ export function useAudioEngine() {
     }
   }, [position, duration, playing, videoId, lastVocal]);
   useEffect(() => {
-    if (
-      typeof navigator === "undefined" ||
-      !navigator.mediaSession ||
-      typeof navigator.mediaSession.setPositionState !== "function"
-    )
+    const push = () => {
+      const s = usePlaybackStore.getState();
+      const t = s.index >= 0 ? s.queue[s.index] : undefined;
+      if (!t) {
+        void invoke("media_clear").catch(() => {});
+        return;
+      }
+      void invoke("media_update", {
+        title: t.title,
+        artist: buildArtistLabel(t),
+        album: t.album ?? "",
+        thumbnail: pickThumbnail(t.thumbnails, 512) ?? "",
+        duration: Number.isFinite(s.duration) ? s.duration : 0,
+        elapsed: s.position,
+        paused: !s.playing,
+      }).catch(() => {});
+    };
+    push();
+    if (!playing) return;
+    const id = window.setInterval(push, 2000);
+    return () => window.clearInterval(id);
+  }, [track, playing, duration]);
+
+  // Discord Rich Presence mirrors the same metadata, but pushed only on
+  // track / play-state / duration change — never the 2s position refresh
+  // above. Discord rate-limits activity updates, and it derives its own
+  // progress bar from the start/end timestamps, so one push animates the bar
+  // for the whole song. The worker + (re)connect lifecycle live in
+  // src-tauri/src/discord.rs; the on/off toggle is mirrored separately by
+  // useDiscordPresenceSync, which also clears the activity when disabled.
+  const discordRp = useSettingsStore((s) => s.discordRichPresence);
+  useEffect(() => {
+    if (!discordRp) return; // disabled → useDiscordPresenceSync cleared it
+    const s = usePlaybackStore.getState();
+    const t = s.index >= 0 ? s.queue[s.index] : undefined;
+    if (!t) {
+      void invoke("discord_clear").catch(() => {});
       return;
-    if (!Number.isFinite(duration) || duration <= 0) return;
-    try {
-      navigator.mediaSession.setPositionState({
-        duration,
-        position: Math.min(position, duration),
-        playbackRate: 1,
-      });
-    } catch {
-      /* older Chromium throws if position > duration for a frame — ignore */
     }
-  }, [duration, position]);
+    const dur = Number.isFinite(s.duration) ? s.duration : 0;
+    // Timestamps (hence the progress bar) only while actually playing: Discord
+    // can't freeze a bar, so paused shows none rather than a wrong one. Unix
+    // milliseconds, per Discord's Activity spec.
+    let startMs: number | null = null;
+    let endMs: number | null = null;
+    if (s.playing && dur > 0) {
+      startMs = Math.round(Date.now() - s.position * 1000);
+      endMs = Math.round(startMs + dur * 1000);
+    }
+    void invoke("discord_update", {
+      title: t.title,
+      artist: buildArtistLabel(t),
+      album: t.album ?? "",
+      imageUrl: pickThumbnail(t.thumbnails, 512) ?? "",
+      startMs,
+      endMs,
+    }).catch(() => {});
+  }, [track, playing, duration, discordRp]);
 }
 
 function buildArtistLabel(track: QueueTrack): string {

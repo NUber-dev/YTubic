@@ -6,7 +6,6 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,6 +16,7 @@ import {
 import { GeneralTab } from "@/components/settings/general-tab";
 import { AppearanceTab } from "@/components/settings/appearance-tab";
 import { StorageTab } from "@/components/settings/storage-tab";
+import { IntegrationsTab } from "@/components/settings/integrations-tab";
 import {
   useSettingsDialog,
   type SettingsTab,
@@ -27,6 +27,7 @@ const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", icon: Settings2Icon },
   { id: "appearance", label: "Appearance", icon: PaletteIcon },
   { id: "storage", label: "Storage", icon: DatabaseIcon },
+  { id: "integrations", label: "Integrations", icon: PlugIcon },
 ];
 
 /**
@@ -89,20 +90,6 @@ export function SettingsDialog() {
               {label}
             </button>
           ))}
-          <button
-            type="button"
-            disabled
-            className="flex cursor-not-allowed items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium whitespace-nowrap text-muted-foreground/50"
-          >
-            <PlugIcon className="size-4 shrink-0" />
-            API Integrations
-            <Badge
-              variant="outline"
-              className="ms-auto h-4 shrink-0 px-1 text-[9px] font-medium text-muted-foreground/70"
-            >
-              Soon
-            </Badge>
-          </button>
         </aside>
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Fixed header row: the active tab's title with the close
@@ -145,6 +132,7 @@ export function SettingsDialog() {
             {tab === "general" && <GeneralTab />}
             {tab === "appearance" && <AppearanceTab />}
             {tab === "storage" && <StorageTab />}
+            {tab === "integrations" && <IntegrationsTab />}
           </div>
         </div>
       </DialogContent>

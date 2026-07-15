@@ -11,7 +11,9 @@ const SPRING = {
 
 export interface SegmentedOption<T extends string> {
   value: T;
-  label: string;
+  /** Plain text in the common case; a node when a segment needs an icon
+   *  (e.g. a spinner while its count is still being computed). */
+  label: React.ReactNode;
 }
 
 /**

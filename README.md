@@ -1,11 +1,22 @@
-<img src="assets/branding/ytubic-icon.svg" alt="YTubic" width="80" align="left" />
+<p align="center">
+  <img src="assets/branding/ytubic-icon.svg" alt="YTubic" width="96" />
+</p>
 
-# YTubic
+<h1 align="center">YTubic</h1>
 
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20the%20project-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/nuberr)
+<p align="center">
+  A fast, responsive YouTube Music desktop client for Windows.
+</p>
 
-A fast, responsive YouTube Music desktop client for Windows.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL-3.0" /></a>
+</p>
+
+<p align="center">
+  <a href="../../releases/latest">
+    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download for Windows" height="60" />
+  </a>
+</p>
 
 Built as a reaction to the sluggish webview-wrapper experience — YTubic talks to YouTube's InnerTube API directly, renders its own UI, and caches aggressively, so navigation and playback feel instant.
 
@@ -113,14 +124,6 @@ src/
 └── hooks/
 src-tauri/               # Rust backend (axum stream proxy, cookies, tray)
 ```
-
-## Support
-
-YTubic is free and always will be — no paid tiers, no locked features. If it's
-part of your daily soundtrack, you can
-[buy me a coffee on Ko-fi](https://ko-fi.com/nuberr) ☕ It goes toward keeping
-the app alive: fixes when YouTube breaks things, new features, and someday a
-code-signing certificate so Windows stops warning people at install time.
 
 ## Credits
 
