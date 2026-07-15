@@ -223,6 +223,51 @@
     );
   }
 
+  /* Vertical sibling of `shelf-edge-fade` for the sidebar playlist
+     list: softens the top/bottom edges so rows dissolve into
+     transparency as they scroll out of view instead of being clipped
+     by a hard line. `--fade-t` / `--fade-b` are the edge alphas
+     (1 = crisp/no fade, 0 = fully faded), ramped by the list's scroll
+     listener so an edge with nothing beyond it stays crisp. */
+  .sidebar-list-fade {
+    --fade-t: 1;
+    --fade-b: 1;
+    mask-image: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, var(--fade-t)) 0,
+      black 16px,
+      black calc(100% - 16px),
+      rgba(0, 0, 0, var(--fade-b)) 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, var(--fade-t)) 0,
+      black 16px,
+      black calc(100% - 16px),
+      rgba(0, 0, 0, var(--fade-b)) 100%
+    );
+  }
+
+  /* Playlist scroll box. `scrollbar-gutter: stable` reserves the 8px
+     scrollbar track whether or not the list overflows, so the rows keep
+     a constant right inset (aligned with Browse) instead of jumping to
+     the panel edge when no scrollbar is showing. The group's `pe-0` (see
+     AppSidebar) puts that reserved track flush against the panel border,
+     so the scrollbar — when it shows — hugs the edge. */
+  .sidebar-list-scroll {
+    scrollbar-gutter: stable;
+  }
+  /* Collapsed icon rail: drop the reserved gutter and hide the scrollbar
+     so the column stays symmetric and the `mx-auto`-centered icons stay
+     centered. The rail still scrolls by wheel. */
+  [data-collapsible="icon"] .sidebar-list-scroll {
+    scrollbar-gutter: auto;
+    scrollbar-width: none;
+  }
+  [data-collapsible="icon"] .sidebar-list-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Top/bottom fade for the lyrics column. Applied only once the
      karaoke has progressed past the first line — before that we want
      the first line crisp at the top of the column. */

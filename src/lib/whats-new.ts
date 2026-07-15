@@ -8,6 +8,12 @@ export type WhatsNewSection = {
    * list. Ignored when `items` is present.
    */
   body?: string;
+  /**
+   * Short call-to-action rendered as a yellow alert panel below the
+   * items or body. Use for a must-read instruction, e.g. signing in
+   * again after an update.
+   */
+  alert?: string;
 };
 
 export type WhatsNewEntry = {
@@ -31,6 +37,90 @@ export type WhatsNewEntry = {
  * user-facing release; keep the copy free of em/en dashes.
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
+  {
+    version: "0.3.2",
+    date: "July 2026",
+    image: "/whats-new/0.3.0.svg",
+    sections: [
+      {
+        heading: "Bug fix",
+        body: "Connecting a Last.fm account failed with an \"Invalid API key\" error in 0.3.0 and 0.3.1 because the release pipeline corrupted the API credentials. That's fixed for good now, so head to the Integrations tab and connect your account.",
+      },
+    ],
+  },
+  {
+    version: "0.3.1",
+    date: "July 2026",
+    image: "/whats-new/0.3.0.svg",
+    sections: [
+      {
+        heading: "Bug fix",
+        body: "Version 0.3.0 shipped with Last.fm scrobbling switched off because the release build was missing its API credentials. This update turns it back on, so you can connect your Last.fm account from the Integrations tab.",
+      },
+    ],
+  },
+  {
+    version: "0.3.0",
+    date: "July 2026",
+    image: "/whats-new/0.3.0.svg",
+    sections: [
+      {
+        heading: "Discord Rich Presence",
+        items: [
+          "Show what you're listening to on your Discord profile, complete with album art and a progress bar.",
+          "Turn it on in Settings under the new Integrations tab.",
+        ],
+      },
+      {
+        heading: "Last.fm scrobbling",
+        items: [
+          "Connect your Last.fm account to scrobble every track you play.",
+          "Liking a song on YTubic loves it on Last.fm, and unliking removes it.",
+          "Scrobbles made while offline are queued and sent once you're back online.",
+        ],
+      },
+      {
+        heading: "Fixes",
+        items: [
+          "Fixed the floating mini player failing to open after the 0.2.2 update.",
+        ],
+      },
+    ],
+  },
+  {
+    version: "0.2.2",
+    date: "July 2026",
+    sections: [
+      {
+        heading: "Your playlists in the sidebar",
+        items: [
+          "The sidebar now lists every playlist in your library, not just the ones you pinned.",
+          "Pin a playlist to keep it at the top, or hide the ones you never open.",
+        ],
+      },
+      {
+        heading: "Storage settings",
+        items: [
+          "The Storage tab now shows real song titles for every cached track, plus when the next auto-clean is due.",
+        ],
+      },
+      {
+        heading: "Fixes",
+        items: [
+          "Fixed the Windows Now Playing tile showing \"Unknown app\" instead of YTubic's name and icon.",
+          "Fixed a bug where some songs wouldn't load, or wouldn't load on the first try.",
+        ],
+      },
+      {
+        heading: "Bug with session expiration and library disappearing",
+        items: [
+          "Finally fixed the bug where after 2 hours all songs and playlists would disappear from the library and the session would become expired.",
+        ],
+        alert:
+          "Make sure to re-log into your account after the update to refresh the session.",
+      },
+    ],
+  },
   {
     version: "0.2.1",
     date: "July 2026",

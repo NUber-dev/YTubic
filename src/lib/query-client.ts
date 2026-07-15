@@ -41,6 +41,14 @@ export function shouldPersistQuery(queryKey: readonly unknown[]): boolean {
     // full list is 7+ continuation round-trips, you don't want to pay
     // that on every cold start.
     head === "liked-songs" ||
+    // The Storage tab derives every cached-track title AND its
+    // in-library status from this one walk (Liked Songs + all playlists
+    // + all albums — dozens of round-trips). Without persistence a cold
+    // start shows raw videoIds and "0 in library" until it finishes;
+    // hydrating from disk makes that state correct on open, with a
+    // background revalidate per staleTime. Large libraries that blow the
+    // per-query byte budget simply fall back to the live walk.
+    head === "library-tracks" ||
     // Lyrics are immutable per (title, artist, album, duration) tuple
     // and the LRCLIB / YTM round-trip is the slowest part of
     // a track switch. Persisting collapses repeat plays of the same

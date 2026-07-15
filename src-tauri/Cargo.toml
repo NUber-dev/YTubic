@@ -1,6 +1,6 @@
 [package]
 name = "ytubic"
-version = "0.2.1"
+version = "0.3.2"
 description = "YTubic — fast, responsive YouTube Music desktop client"
 authors = ["George Shyshov"]
 license = "GPL-3.0-only"
@@ -55,11 +55,30 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+# OS media controls: on Windows this is the System Media Transport Controls
+# (the media tile in Quick Settings / the volume flyout, the lock screen, and
+# the hardware media keys). We create the SMTC ourselves from the host process
+# so the tile resolves to YTubic's own identity — the webview's built-in media
+# session can't, because it belongs to the msedgewebview2.exe child process and
+# shows up as "Unknown app". See src/media.rs.
+souvlaki = "0.7"
+# Discord Rich Presence: talks to the local Discord client over its IPC
+# socket / named pipe (no native deps beyond that). Off by default; opt-in
+# from Settings. See src/discord.rs. Set YTUBIC_DISCORD_APP_ID at build time
+# (or edit APP_ID) to the Application ID of a Discord app named "YTubic".
+discord-rich-presence = "0.2"
+# MD5 for Last.fm request signing (api_sig = md5 of sorted params + secret).
+# Tiny, single-purpose crate. See src/lastfm.rs.
+md5 = "0.7"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
+    # SetCurrentProcessExplicitAppUserModelID — pins our AppUserModelID onto the
+    # process so the SMTC media tile resolves (via the installer's matching Start
+    # Menu shortcut) to "YTubic" instead of "Unknown app". See src/appid.rs.
+    "Win32_UI_Shell",
 ] }
 
 [dev-dependencies]

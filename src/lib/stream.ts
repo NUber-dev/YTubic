@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isPremium } from "@/lib/store/premium";
+import type { QueueTrack } from "@/lib/store/playback";
 
 /**
  * The Rust side runs a tiny axum server on a random localhost port that
@@ -77,11 +78,45 @@ export async function prefetchStream(videoId: string): Promise<void> {
   }
 }
 
+const metaWritten = new Set<string>();
+
 /**
- * Drop the in-memory "already prefetched" log. Call after the user
- * clears the disk cache via Settings — otherwise we'd never re-prefetch
- * tracks that are gone from disk but still remembered as "warm" here.
+ * Persist a cached track's display metadata (title + artist) to a
+ * sidecar next to its `.webm`, so the Storage tab can show a real name
+ * for the track without waiting on — or being limited to — the library
+ * walk. Only meaningful for the persistent (Premium) cache; ephemeral
+ * streams are wiped on launch, so there's nothing on disk to label.
+ *
+ * `videoId` is the STREAM id (the file that actually lands on disk),
+ * which may differ from the queue's display id when the user has toggled
+ * a track to its music-video version. The title/artist still describe
+ * the track and are correct either way. Fire-and-forget and deduped per
+ * session; a failed write is retried on the next play/prefetch.
+ */
+export async function saveTrackMeta(
+  videoId: string,
+  track: Pick<QueueTrack, "title" | "subtitle" | "artists"> | undefined,
+): Promise<void> {
+  if (!isPremium()) return;
+  if (!track?.title) return;
+  if (metaWritten.has(videoId)) return;
+  metaWritten.add(videoId);
+  const artist =
+    track.artists?.map((a) => a.name).join(", ") || track.subtitle || null;
+  try {
+    await invoke("set_cache_meta", { videoId, title: track.title, artist });
+  } catch {
+    metaWritten.delete(videoId);
+  }
+}
+
+/**
+ * Drop the in-memory "already prefetched" / "already labelled" logs.
+ * Call after the disk cache is cleared or the account switches —
+ * otherwise we'd never re-prefetch tracks that are gone from disk but
+ * still remembered as "warm", nor re-write their metadata sidecars.
  */
 export function clearPrefetchMemo(): void {
   prefetched.clear();
+  metaWritten.clear();
 }

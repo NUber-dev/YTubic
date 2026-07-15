@@ -402,7 +402,7 @@ function TrackRow({
       </span>
 
       <div className="flex shrink-0 items-center justify-end">
-        <LikeDislikeButtons videoId={t.id} compact hideUnlessLiked />
+        <LikeDislikeButtons videoId={t.id} track={t} compact hideUnlessLiked />
         <TrackMoreMenu item={t} context={{ tracks, index: idx }} />
       </div>
     </li>

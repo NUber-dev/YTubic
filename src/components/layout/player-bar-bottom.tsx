@@ -222,7 +222,7 @@ export function PlayerBarBottom() {
 
         {/* RIGHT wing: secondary actions, justified to the right edge. */}
         <div className="flex flex-1 items-center justify-end gap-0.5">
-          {track ? <LikeDislikeButtons videoId={track.videoId} /> : null}
+          {track ? <LikeDislikeButtons videoId={track.videoId} track={track} /> : null}
           <LyricsPopover state={lyricsState} />
           <QueuePopover />
           <VolumeControl direction="vertical" />

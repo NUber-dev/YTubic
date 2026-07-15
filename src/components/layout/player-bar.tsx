@@ -554,7 +554,7 @@ export function PlayerBar({
             )}
           </div>
           {track ? (
-            <LikeDislikeButtons videoId={track.videoId} className="-mt-1" />
+            <LikeDislikeButtons videoId={track.videoId} track={track} className="-mt-1" />
           ) : null}
         </div>
 

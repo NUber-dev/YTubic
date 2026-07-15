@@ -30,8 +30,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SegmentedControl } from "@/components/ui/segmented";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
-import { formatBytes, formatRelative } from "@/lib/format";
+import { PERIOD_MS as AUTO_CLEAN_PERIOD_MS } from "@/lib/cache-cleanup";
+import { formatBytes, formatDateTime, formatRelative } from "@/lib/format";
 import { fetchLibraryTracks } from "@/lib/innertube/library";
 import { clearPrefetchMemo } from "@/lib/stream";
 import { usePremiumAccess } from "@/lib/store/premium";
@@ -268,6 +270,11 @@ type CacheEntry = {
   videoId: string;
   size: number;
   modifiedSecs: number;
+  // Written to a sidecar when the track was cached (see saveTrackMeta).
+  // Present for tracks cached since that landed; absent for older files,
+  // which fall back to the library walk and then the raw videoId.
+  title?: string;
+  artist?: string;
 };
 
 type FilterMode = "all" | "library" | "other";
@@ -289,11 +296,27 @@ const AUTO_CLEAN_OPTIONS: { value: CacheAutoCleanPeriod; label: string }[] = [
 function AutoCleanRow({ loggedIn }: { loggedIn: boolean }) {
   const period = useSettingsStore((s) => s.cacheAutoClean);
   const setPeriod = useSettingsStore((s) => s.setCacheAutoClean);
+  const lastCleanAt = useSettingsStore((s) => s.lastCacheCleanAt);
+
+  // Mirror the sweep's own scheduling (cache-cleanup.ts): the next run
+  // is due one period after the last completed sweep. Before the first
+  // sweep (lastCleanAt === 0) or once that moment has already passed, the
+  // 30-min background tick fires it on its next check rather than at a
+  // fixed clock time, so we say "due" instead of showing a stale date.
+  const description = (() => {
+    if (period === "off") return undefined;
+    if (!loggedIn) return "Sign in to enable automatic clean-up.";
+    const nextAt = lastCleanAt + AUTO_CLEAN_PERIOD_MS[period];
+    if (!lastCleanAt || nextAt <= Date.now())
+      return "Next clean-up is due — runs on the next check.";
+    return `Next clean-up ${formatDateTime(nextAt)}`;
+  })();
 
   return (
     <SettingRow
       icon={CalendarClockIcon}
       title="Auto-clean tracks not in library"
+      description={description}
       control={
         <SegmentedControl
           value={period}
@@ -382,6 +405,16 @@ function CacheGroup({ loggedIn }: { loggedIn: boolean }) {
     for (const t of library.data ?? []) m.set(t.id, t);
     return m;
   }, [library.data]);
+
+  // Titles and "in library" status BOTH come from the library walk, and
+  // it costs a burst of InnerTube round-trips. Until it lands, libraryMeta
+  // is empty — every row would otherwise show its raw videoId as the title
+  // and count as "not in library". Track that window so the UI can render a
+  // pending state instead of presenting the empty result as authoritative.
+  // `isLoading` is true only for the first in-flight fetch (false when
+  // disabled/logged-out, resolved, or errored), which is exactly the
+  // window we want to mask.
+  const libraryLoading = library.isLoading;
 
   const filtered = useMemo(() => {
     let list = cache.data ?? [];
@@ -518,9 +551,26 @@ function CacheGroup({ loggedIn }: { loggedIn: boolean }) {
                 { value: "all", label: `All (${cache.data?.length ?? 0})` },
                 {
                   value: "library",
-                  label: `In library (${inLibraryCount})`,
+                  label: libraryLoading ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      In library
+                      <Loader2Icon className="size-3 animate-spin" />
+                    </span>
+                  ) : (
+                    `In library (${inLibraryCount})`
+                  ),
                 },
-                { value: "other", label: `Other (${otherCount})` },
+                {
+                  value: "other",
+                  label: libraryLoading ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      Other
+                      <Loader2Icon className="size-3 animate-spin" />
+                    </span>
+                  ) : (
+                    `Other (${otherCount})`
+                  ),
+                },
               ]}
             />
           </div>
@@ -586,6 +636,7 @@ function CacheGroup({ loggedIn }: { loggedIn: boolean }) {
                 entry={entry}
                 meta={libraryMeta.get(entry.videoId)}
                 inLibrary={libraryMeta.has(entry.videoId)}
+                libraryLoading={libraryLoading}
                 isDeleting={pending.has(entry.videoId)}
                 onDelete={() => deleteOne(entry.videoId)}
               />
@@ -601,12 +652,14 @@ function CacheRow({
   entry,
   meta,
   inLibrary,
+  libraryLoading,
   isDeleting,
   onDelete,
 }: {
   entry: CacheEntry;
   meta: ShelfItem | undefined;
   inLibrary: boolean;
+  libraryLoading: boolean;
   isDeleting: boolean;
   onDelete: () => void;
 }) {
@@ -614,9 +667,21 @@ function CacheRow({
   // can render one without needing a real API round-trip just to draw
   // this row.
   const thumb = `https://i.ytimg.com/vi/${entry.videoId}/mqdefault.jpg`;
-  const title = meta?.title ?? entry.videoId;
+  // Prefer the library walk (freshest, structured), then the on-disk
+  // sidecar written when the track was cached, then the raw videoId.
+  const title = meta?.title ?? entry.title ?? entry.videoId;
   const subtitle =
-    meta?.artists?.map((a) => a.name).join(", ") || meta?.subtitle || "";
+    meta?.artists?.map((a) => a.name).join(", ") ||
+    meta?.subtitle ||
+    entry.artist ||
+    "";
+  // The in-library badge depends on the library walk, but the title no
+  // longer does when a sidecar exists. Only skeleton the title while the
+  // walk is in flight AND we have no title from either source yet — that's
+  // the one case where a name might still appear. The timestamp below is
+  // derived from cache metadata we already have, so it stays visible
+  // throughout.
+  const resolving = libraryLoading && !meta && !entry.title;
 
   return (
     <div
@@ -647,20 +712,26 @@ function CacheRow({
         />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{title}</span>
-          {inLibrary && (
-            <Badge
-              variant="secondary"
-              title="In library"
-              aria-label="In library"
-              // Icon-only chip; px-1 tightens the now text-less pill so
-              // it isn't mostly padding. Meaning is carried by the
-              // title/aria-label instead of a visible caption.
-              className="bg-emerald-500/15 px-1 text-emerald-600 dark:text-emerald-400"
-            >
-              <LibraryIcon className="size-3" />
-            </Badge>
+        <div className="flex h-5 items-center gap-2">
+          {resolving ? (
+            <Skeleton className="h-3.5 w-40 max-w-full rounded-xs" />
+          ) : (
+            <>
+              <span className="truncate text-sm font-medium">{title}</span>
+              {inLibrary && (
+                <Badge
+                  variant="secondary"
+                  title="In library"
+                  aria-label="In library"
+                  // Icon-only chip; px-1 tightens the now text-less pill so
+                  // it isn't mostly padding. Meaning is carried by the
+                  // title/aria-label instead of a visible caption.
+                  className="bg-emerald-500/15 px-1 text-emerald-600 dark:text-emerald-400"
+                >
+                  <LibraryIcon className="size-3" />
+                </Badge>
+              )}
+            </>
           )}
         </div>
         <div className="truncate text-xs text-muted-foreground">

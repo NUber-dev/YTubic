@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,7 +12,9 @@ import {
   SettingsIcon,
   HeartIcon,
   ListMusicIcon,
+  PinIcon,
   PinOffIcon,
+  EyeOffIcon,
   UserPlusIcon,
   UserCogIcon,
   UsersRoundIcon,
@@ -50,11 +53,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { usePinned, usePinnedPlaylistsStore } from "@/lib/store/pinned-playlists";
+import {
+  useHidden,
+  usePinned,
+  usePinnedPlaylistsStore,
+} from "@/lib/store/pinned-playlists";
 import { openChannelPicker } from "@/lib/store/channel-picker";
 import { openSettings } from "@/lib/store/settings-dialog";
 import { UpdateBanner } from "@/components/layout/update-banner";
 import { fetchAccountInfo } from "@/lib/innertube/account";
+import { fetchLibraryPlaylists } from "@/lib/innertube/library";
+import type { ShelfItem } from "@/lib/innertube/types";
 import { resetInnertube } from "@/lib/innertube/client";
 import { usePremiumAccess } from "@/lib/store/premium";
 import {
@@ -81,8 +90,6 @@ const MENU_BTN_CLS = "group-data-[collapsible=icon]:mx-auto";
 
 export function AppSidebar() {
   const { location } = useRouterState();
-  const pinned = usePinned();
-  const unpin = usePinnedPlaylistsStore((s) => s.unpin);
 
   const isOn = (to: string) => location.pathname === to;
   const isPlaylistOn = (id: string) =>
@@ -109,8 +116,11 @@ export function AppSidebar() {
         </span>
       </SidebarHeader>
 
-      <SidebarContent className="gap-0 overflow-x-hidden">
-        <SidebarGroup className="py-1">
+      {/* The content column itself doesn't scroll: Browse stays pinned
+          (shrink-0) and only the Playlists list scrolls, so the top nav
+          never slides out of view when the library is long. */}
+      <SidebarContent className="gap-0 overflow-hidden">
+        <SidebarGroup className="shrink-0 py-1">
           <SidebarGroupLabel>Browse</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
@@ -133,61 +143,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup className="py-1">
-          <SidebarGroupLabel>Playlists</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  asChild
-                  isActive={isPlaylistOn(LIKED_ID)}
-                  tooltip="Liked songs"
-                  className={MENU_BTN_CLS}
-                >
-                  <Link to="/playlist/$id" params={{ id: LIKED_ID }}>
-                    <HeartIcon className="fill-rose-500 text-rose-500" />
-                    <span>Liked songs</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-
-              {pinned.map((p) => (
-                <SidebarMenuItem key={p.id}>
-                  <ContextMenu>
-                    <ContextMenuTrigger asChild>
-                      <SidebarMenuButton
-                        asChild
-                        isActive={isPlaylistOn(p.id)}
-                        tooltip={p.title}
-                        className={MENU_BTN_CLS}
-                      >
-                        <Link to="/playlist/$id" params={{ id: p.id }}>
-                          {p.thumbnailUrl ? (
-                            <img
-                              src={p.thumbnailUrl}
-                              alt=""
-                              className="size-4 shrink-0 rounded-sm object-cover"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <ListMusicIcon />
-                          )}
-                          <span>{p.title}</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent>
-                      <ContextMenuItem onSelect={() => unpin(p.id)}>
-                        <PinOffIcon />
-                        Unpin from sidebar
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  </ContextMenu>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        <SidebarPlaylists isPlaylistOn={isPlaylistOn} />
       </SidebarContent>
 
       <SidebarFooter>
@@ -207,6 +163,229 @@ export function AppSidebar() {
         <UserProfile />
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+type PlaylistRow = {
+  id: string;
+  title: string;
+  thumbnailUrl?: string;
+  pinned: boolean;
+};
+
+// Sidebar thumbnails render at 16px, so the largest source (last in the
+// list) is fine — the browser downscales it.
+function pickThumb(item: ShelfItem): string | undefined {
+  return item.thumbnails[item.thumbnails.length - 1]?.url;
+}
+
+/**
+ * The "Playlists" section. Shows Liked Songs, then every playlist in the
+ * user's library. Pinning doesn't gate visibility any more — it only
+ * floats a playlist to the top of the list (right under Liked Songs).
+ *
+ * Shares the `["library", "playlists"]` query cache with the Library
+ * page, so opening the sidebar costs no extra fetch once either has
+ * loaded. Pinned rows come from local storage and paint instantly, even
+ * before the library browse resolves.
+ */
+function SidebarPlaylists({
+  isPlaylistOn,
+}: {
+  isPlaylistOn: (id: string) => boolean;
+}) {
+  const loggedIn = useQuery({
+    queryKey: ["auth-logged-in"],
+    queryFn: () => invoke<boolean>("is_logged_in"),
+    staleTime: 30_000,
+  });
+  const library = useQuery({
+    queryKey: ["library", "playlists"],
+    queryFn: fetchLibraryPlaylists,
+    enabled: loggedIn.data === true,
+    staleTime: 5 * 60_000,
+  });
+
+  const pinned = usePinned();
+  const hidden = useHidden();
+  const pin = usePinnedPlaylistsStore((s) => s.pin);
+  const unpin = usePinnedPlaylistsStore((s) => s.unpin);
+  const hide = usePinnedPlaylistsStore((s) => s.hide);
+
+  const rows = useMemo<PlaylistRow[]>(() => {
+    const hiddenIds = new Set(hidden);
+    // Liked Songs (`VLLM`) ships in the playlists shelf too; drop it —
+    // it's always rendered as the hard-coded first row below. Hidden
+    // playlists are dropped entirely (un-hidden from the Library).
+    const libItems = (library.data ?? [])
+      .flatMap((s) => s.items)
+      .filter((it) => it.id !== LIKED_ID && !hiddenIds.has(it.id));
+    const libById = new Map(libItems.map((it) => [it.id, it]));
+    const pinnedIds = new Set(pinned.map((p) => p.id));
+
+    // Pinned first, in stored order. Prefer fresh library data for
+    // title/thumbnail, but keep a pin visible even when it isn't in the
+    // current library fetch (e.g. pinned from search results). A hidden
+    // id can't be pinned (the store keeps them exclusive), but filter
+    // defensively so a stale pin can never leak a hidden playlist back in.
+    const pinnedRows: PlaylistRow[] = pinned
+      .filter((p) => p.id !== LIKED_ID && !hiddenIds.has(p.id))
+      .map((p) => {
+        const lib = libById.get(p.id);
+        return {
+          id: p.id,
+          title: lib?.title ?? p.title,
+          thumbnailUrl: lib ? pickThumb(lib) : p.thumbnailUrl,
+          pinned: true,
+        };
+      });
+
+    // Everything else, in library order.
+    const restRows: PlaylistRow[] = libItems
+      .filter((it) => !pinnedIds.has(it.id))
+      .map((it) => ({
+        id: it.id,
+        title: it.title,
+        thumbnailUrl: pickThumb(it),
+        pinned: false,
+      }));
+
+    return [...pinnedRows, ...restRows];
+  }, [library.data, pinned, hidden]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Ramp a soft top/bottom fade on the list from its scroll position so
+  // rows dissolve into transparency at each edge instead of being cut by
+  // a hard line. An edge with nothing beyond it — the top at rest, the
+  // bottom when fully scrolled, or a list too short to scroll — stays
+  // crisp. Vertical mirror of the carousels' `shelf-edge-fade`.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const FADE_RAMP = 16;
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    const update = () => {
+      const distTop = el.scrollTop;
+      const distBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+      el.style.setProperty("--fade-t", clamp(1 - distTop / FADE_RAMP).toFixed(3));
+      el.style.setProperty(
+        "--fade-b",
+        clamp(1 - distBottom / FADE_RAMP).toFixed(3),
+      );
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    // Rows load async and grow the scroll height without resizing the
+    // container, so watch the inner list too.
+    const inner = el.firstElementChild;
+    if (inner) ro.observe(inner);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, []);
+
+  // `pe-0` drops the group's right padding so the scroll box reaches the
+  // panel edge. `sidebar-list-scroll` (index.css) reserves a stable 8px
+  // scrollbar gutter there, so the rows keep a constant right inset
+  // (aligned with Browse) whether or not a scrollbar shows, and the
+  // scrollbar — when it shows — sits flush at the border. Collapsed
+  // restores `pe-2` for a symmetric, centered rail.
+  return (
+    <SidebarGroup className="flex min-h-0 flex-1 flex-col py-1 pe-0 group-data-[collapsible=icon]:pe-2">
+      <SidebarGroupLabel>Playlists</SidebarGroupLabel>
+      {/* The scroll lives here, not on SidebarContent, so the label above
+          stays put and only the playlist rows move. `app-scroll` is the
+          same thin scrollbar the main content and carousels use. */}
+      {/* `sidebar-list-scroll` (see index.css) nudges the scrollbar
+          toward the panel's right edge when expanded, and hides it while
+          keeping the icons centered when the rail is collapsed. */}
+      <SidebarGroupContent
+        ref={scrollRef}
+        className="sidebar-list-fade sidebar-list-scroll app-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+      >
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              asChild
+              isActive={isPlaylistOn(LIKED_ID)}
+              tooltip="Liked songs"
+              className={MENU_BTN_CLS}
+            >
+              <Link to="/playlist/$id" params={{ id: LIKED_ID }}>
+                <HeartIcon className="fill-rose-500 text-rose-500" />
+                <span>Liked songs</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+
+          {rows.map((p) => (
+            <SidebarMenuItem key={p.id}>
+              <ContextMenu>
+                <ContextMenuTrigger asChild>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={isPlaylistOn(p.id)}
+                    tooltip={p.title}
+                    className={MENU_BTN_CLS}
+                  >
+                    <Link to="/playlist/$id" params={{ id: p.id }}>
+                      {p.thumbnailUrl ? (
+                        <img
+                          src={p.thumbnailUrl}
+                          alt=""
+                          className="size-4 shrink-0 rounded-sm object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <ListMusicIcon />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">
+                        {p.title}
+                      </span>
+                      {/* Subtle marker so the pinned/unpinned boundary is
+                          legible — pinning's only visible effect is the
+                          reorder, this just explains it. */}
+                      {p.pinned ? (
+                        <PinIcon className="size-3! shrink-0 text-muted-foreground/70 group-data-[collapsible=icon]:hidden" />
+                      ) : null}
+                    </Link>
+                  </SidebarMenuButton>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  {p.pinned ? (
+                    <ContextMenuItem onSelect={() => unpin(p.id)}>
+                      <PinOffIcon />
+                      Unpin from sidebar
+                    </ContextMenuItem>
+                  ) : (
+                    <ContextMenuItem
+                      onSelect={() =>
+                        pin({
+                          id: p.id,
+                          title: p.title,
+                          thumbnailUrl: p.thumbnailUrl,
+                        })
+                      }
+                    >
+                      <PinIcon />
+                      Pin to sidebar
+                    </ContextMenuItem>
+                  )}
+                  <ContextMenuItem onSelect={() => hide(p.id)}>
+                    <EyeOffIcon />
+                    Hide from sidebar
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 }
 

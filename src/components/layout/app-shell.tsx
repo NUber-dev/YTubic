@@ -20,6 +20,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAudioEngine } from "@/lib/audio-engine";
 import { useCacheAutoClean } from "@/lib/cache-cleanup";
 import { usePlaybackNotifications } from "@/lib/playback-notifications";
+import { useLastfmScrobbler } from "@/lib/lastfm-scrobbler";
 import { useYtdlpSetup } from "@/lib/ytdlp";
 import { useUpdateStartupCheck } from "@/lib/updater";
 import { useWhatsNewOnUpdate } from "@/lib/store/whats-new";
@@ -27,7 +28,11 @@ import { pickHighResThumbnail } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useLayoutStore } from "@/lib/store/layout";
 import { usePremiumStatusSync } from "@/lib/store/premium";
-import { useCloseBehaviorSync, useSettingsStore } from "@/lib/store/settings";
+import {
+  useCloseBehaviorSync,
+  useDiscordPresenceSync,
+  useSettingsStore,
+} from "@/lib/store/settings";
 import {
   useAccountMetaBackfill,
   useAccountsChangedListener,
@@ -87,8 +92,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   useAccountMetaBackfill();
   useGlobalShortcuts();
   useCloseBehaviorSync();
+  useDiscordPresenceSync();
   useCacheAutoClean();
   usePlaybackNotifications();
+  useLastfmScrobbler();
   const mode = useLayoutStore((s) => s.mode);
   const setMode = useLayoutStore((s) => s.setMode);
   const background = useSettingsStore((s) => s.background);
