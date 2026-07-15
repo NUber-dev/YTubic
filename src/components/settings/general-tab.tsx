@@ -4,8 +4,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   BellIcon,
+  CommandIcon,
+  KeyboardIcon,
   Loader2Icon,
   LogInIcon,
+  PercentIcon,
   RocketIcon,
   UserRoundIcon,
   XIcon,
@@ -13,6 +16,7 @@ import {
 import { toast } from "sonner";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
 import { useSettingsStore } from "@/lib/store/settings";
@@ -22,6 +26,7 @@ export function GeneralTab() {
     <TabPane tightTop>
       <AccountGroup />
       <BehaviorGroup />
+      <VolumeHotkeysGroup />
     </TabPane>
   );
 }
@@ -180,5 +185,104 @@ function BehaviorGroup() {
         }
       />
     </Group>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Global volume hotkeys                                               */
+/* ------------------------------------------------------------------ */
+
+function VolumeHotkeysGroup() {
+  const enabled = useSettingsStore((s) => s.volumeHotkeysEnabled);
+  const setEnabled = useSettingsStore((s) => s.setVolumeHotkeysEnabled);
+  const step = useSettingsStore((s) => s.volumeHotkeyStep);
+  const setStep = useSettingsStore((s) => s.setVolumeHotkeyStep);
+  const down = useSettingsStore((s) => s.volumeHotkeyDown);
+  const setDown = useSettingsStore((s) => s.setVolumeHotkeyDown);
+  const up = useSettingsStore((s) => s.volumeHotkeyUp);
+  const setUp = useSettingsStore((s) => s.setVolumeHotkeyUp);
+  const mute = useSettingsStore((s) => s.volumeHotkeyMute);
+  const setMute = useSettingsStore((s) => s.setVolumeHotkeyMute);
+
+  return (
+    <Group>
+      <SettingRow
+        icon={KeyboardIcon}
+        title="Global volume hotkeys"
+        description="Nudge YTubic's volume with a keyboard/macro-pad shortcut, even when another app is focused. Set your macro pad to send the same combo shown below."
+        control={
+          <Switch
+            checked={enabled}
+            onCheckedChange={setEnabled}
+            aria-label="Global volume hotkeys"
+          />
+        }
+      />
+      {enabled ? (
+        <>
+          <AccelRow label="Volume down" value={down} onChange={setDown} />
+          <AccelRow label="Volume up" value={up} onChange={setUp} />
+          <AccelRow label="Mute / unmute" value={mute} onChange={setMute} />
+          <SettingRow
+            icon={PercentIcon}
+            title="Step size"
+            description="How much each press changes the volume."
+            control={
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={step}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n)) setStep(n);
+                  }}
+                  className="w-16 text-right"
+                  aria-label="Volume step size (percent)"
+                />
+                <span className="text-sm text-muted-foreground">%</span>
+              </div>
+            }
+          />
+        </>
+      ) : null}
+    </Group>
+  );
+}
+
+/**
+ * One editable accelerator row. The value is a Tauri accelerator string
+ * ("CommandOrControl+Alt+Shift+Down"); Rust parses it and reports back through
+ * the sync hook's toast if it can't be bound. Free-text rather than a
+ * key-capture widget on purpose — a macro pad often can't be "recorded"
+ * reliably, and typing the exact combo is the dependable path.
+ */
+function AccelRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <SettingRow
+      icon={CommandIcon}
+      title={label}
+      control={
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          placeholder="e.g. CommandOrControl+Alt+Shift+Down"
+          className="w-64 font-mono text-xs"
+          aria-label={label}
+        />
+      }
+    />
   );
 }

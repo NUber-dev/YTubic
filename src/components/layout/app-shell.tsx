@@ -31,6 +31,7 @@ import { usePremiumStatusSync } from "@/lib/store/premium";
 import {
   useCloseBehaviorSync,
   useDiscordPresenceSync,
+  useVolumeHotkeysSync,
   useSettingsStore,
 } from "@/lib/store/settings";
 import {
@@ -93,6 +94,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useGlobalShortcuts();
   useCloseBehaviorSync();
   useDiscordPresenceSync();
+  useVolumeHotkeysSync();
   useCacheAutoClean();
   usePlaybackNotifications();
   useLastfmScrobbler();

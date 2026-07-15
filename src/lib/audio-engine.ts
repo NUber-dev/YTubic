@@ -370,6 +370,36 @@ export function useAudioEngine() {
     };
   }, []);
 
+  // Global volume hotkeys. The OS-level shortcuts registered in
+  // src-tauri/src/shortcuts.rs fire even when YTubic is unfocused or hidden in
+  // the tray, so a macro pad / keyboard can nudge the music volume from any
+  // app. Rust sends only the direction; the step comes from settings and the
+  // volume state from the playback store — same JS/Rust split as tray actions.
+  // `cancelled` guards StrictMode's double-listen like the tray listener above.
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void listen<string>("volume-hotkey", (e) => {
+      const store = usePlaybackStore.getState();
+      if (e.payload === "mute") {
+        store.toggleMute();
+        return;
+      }
+      const stepPct = useSettingsStore.getState().volumeHotkeyStep;
+      const step = Math.max(1, Math.min(50, stepPct || 5)) / 100;
+      const delta = e.payload === "up" ? step : -step;
+      // setVolume clamps to 0..1 and clears mute, so a nudge is always audible.
+      store.setVolume(store.volume + delta);
+    }).then((un) => {
+      if (cancelled) un();
+      else dispose = un;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+
   // SMTC / media-key button presses arrive from Rust (souvlaki) as a
   // `media-control` event. Drive the store the same way the old
   // navigator.mediaSession action handlers did. `cancelled` guards against

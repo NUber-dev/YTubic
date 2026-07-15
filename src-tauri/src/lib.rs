@@ -28,6 +28,7 @@ mod appid;
 mod discord;
 mod lastfm;
 mod media;
+mod shortcuts;
 mod ytdlp;
 
 fn sanitize_video_id(id: &str) -> bool {
@@ -3030,6 +3031,7 @@ pub fn run() {
             close_player_window,
             media::media_update,
             media::media_clear,
+            shortcuts::apply_volume_hotkeys,
             discord::discord_update,
             discord::discord_clear,
             discord::discord_set_enabled,
@@ -3139,6 +3141,17 @@ pub fn run() {
             media::init(app.handle());
             if let Err(e) = build_tray(app.handle()) {
                 eprintln!("[tray] build failed: {e}");
+            }
+            // OS-level volume hotkeys (Settings → General). Register the
+            // plugin now; the actual key bindings are pushed later by the
+            // frontend's `useVolumeHotkeysSync` once the webview boots with
+            // the persisted config. Desktop-only — the plugin has no mobile
+            // backend.
+            #[cfg(desktop)]
+            if let Err(e) =
+                app.handle().plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            {
+                eprintln!("[shortcuts] plugin init failed: {e}");
             }
             // Debug builds swap the taskbar/window icon to the orange
             // dev variant (see runtime_icon) so a dev instance is

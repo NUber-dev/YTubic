@@ -55,6 +55,7 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
 # OS media controls: on Windows this is the System Media Transport Controls
 # (the media tile in Quick Settings / the volume flyout, the lock screen, and
 # the hardware media keys). We create the SMTC ourselves from the host process

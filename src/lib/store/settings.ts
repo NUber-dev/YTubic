@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
@@ -43,6 +44,19 @@ type State = {
    *  scrobbling and off by default: an opt-in, since people often keep their
    *  likes intentionally different per platform. See `lib/lastfm.ts`. */
   lastfmLoveSync: boolean;
+  /** OS-level volume hotkeys: nudge the music volume from a keyboard/macro pad
+   *  even when another app is focused. Off by default (a global shortcut is
+   *  system-wide). The bindings are registered in Rust
+   *  (`src-tauri/src/shortcuts.rs`); the event is handled in
+   *  `lib/audio-engine.ts`. */
+  volumeHotkeysEnabled: boolean;
+  /** Percent (1–50) each hotkey press changes the volume. Applied JS-side. */
+  volumeHotkeyStep: number;
+  /** Tauri accelerators for volume down / up / mute-toggle, e.g.
+   *  "CommandOrControl+Alt+Shift+Down". Empty string = that action unbound. */
+  volumeHotkeyDown: string;
+  volumeHotkeyUp: string;
+  volumeHotkeyMute: string;
   setCloseAction: (v: CloseButtonAction) => void;
   setCacheAutoClean: (v: CacheAutoCleanPeriod) => void;
   markCacheCleaned: () => void;
@@ -56,6 +70,11 @@ type State = {
   setLastfmSession: (username: string, sessionKey: string) => void;
   /** Forget the connected account and stop scrobbling. */
   clearLastfmSession: () => void;
+  setVolumeHotkeysEnabled: (v: boolean) => void;
+  setVolumeHotkeyStep: (v: number) => void;
+  setVolumeHotkeyDown: (v: string) => void;
+  setVolumeHotkeyUp: (v: string) => void;
+  setVolumeHotkeyMute: (v: string) => void;
 };
 
 /**
@@ -78,6 +97,14 @@ export const useSettingsStore = create<State>()(
       lastfmUsername: null,
       lastfmAvatar: null,
       lastfmLoveSync: false,
+      volumeHotkeysEnabled: false,
+      volumeHotkeyStep: 5,
+      // Three modifiers keep the defaults clear of everyday app shortcuts, and
+      // adding Shift dodges the Intel graphics Ctrl+Alt+Arrow screen-rotate
+      // combo. All editable in Settings → General.
+      volumeHotkeyDown: "CommandOrControl+Alt+Shift+Down",
+      volumeHotkeyUp: "CommandOrControl+Alt+Shift+Up",
+      volumeHotkeyMute: "CommandOrControl+Alt+Shift+M",
       setCloseAction: (closeAction) => set({ closeAction }),
       setCacheAutoClean: (cacheAutoClean) => set({ cacheAutoClean }),
       markCacheCleaned: () => set({ lastCacheCleanAt: Date.now() }),
@@ -99,6 +126,13 @@ export const useSettingsStore = create<State>()(
           lastfmEnabled: false,
           lastfmLoveSync: false,
         }),
+      setVolumeHotkeysEnabled: (volumeHotkeysEnabled) =>
+        set({ volumeHotkeysEnabled }),
+      setVolumeHotkeyStep: (volumeHotkeyStep) =>
+        set({ volumeHotkeyStep: Math.max(1, Math.min(50, volumeHotkeyStep)) }),
+      setVolumeHotkeyDown: (volumeHotkeyDown) => set({ volumeHotkeyDown }),
+      setVolumeHotkeyUp: (volumeHotkeyUp) => set({ volumeHotkeyUp }),
+      setVolumeHotkeyMute: (volumeHotkeyMute) => set({ volumeHotkeyMute }),
     }),
     { name: "ytm-settings" },
   ),
@@ -148,4 +182,29 @@ export function useDiscordPresenceSync(): void {
       /* plain-vite dev without a Tauri backend — nothing to sync */
     });
   }, [enabled]);
+}
+
+/**
+ * Mirror the global volume-hotkey config into Rust, which owns the OS-level
+ * key registrations (`src-tauri/src/shortcuts.rs`). Re-applies on launch and
+ * on every change; Rust clears the old bindings and registers the current
+ * ones. A registration failure (bad accelerator, or a combo another app
+ * already holds) comes back as a rejected promise — surfaced as a toast so the
+ * user knows the shortcut didn't take, but only when the feature is enabled so
+ * a disabled + malformed combo stays quiet. Mounted once in AppShell.
+ */
+export function useVolumeHotkeysSync(): void {
+  const enabled = useSettingsStore((s) => s.volumeHotkeysEnabled);
+  const down = useSettingsStore((s) => s.volumeHotkeyDown);
+  const up = useSettingsStore((s) => s.volumeHotkeyUp);
+  const mute = useSettingsStore((s) => s.volumeHotkeyMute);
+  useEffect(() => {
+    invoke("apply_volume_hotkeys", { enabled, down, up, mute }).catch((e) => {
+      // Ignore the plain-vite dev case (no Tauri backend); only nag when the
+      // user actually turned the feature on.
+      if (enabled && typeof e === "string") {
+        toast.error(`Volume hotkey: ${e}`);
+      }
+    });
+  }, [enabled, down, up, mute]);
 }
