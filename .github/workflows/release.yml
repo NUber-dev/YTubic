@@ -1,5 +1,6 @@
-# Builds the Windows installer and publishes a draft GitHub Release
-# whenever a `v*` tag is pushed. Publish flow:
+# Builds Windows (NSIS) and Linux (.deb / .AppImage) installers and
+# publishes a draft GitHub Release whenever a `v*` tag is pushed.
+# Publish flow:
 #   git tag v0.1.0 && git push origin v0.1.0
 # → wait for this workflow → review the draft on the Releases page → publish.
 #
@@ -16,7 +17,15 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundle: nsis
+          - os: ubuntu-latest
+            bundle: deb,appimage
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -30,12 +39,43 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev
+
       - run: pnpm install --frozen-lockfile
+
+      # The updater is signed via TAURI_SIGNING_PRIVATE_KEY. When the
+      # secret is present (official repo) we export it and keep updater
+      # artifacts on. When it is absent (e.g. a fork) we both skip the
+      # empty-string key — Tauri would fail trying to decode it — and
+      # disable updater artifacts, which otherwise require the key.
+      - name: Configure signing
+        id: signing
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "config_arg=" >> "$GITHUB_OUTPUT"
+          else
+            echo '{"bundle":{"createUpdaterArtifacts":false}}' > "$GITHUB_WORKSPACE/no-updater.json"
+            echo "config_arg=--config $GITHUB_WORKSPACE/no-updater.json" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # Baked into the build by src-tauri/build.rs. Add these as repo
           # Actions secrets. If unset, the released build just ships with
           # scrobbling disabled and nothing else breaks.
@@ -47,3 +87,4 @@ jobs:
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           prerelease: false
+          args: --bundles ${{ matrix.bundle }} ${{ steps.signing.outputs.config_arg }}
