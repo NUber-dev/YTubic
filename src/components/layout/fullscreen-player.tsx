@@ -485,6 +485,7 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
                 <LyricsBody
                   state={lyricsState}
                   viewportRatio={FULLSCREEN_LYRICS_VIEWPORT_RATIO}
+                  melt="full"
                 />
               </div>
             ) : null}

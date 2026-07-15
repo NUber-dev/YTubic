@@ -283,12 +283,17 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
 export function LyricsBody({
   state,
   viewportRatio,
+  melt = "soft",
 }: {
   state: LyricsViewState;
   /** Where the active line rests, as a fraction of viewport height.
    *  Defaults to the inline-panel value; the fullscreen player passes a
    *  lower-center ratio for its taller canvas. */
   viewportRatio?: number;
+  /** How hard inactive lines melt away. "full" is the fullscreen-stage
+   *  treatment (steep opacity falloff + heavier blur); "soft" keeps the
+   *  narrow side panel readable a few lines out. */
+  melt?: "full" | "soft";
 }) {
   if (!state.hasTrack) return null;
   if (state.isLoading && !state.active) {
@@ -313,6 +318,7 @@ export function LyricsBody({
         onNudge={state.nudgeOffset}
         onReset={state.resetOffset}
         viewportRatio={viewportRatio}
+        melt={melt}
       />
     );
   }
@@ -373,12 +379,14 @@ function TimedLyrics({
   onNudge,
   onReset,
   viewportRatio = ACTIVE_LINE_VIEWPORT_RATIO,
+  melt = "soft",
 }: {
   lines: TimedLine[];
   offset: number;
   onNudge: (deltaSeconds: number) => void;
   onReset: () => void;
   viewportRatio?: number;
+  melt?: "full" | "soft";
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
@@ -520,11 +528,18 @@ function TimedLyrics({
           // blank hole between the last readable line and the pane
           // edge. Fed through a CSS var so the group-hover reveal
           // (a class) can still win over it.
+          // The soft variant keeps a higher floor and gentler slope:
+          // at panel width the full-stage falloff makes anything two
+          // lines out unreadable, which defeats a lyrics PANEL.
           const fall = isActive
             ? 1
-            : isPast
-              ? 0.35
-              : Math.max(0.1, 0.8 - 0.115 * ahead);
+            : melt === "full"
+              ? isPast
+                ? 0.35
+                : Math.max(0.1, 0.8 - 0.115 * ahead)
+              : isPast
+                ? 0.5
+                : Math.max(0.3, 0.85 - 0.09 * ahead);
           // Empty timed lines are the LRC's stanza/interlude markers.
           // Short ones render as pure whitespace so consecutive sung
           // lines read as verse blocks (the Apple Music grouping);
@@ -586,13 +601,19 @@ function TimedLyrics({
                 "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left text-lg font-[650] leading-snug opacity-(--line-o) transition-[scale,color,opacity] duration-[1260ms] ease-in-out hover:bg-black/30 hover:blur-none group-hover:duration-200",
                 isActive
                   ? "scale-[1.04] text-foreground blur-none"
-                  : isPast
-                    ? "scale-100 text-muted-foreground/45 blur-[2px]"
-                    : ahead === 1
-                      ? "scale-100 text-muted-foreground/60 blur-[1px]"
-                      : ahead === 2
-                        ? "scale-100 text-muted-foreground/55 blur-[1.5px]"
-                        : "scale-100 text-muted-foreground/50 blur-[2px]",
+                  : melt === "full"
+                    ? isPast
+                      ? "scale-100 text-muted-foreground/45 blur-[2px]"
+                      : ahead === 1
+                        ? "scale-100 text-muted-foreground/60 blur-[1px]"
+                        : ahead === 2
+                          ? "scale-100 text-muted-foreground/55 blur-[1.5px]"
+                          : "scale-100 text-muted-foreground/50 blur-[2px]"
+                    : isPast
+                      ? "scale-100 text-muted-foreground/55 blur-[1px]"
+                      : ahead === 1
+                        ? "scale-100 text-muted-foreground/70 blur-none"
+                        : "scale-100 text-muted-foreground/60 blur-[1px]",
                 !isActive && "group-hover:opacity-80 group-hover:blur-none",
               )}
             >
