@@ -382,6 +382,19 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
           className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/60 via-black/25 to-transparent"
         />
         <div aria-hidden className="bg-cover-noise absolute inset-0" />
+        {/* Video tracks take the WHOLE stage, Apple Music MV style: the
+            frames fill the window (letterboxed against the ambient
+            blur), and the UI reduces to the exit chevron plus a bottom
+            control strip over a legibility gradient. */}
+        {streamKind === "video" ? (
+          <>
+            <VideoSurface className="absolute inset-0 z-[5]" />
+            <div
+              aria-hidden
+              className="absolute inset-x-0 bottom-0 z-[6] h-56 bg-gradient-to-t from-black/75 via-black/35 to-transparent"
+            />
+          </>
+        ) : null}
 
         <div className="relative z-10 flex h-full min-h-0 flex-col px-[6vw] pt-(--titlebar-h)">
           {/* Exit chevron floats top-right instead of occupying a flex
@@ -409,10 +422,25 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
               clear of the bottom control strip. */}
           <div
             className={cn(
-              "flex min-h-0 flex-1 items-center justify-center py-4",
-              showLyrics && "gap-[5vw]",
+              "flex min-h-0 flex-1 py-4",
+              streamKind === "video"
+                ? "items-end justify-center"
+                : "items-center justify-center",
+              showLyrics && streamKind !== "video" && "gap-[5vw]",
             )}
           >
+            {streamKind === "video" ? (
+              <div className="flex w-[min(44rem,84vw)] min-w-0 flex-col gap-0.5 pb-1 text-center">
+                <span className="max-w-full truncate text-xl font-semibold">
+                  {track.title}
+                </span>
+                <span className="max-w-full truncate text-sm text-muted-foreground">
+                  {artistLine}
+                </span>
+                <div className="mt-3 flex w-full flex-col gap-2">{controls}</div>
+              </div>
+            ) : (
+            <>
             {/* Player column — Apple Music's fullscreen groups art,
                 meta, seek, transport and volume as one unit on the
                 left with the lyrics filling the rest of the stage.
@@ -423,10 +451,7 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
                 showLyrics ? "w-[min(32vw,50vh)]" : "w-[min(38vw,56vh)]",
               )}
             >
-              {streamKind === "video" ? (
-                <VideoSurface className="aspect-video w-full overflow-hidden rounded-lg border border-hairline bg-black shadow-2xl" />
-              ) : (
-                <CrossfadeArt
+              <CrossfadeArt
                   className="w-full"
                   slotKey={`${track.videoId}:${iTunesCover ? "hi" : "lo"}`}
                 >
@@ -438,8 +463,7 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
                     highRes
                     overrideHighRes={iTunesCover}
                   />
-                </CrossfadeArt>
-              )}
+              </CrossfadeArt>
               <div
                 className={cn(
                   "mt-4 flex min-w-0 flex-col gap-0.5",
@@ -467,6 +491,8 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
                 />
               </div>
             ) : null}
+            </>
+            )}
           </div>
         </div>
       </motion.div>
