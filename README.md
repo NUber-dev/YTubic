@@ -44,10 +44,8 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 
 ## Install
 
-YTubic is released in two separate editions on the [Releases](../../releases) page:
-
-*   **Premium Patched Edition (Tag: `v*-patched`)**: Bypasses the YouTube Music Premium paywall checks locally, letting you stream high-quality audio and play tracks even if your Google account does not have an active Music Premium subscription.
-*   **Cookie Patched Edition (Tag: `v*-cookie-patched`)**: A clean, authentic build that does not bypass the paywall. It includes our robust cookie domain matching and session import fixes to prevent random logouts for users who already have an active YouTube Music Premium subscription.
+*   **Cookie Patched Edition (Tag: `v*-cookie-patched`) [Recommended]**: Bypasses the YouTube Music Premium paywall checks locally, AND includes our robust cookie domain matching, embedded login window polish, browser cookie import UI, and home feed sign-in guidance. This edition resolves all login-loop and HTTP 404/401 session expiration errors.
+*   **Premium Patched Edition (Tag: `v*-patched`)**: Bypasses the YouTube Music Premium paywall checks locally, but lacks the login and cookie domain matching fixes (users may experience random logouts or library load failures).
 
 ### Requirements & Setup
 *   **Windows 10/11 only** for now.
