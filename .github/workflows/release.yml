@@ -55,15 +55,22 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Conditionally set signing keys — when the secret resolves to
-      # empty string (e.g. on a fork) Tauri still attempts to decode it
-      # and fails. Only exporting when non-empty avoids that.
-      - name: Export signing keys (if available)
+      # The updater is signed via TAURI_SIGNING_PRIVATE_KEY. When the
+      # secret is present (official repo) we export it and keep updater
+      # artifacts on. When it is absent (e.g. a fork) we both skip the
+      # empty-string key — Tauri would fail trying to decode it — and
+      # disable updater artifacts, which otherwise require the key.
+      - name: Configure signing
+        id: signing
         shell: bash
         run: |
           if [ -n "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
             echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" >> "$GITHUB_ENV"
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "config_arg=" >> "$GITHUB_OUTPUT"
+          else
+            echo '{"bundle":{"createUpdaterArtifacts":false}}' > "$GITHUB_WORKSPACE/no-updater.json"
+            echo "config_arg=--config $GITHUB_WORKSPACE/no-updater.json" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: tauri-apps/tauri-action@v0
@@ -80,4 +87,4 @@ jobs:
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           prerelease: false
-          args: --bundles ${{ matrix.bundle }}
+          args: --bundles ${{ matrix.bundle }} ${{ steps.signing.outputs.config_arg }}
