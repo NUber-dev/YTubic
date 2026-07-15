@@ -87,6 +87,7 @@ function useDebounced<T>(value: T, ms = 300): T {
 function SearchPage() {
   const { q = "", filter = "all" } = Route.useSearch();
   const [scope, setScope] = useState<Scope>("catalog");
+  const pushHistory = useSearchHistory((s) => s.push);
 
   const query = q.trim();
   const { data, isLoading, isFetching, error } = useQuery({
@@ -139,18 +140,75 @@ function SearchPage() {
         </div>
       </div>
 
-      {!query ? null : scope === "library" ? (
-        <LibraryResults state={library} query={query} />
-      ) : error ? (
-        <ErrorCard message={(error as Error).message} />
-      ) : isLoading ? (
-        <SearchSkeleton variant={filter === "songs" ? "list" : "shelves"} />
-      ) : !data ? null : filter === "all" ? (
-        <AllResults data={data} />
+      {!query ? (
+        <RecentSearches filter={filter} />
       ) : (
-        <FilterResults data={data} filter={filter} />
+        // Capture-phase so any interaction with the results (playing a
+        // track, opening an album, "See all") records the query. Typing
+        // live-searches through the URL without ever submitting the form,
+        // so Enter alone almost never fires, and history stayed empty for
+        // anyone who searches by type-then-click.
+        <div onClickCapture={() => pushHistory(query)}>
+          {scope === "library" ? (
+            <LibraryResults state={library} query={query} />
+          ) : error ? (
+            <ErrorCard message={(error as Error).message} />
+          ) : isLoading ? (
+            <SearchSkeleton variant={filter === "songs" ? "list" : "shelves"} />
+          ) : !data ? null : filter === "all" ? (
+            <AllResults data={data} />
+          ) : (
+            <FilterResults data={data} filter={filter} />
+          )}
+        </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Empty-state body of the Search page: the recent queries, YTM-style.
+ * The focus dropdown shows the same items, but a blank page with history
+ * hidden behind a focus state reads as "no recents at all".
+ */
+function RecentSearches({ filter }: { filter: SearchFilter }) {
+  const navigate = useNavigate({ from: Route.fullPath });
+  const history = useSearchHistory((s) => s.items);
+  const remove = useSearchHistory((s) => s.remove);
+  const pushHistory = useSearchHistory((s) => s.push);
+  if (history.length === 0) return null;
+  return (
+    <section className="flex max-w-xl flex-col gap-0.5">
+      <h2 className="px-1 pb-2 text-sm font-semibold text-muted-foreground">
+        Recent searches
+      </h2>
+      {history.slice(0, 10).map((h) => (
+        <div
+          key={h}
+          className="group flex items-center gap-1 rounded-md transition-colors hover:bg-accent"
+        >
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 px-2 py-2 text-left text-sm"
+            onClick={() => {
+              pushHistory(h);
+              navigate({ to: "/search", search: { q: h, filter } });
+            }}
+          >
+            <HistoryIcon className="size-4 shrink-0 text-muted-foreground" />
+            <span className="truncate">{h}</span>
+          </button>
+          <button
+            type="button"
+            aria-label={`Remove "${h}" from search history`}
+            className="mr-1 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-white/10 hover:text-foreground group-hover:opacity-100"
+            onClick={() => remove(h)}
+          >
+            <XIcon className="size-4" />
+          </button>
+        </div>
+      ))}
+    </section>
   );
 }
 
