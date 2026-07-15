@@ -11,6 +11,7 @@ import { PlayerBarBottom } from "@/components/layout/player-bar-bottom";
 import { FloatingPlayerSync } from "@/components/layout/floating-player-sync";
 import { DragSnapOverlay } from "@/components/layout/drag-snap-overlay";
 import { WindowResizeHandles } from "@/components/layout/window-resize-handles";
+import { IS_MAC } from "@/lib/platform";
 import { EntityPageHeader } from "@/components/layout/entity-page-header";
 import {
   PlayerResizeHandle,
@@ -255,7 +256,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {mode === "floating" && hasTrack && <FloatingPlayerSync />}
           </div>
           <DragSnapOverlay />
-          <WindowResizeHandles />
+          <WindowResizeHandles disabled={IS_MAC} />
           <SettingsDialog />
           <PremiumGateDialog />
           <ChannelPickerDialog />

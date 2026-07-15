@@ -55,12 +55,9 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
-# OS media controls: on Windows this is the System Media Transport Controls
-# (the media tile in Quick Settings / the volume flyout, the lock screen, and
-# the hardware media keys). We create the SMTC ourselves from the host process
-# so the tile resolves to YTubic's own identity — the webview's built-in media
-# session can't, because it belongs to the msedgewebview2.exe child process and
-# shows up as "Unknown app". See src/media.rs.
+# Native media controls: SMTC on Windows, MPRIS on Linux, and Now Playing on
+# macOS. We create the Windows SMTC from the host process so the tile resolves
+# to YTubic's identity instead of the msedgewebview2.exe child. See media.rs.
 souvlaki = "0.7"
 # Discord Rich Presence: talks to the local Discord client over its IPC
 # socket / named pipe (no native deps beyond that). Off by default; opt-in
@@ -81,12 +78,14 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
 ] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # Cookie jars remain files in app data, but their random AES key lives in the
-# desktop Secret Service (GNOME Keyring, KWallet, etc.).
+# native credential store: Secret Service on Linux and Keychain on macOS.
 aes-gcm = "0.10"
 keyring = "4.1.5"
 rand = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 # Reach the underlying WebKitGTK WebView for Linux-only settings that wry
 # does not expose. Keep this pinned to the version already used by wry so
 # `PlatformWebview::inner()` returns the same type.

@@ -15,6 +15,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
+import { IS_MAC } from "@/lib/platform";
 import { useSettingsStore } from "@/lib/store/settings";
 
 export function GeneralTab() {
@@ -90,16 +91,12 @@ function AccountGroup() {
             Not signed in
           </span>
           <span className="text-[13px] text-muted-foreground">
-            Sign in to unlock your library, liked songs, and
-            Premium-quality streams. Cookies stay on this machine.
+            Sign in to unlock your library, liked songs, and Premium-quality
+            streams. Cookies stay on this machine.
           </span>
         </div>
         <Button size="sm" onClick={signIn} disabled={signingIn}>
-          {signingIn ? (
-            <Loader2Icon className="animate-spin" />
-          ) : (
-            <LogInIcon />
-          )}
+          {signingIn ? <Loader2Icon className="animate-spin" /> : <LogInIcon />}
           Sign in with Google
         </Button>
       </div>
@@ -169,13 +166,17 @@ function BehaviorGroup() {
       />
       <SettingRow
         icon={XIcon}
-        title="Close to tray"
-        description="Hide YTubic to the tray when you press ✕ instead of quitting."
+        title={IS_MAC ? "Close to menu bar" : "Close to tray"}
+        description={
+          IS_MAC
+            ? "Hide YTubic to the menu bar when you close the window instead of quitting."
+            : "Hide YTubic to the tray when you press ✕ instead of quitting."
+        }
         control={
           <Switch
             checked={closeAction === "tray"}
             onCheckedChange={(v) => setCloseAction(v ? "tray" : "quit")}
-            aria-label="Close to tray"
+            aria-label={IS_MAC ? "Close to menu bar" : "Close to tray"}
           />
         }
       />

@@ -1,6 +1,8 @@
 // OS media controls via `souvlaki`: on Windows this is the System Media
 // Transport Controls (SMTC) — the media tile in the Quick Settings / volume
-// flyout, the lock screen, and the hardware media keys.
+// flyout, the lock screen, and the hardware media keys. Linux maps to MPRIS;
+// macOS maps to Now Playing / MPRemoteCommandCenter. souvlaki does not need a
+// window handle on either platform, so `hwnd: None` is a real backend.
 //
 // Why we drive this from Rust instead of the webview's `navigator.mediaSession`:
 // the audio plays in an `<audio>` element inside WebView2, so Chromium creates
@@ -25,7 +27,9 @@ use std::time::Duration;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
+use tauri::{AppHandle, Emitter};
 
 thread_local! {
     static CONTROLS: RefCell<Option<MediaControls>> = const { RefCell::new(None) };

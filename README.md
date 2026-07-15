@@ -5,7 +5,7 @@
 <h1 align="center">YTubic</h1>
 
 <p align="center">
-  A fast, responsive YouTube Music desktop client for Windows and Linux.
+  A fast, responsive YouTube Music desktop client for Windows, Linux, and macOS.
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download for Windows" height="60" />
+    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20YTubic-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download YTubic" height="60" />
   </a>
 </p>
 
@@ -30,7 +30,7 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 - **Synced lyrics** — line-by-line synced lyrics from multiple providers (LRCLIB, Musixmatch, Genius)
 - **Hi-res cover art** — upgrades album covers to high-resolution studio art when available
 - **Full library support** — your playlists, likes, albums and artists; search with filters; radio/autoplay queues
-- **Desktop integration** — media keys and system media controls, tray icon, single instance
+- **Desktop integration** — media keys and system media controls, tray/menu-bar icon, single instance
 - **Auto-updates** — the app updates itself from GitHub Releases, and keeps its yt-dlp copy fresh automatically
 
 > **Disclaimer:** YTubic is an unofficial client. It is not affiliated with,
@@ -44,6 +44,8 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 Download the latest installer from the [Releases](../../releases) page and run it.
 
 - **Windows 10/11:** run the `.exe` NSIS installer.
+- **macOS 10.15+:** open the universal `.dmg`; the same build supports Apple
+  Silicon and Intel. Login cookies are encrypted with a Keychain-backed key.
 - **Linux (experimental):** install the `.deb` or `.rpm`, or run the
   `.AppImage`. Playback requires WebKitGTK 4.1, GTK 3 and the GStreamer base,
   good and libav plugins. Signing in also requires a desktop Secret Service
@@ -59,6 +61,16 @@ Download the latest installer from the [Releases](../../releases) page and run i
 The installer is not code-signed (certificates are expensive for a free
 open-source project). Click "More info" → "Run anyway". The source code is
 public — you can audit it or build it yourself.
+
+**macOS says YTubic can't be opened or is from an unidentified developer.**
+Release builds are ad-hoc signed until Developer ID credentials are configured,
+so they are not notarized. Open **System Settings → Privacy & Security** and
+choose **Open Anyway**, or right-click YTubic in Applications and choose
+**Open**. As a last resort, clear the downloaded quarantine attribute:
+
+```bash
+xattr -cr /Applications/YTubic.app
+```
 
 **My antivirus flags the app / yt-dlp.**
 yt-dlp is a widely-used open-source downloader that some AV vendors
@@ -78,7 +90,8 @@ yt-dlp copy every ~3 days). Restarting the app forces the check.
 
 ## Stack
 
-- **Shell:** Tauri 2 (Rust backend, system webview — WebView2 on Windows)
+- **Shell:** Tauri 2 (Rust backend, system webview — WebView2 on Windows,
+  WebKitGTK on Linux, WKWebView on macOS)
 - **Frontend:** React 19 + TypeScript
 - **Build:** Vite 7
 - **Styling:** Tailwind CSS v4
@@ -106,8 +119,8 @@ pnpm format       # prettier --write
 pnpm build        # tsc + vite production build
 ```
 
-CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests, build and
-`cargo check` on every push / PR.
+CI (`.github/workflows/ci.yml`) runs typecheck, lint, tests, build and Rust
+tests on Windows, Linux, and macOS for every push / PR.
 
 ## Project layout
 

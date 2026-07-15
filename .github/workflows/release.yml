@@ -1,4 +1,5 @@
-# Builds the Windows and Linux installers and publishes a draft GitHub Release
+# Builds Windows, Linux, and a universal macOS installer, then publishes a
+# single draft GitHub Release
 # whenever a `v*` tag is pushed. Publish flow:
 #   git tag v0.1.0 && git push origin v0.1.0
 # → wait for this workflow → review the draft on the Releases page → publish.
@@ -25,8 +26,16 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
+            args: ""
+            rust_targets: ""
+          - name: macOS Universal
+            os: macos-latest
+            args: "--target universal-apple-darwin"
+            rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
           - name: Linux
             os: ubuntu-22.04
+            args: ""
+            rust_targets: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +56,8 @@ jobs:
           node-version: 20
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -56,6 +67,15 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Optional Developer ID signing + notarization. Without these, the
+          # macOS overlay falls back to an ad-hoc signature so Apple Silicon
+          # can run the build after the user approves it in Privacy & Security.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Baked into the build by src-tauri/build.rs. Add these as repo
           # Actions secrets. If unset, the released build just ships with
           # scrobbling disabled and nothing else breaks.
@@ -67,3 +87,4 @@ jobs:
           releaseBody: "See the assets below to download and install this version."
           releaseDraft: true
           prerelease: false
+          args: ${{ matrix.args }}
