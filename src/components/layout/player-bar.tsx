@@ -500,7 +500,10 @@ export function VolumeControl({
   const popupClass =
     direction === "vertical"
       ? "absolute bottom-full left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1 px-3 pb-2 transition-opacity duration-150"
-      : "absolute left-full top-1/2 z-10 flex -translate-y-1/2 items-center gap-0 py-3 pl-1 transition-opacity duration-150";
+      : // Horizontal opens UPWARD, centered on the icon: the bottom
+        // strip has controls immediately to the right, and a
+        // right-expanding pill crashed into the source toggle.
+        "absolute bottom-full left-1/2 z-10 flex -translate-x-1/2 items-center px-2 pb-2 transition-opacity duration-150";
 
   if (direction === "inline") {
     return (
@@ -596,7 +599,7 @@ export function VolumeControl({
             />
           </div>
         ) : (
-          <>
+          <div className="flex items-center gap-2 rounded-full border border-hairline bg-surface-active/70 px-3 py-1.5 shadow backdrop-blur-md">
             <Slider
               value={[pct]}
               max={100}
@@ -608,7 +611,7 @@ export function VolumeControl({
             <span className="w-7 text-right text-xs font-medium tabular-nums text-foreground">
               {pct}
             </span>
-          </>
+          </div>
         )}
       </div>
     </div>
