@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { QueueBody, QueueToggleButton } from "@/components/layout/queue-panel";
 import { FullscreenPlayer } from "@/components/layout/fullscreen-player";
+import { VideoSurface } from "@/components/shared/video-surface";
 import {
   LyricsBody,
   LyricsSourceButton,
@@ -655,6 +656,7 @@ export function PlayerBar({
   const [scrub, setScrub] = useState<number | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const streamKind = usePlaybackStore((s) => s.streamKind);
   const iTunesCover = useLatchedCover(track, useITunesCover(track));
   // Accent for the whole player surface, pulled from the cover art (same
   // source the fullscreen view uses) so the seek fill, play button, and
@@ -766,7 +768,19 @@ export function PlayerBar({
             variant !== "floating" && "cursor-grab active:cursor-grabbing",
           )}
         >
-          {track ? (
+          {/* When the user picked the video version, the engine element
+              carries real frames: show them here instead of the art.
+              Gated to the docked variant because the floating window is
+              a separate WKWebView and cannot adopt this document's
+              element, and to !fullscreen so the stage keeps ownership
+              while it's up (we re-adopt when it closes). The square
+              outer box stays so metadata and lyrics below don't jump
+              when a track flips between art and video. */}
+          {track && streamKind === "video" && variant === "right" && !fullscreen ? (
+            <div className="pointer-events-none flex aspect-square w-full items-center justify-center">
+              <VideoSurface className="aspect-video w-full overflow-hidden rounded-md border border-hairline bg-black" />
+            </div>
+          ) : track ? (
             <Thumbnail
               thumbnails={track.thumbnails}
               alt={track.title}

@@ -410,7 +410,9 @@ export function useAudioEngine() {
     if (!streamVideoId) {
       el.removeAttribute("src");
       el.load();
-      usePlaybackStore.getState().setStreamUrl(undefined);
+      const store = usePlaybackStore.getState();
+      store.setStreamUrl(undefined);
+      store.setStreamKind("audio");
       return;
     }
     // Premium gate: signed-out / Free accounts browse but don't stream.
@@ -425,6 +427,7 @@ export function useAudioEngine() {
       el.load();
       const store = usePlaybackStore.getState();
       store.setStreamUrl(undefined);
+      store.setStreamKind("audio");
       store.setStatus("idle");
       if (store.playing) {
         store.setPlaying(false);
@@ -437,6 +440,11 @@ export function useAudioEngine() {
     // playing: true) makes the [playing] effect below re-play the OLD src
     // for the duration of the streamUrlFor() round-trip.
     el.removeAttribute("src");
+    // streamKind is only promoted to "video" after a resolve SUCCEEDS,
+    // so reset it at the same moment the src drops. Otherwise a video
+    // surface keeps rendering the previous track's last frame through
+    // the loading gap (or forever, when resolution fails).
+    usePlaybackStore.getState().setStreamKind("audio");
 
     const token = ++resolveTokenRef.current;
     usePlaybackStore.getState().setStatus("loading");

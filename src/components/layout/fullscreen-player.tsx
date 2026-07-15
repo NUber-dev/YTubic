@@ -37,7 +37,7 @@ import {
   thumbnailUrlsBySize,
 } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
-import { getMediaElement } from "@/lib/audio-engine";
+import { VideoSurface } from "@/components/shared/video-surface";
 import { cn, artistLineFromSubtitle } from "@/lib/utils";
 
 // Where the active line rests in the fullscreen lyric pane. Apple
@@ -156,28 +156,6 @@ function CrossfadeArt({
       </motion.div>
     </div>
   );
-}
-
-/**
- * Adopts the audio engine's singleton <video> element as a visible
- * surface. The element lives detached for audio-only streams and keeps
- * playing when unmounted — mounting it here only makes its frames
- * visible; playback ownership stays with the engine.
- */
-function VideoSurface({ className }: { className?: string }) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const host = hostRef.current;
-    const el = getMediaElement();
-    if (!host || !el) return;
-    el.className = "h-full w-full object-contain";
-    host.appendChild(el);
-    return () => {
-      el.className = "";
-      el.remove();
-    };
-  }, []);
-  return <div ref={hostRef} className={className} />;
 }
 
 /**
