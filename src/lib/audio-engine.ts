@@ -105,8 +105,29 @@ export function useAudioEngine() {
         const meta =
           cur.index >= 0 ? cur.queue[cur.index]?.duration : undefined;
         cur.setDuration(correctedDuration(meta, el.duration));
+      } else if (el.duration === Infinity) {
+        // Streaming containers (progressively served webm) report
+        // Infinity until fully buffered, which left the bar showing the
+        // LISTED length while the real file ran longer, so the bar pinned
+        // at full with audio still playing. The seekable range end is
+        // the truth the server actually has; it grows monotonically to
+        // the real length as the download completes.
+        syncSeekableDuration();
       }
     };
+    const syncSeekableDuration = () => {
+      if (el.duration !== Infinity || el.seekable.length === 0) return;
+      const end = el.seekable.end(el.seekable.length - 1);
+      if (!Number.isFinite(end) || end <= 0) return;
+      const cur = store();
+      if (end > cur.duration + 0.5) {
+        rawElDurationRef.current = end;
+        const meta =
+          cur.index >= 0 ? cur.queue[cur.index]?.duration : undefined;
+        cur.setDuration(correctedDuration(meta, end));
+      }
+    };
+    const onProgress = () => syncSeekableDuration();
     const onEnded = () => {
       store().next();
     };
@@ -222,6 +243,7 @@ export function useAudioEngine() {
 
     el.addEventListener("timeupdate", onTimeUpdate);
     el.addEventListener("durationchange", onDurationChange);
+    el.addEventListener("progress", onProgress);
     el.addEventListener("ended", onEnded);
     el.addEventListener("pause", onElPause);
     el.addEventListener("play", onElPlay);
@@ -231,6 +253,7 @@ export function useAudioEngine() {
     return () => {
       el.removeEventListener("timeupdate", onTimeUpdate);
       el.removeEventListener("durationchange", onDurationChange);
+      el.removeEventListener("progress", onProgress);
       el.removeEventListener("ended", onEnded);
       el.removeEventListener("pause", onElPause);
       el.removeEventListener("play", onElPlay);
