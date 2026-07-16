@@ -1299,7 +1299,7 @@ async fn open_player_window(
         WebviewUrl::App("index.html?floating-player=1".into()),
     )
     .title("YTubic — player")
-    .decorations(false)
+    .decorations(true)
     .inner_size(360.0, 720.0)
     .min_inner_size(320.0, 560.0)
     .resizable(true)
