@@ -25,7 +25,9 @@ use std::time::Duration;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 
 thread_local! {
     static CONTROLS: RefCell<Option<MediaControls>> = const { RefCell::new(None) };
