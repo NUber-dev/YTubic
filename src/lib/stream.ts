@@ -48,36 +48,6 @@ export async function streamUrlFor(videoId: string): Promise<string> {
   return `${base}/stream/${encodeURIComponent(videoId)}${ephemeralSuffix()}`;
 }
 
-const prefetched = new Set<string>();
-
-/**
- * Warm the disk cache for a videoId in the background. No-ops if we
- * already fired a prefetch for this id in this session, or if the user
- * isn't on Premium — pre-warming a session-only cache doesn't help once
- * the user advances past the prefetched track (the next app launch
- * wipes it anyway).
- *
- * The server itself is idempotent on a per-file basis (checks .part /
- * .webm existence), so re-firing is cheap but still skippable.
- */
-export async function prefetchStream(videoId: string): Promise<void> {
-  if (!isPremium()) return;
-  if (prefetched.has(videoId)) return;
-  prefetched.add(videoId);
-  try {
-    const base = await getStreamBaseUrl();
-    // Fire-and-forget — server returns 200/202 immediately and caches
-    // bytes in the background. fetch() only rejects on network errors, so an
-    // HTTP 4xx/5xx (yt-dlp spawn/extractor failure) resolves normally — drop
-    // the warm mark on an error status so the id is retried later.
-    const res = await fetch(`${base}/prefetch/${encodeURIComponent(videoId)}`);
-    if (!res.ok) prefetched.delete(videoId);
-  } catch {
-    // If it fails we'll just fall through to on-demand fetch later.
-    prefetched.delete(videoId);
-  }
-}
-
 const metaWritten = new Set<string>();
 
 /**
@@ -91,7 +61,7 @@ const metaWritten = new Set<string>();
  * which may differ from the queue's display id when the user has toggled
  * a track to its music-video version. The title/artist still describe
  * the track and are correct either way. Fire-and-forget and deduped per
- * session; a failed write is retried on the next play/prefetch.
+ * session; a failed write is retried on the next play.
  */
 export async function saveTrackMeta(
   videoId: string,
@@ -111,12 +81,11 @@ export async function saveTrackMeta(
 }
 
 /**
- * Drop the in-memory "already prefetched" / "already labelled" logs.
+ * Drop the in-memory "already labelled" log.
  * Call after the disk cache is cleared or the account switches —
- * otherwise we'd never re-prefetch tracks that are gone from disk but
- * still remembered as "warm", nor re-write their metadata sidecars.
+ * otherwise we'd never re-write metadata sidecars for tracks that are
+ * gone from disk but still remembered as labelled.
  */
 export function clearPrefetchMemo(): void {
-  prefetched.clear();
   metaWritten.clear();
 }

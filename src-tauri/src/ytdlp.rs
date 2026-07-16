@@ -54,15 +54,51 @@ pub fn managed_path(app: &tauri::AppHandle) -> PathBuf {
         .join(BINARY_NAME)
 }
 
-/// Program to spawn: the managed copy when present, otherwise bare
-/// `yt-dlp` so PATH still works on dev machines. Resolved at every
-/// spawn (not cached) so a download finishing mid-session takes effect
-/// on the next track without a restart.
+/// Program to spawn for yt-dlp work.
+///
+/// **PATH wins when available.** The official single-file macOS/Windows
+/// builds we download into `app_data/bin` are PyInstaller *onefile*
+/// bundles: every process start re-extracts ~30–40 MB to a temp dir and
+/// costs ~10–12s of wall time *before* any network work. That alone was
+/// the entire "play starts after 11–15s" budget. Homebrew / pip installs
+/// are thin wrappers around an already-imported package and start in
+/// <0.5s, so we prefer them whenever `yt-dlp` resolves on PATH.
+///
+/// Managed is still downloaded (see `ensure`) for machines with no PATH
+/// install and for self-update; it's just no longer preferred when a
+/// fast alternative exists. Result is cached for the process lifetime.
 pub fn program(managed: &Path) -> PathBuf {
+    use std::sync::OnceLock;
+    static PATH_OK: OnceLock<bool> = OnceLock::new();
+    let path_ok = *PATH_OK.get_or_init(probe_path_install_sync);
+    if path_ok {
+        return PathBuf::from("yt-dlp");
+    }
     if managed.exists() {
         managed.to_path_buf()
     } else {
         PathBuf::from("yt-dlp")
+    }
+}
+
+/// Sync PATH probe for `program()`. Kept separate from the async probe
+/// used by `ensure()` so spawn sites stay non-async.
+fn probe_path_install_sync() -> bool {
+    let mut cmd = std::process::Command::new("yt-dlp");
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    match cmd.status() {
+        Ok(s) if s.success() => {
+            eprintln!("[ytdlp] preferring PATH yt-dlp over managed binary (fast start)");
+            true
+        }
+        _ => false,
     }
 }
 

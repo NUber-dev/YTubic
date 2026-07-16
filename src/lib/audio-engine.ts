@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { fetchRadio } from "@/lib/innertube/radio";
-import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
+import { saveTrackMeta, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 import { usePremiumStore } from "@/lib/store/premium";
 import { useSettingsStore } from "@/lib/store/settings";
@@ -409,39 +409,6 @@ export function useAudioEngine() {
       dispose?.();
     };
   }, []);
-
-  // Prefetch the next queued track in the background while the current
-  // one plays. First-time plays take ~2s (yt-dlp resolve + first audio
-  // chunk); by the time the user hits "next" the file is cached on
-  // disk and playback starts instantly with full seek support.
-  const status = usePlaybackStore((s) => s.status);
-  const { nextVideoId } = usePlaybackStore(
-    useShallow((s) => ({
-      nextVideoId:
-        s.index >= 0 && s.index + 1 < s.queue.length
-          ? s.queue[s.index + 1].videoId
-          : undefined,
-    })),
-  );
-  // Substitute via source-prefs for the prefetch too — otherwise we'd
-  // warm the cache for the wrong stream when the user has switched the
-  // upcoming track to its video version.
-  const nextStreamVideoId = useTrackSourceStore((s) =>
-    nextVideoId ? resolveStreamId(nextVideoId, s.byVideoId) : undefined,
-  );
-  useEffect(() => {
-    if (status !== "ready") return;
-    if (!nextStreamVideoId) return;
-    void prefetchStream(nextStreamVideoId);
-    // Label the prefetched file too — same reasoning as the play path.
-    const st = usePlaybackStore.getState();
-    void saveTrackMeta(
-      nextStreamVideoId,
-      st.index >= 0 && st.index + 1 < st.queue.length
-        ? st.queue[st.index + 1]
-        : undefined,
-    );
-  }, [status, nextStreamVideoId]);
 
   // Auto-extend the queue with radio tracks when we're near the end, so
   // playback continues past the explicit queue.

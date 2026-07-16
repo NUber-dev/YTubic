@@ -6,17 +6,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{Mutex, Notify};
 
 use axum::{
+    body::Body,
     extract::{Path, Request, State as AxumState},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
+use bytes::Bytes;
+use futures_util::stream::unfold;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -2019,10 +2022,10 @@ async fn delete_cache_entries(
 }
 
 /// Persist a cached track's display metadata to `<id>.meta.json` beside
-/// its `.webm`. Called by the frontend when it streams or prefetches a
-/// track into the persistent (Premium) cache — that's the moment it
-/// knows the title/artist, which `list_cache` cannot derive from the
-/// file alone. Idempotent; an empty title is a no-op.
+/// its `.webm`. Called by the frontend when it streams a track into the
+/// persistent (Premium) cache — that's the moment it knows the
+/// title/artist, which `list_cache` cannot derive from the file alone.
+/// Idempotent; an empty title is a no-op.
 #[tauri::command]
 async fn set_cache_meta(
     app: tauri::AppHandle,
@@ -2106,8 +2109,9 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
 
 /// Lifecycle of a single track's yt-dlp download. yt-dlp writes
 /// bytes into a `<videoId>.part` file which is renamed to
-/// `<videoId>.webm` on successful completion; stream handlers block on
-/// `notify` until `complete` flips.
+/// `<videoId>.webm` on successful completion. Stream handlers wait on
+/// `notify` for new chunks (progressive WebM) or until `complete`
+/// flips (m4a / Range seeks).
 struct DownloadState {
     complete: Arc<AtomicBool>,
     notify: Arc<Notify>,
@@ -2141,7 +2145,7 @@ struct StreamServer {
     ytdlp_bin: PathBuf,
 }
 
-/// Read the `ephemeral` query flag from a stream/prefetch request.
+/// Read the `ephemeral` query flag from a stream request.
 /// True when `?ephemeral=1` (or `=true`) appears — used to route the
 /// download to `ephemeral_dir` instead of the persistent cache.
 fn is_ephemeral(req: &Request) -> bool {
@@ -2323,8 +2327,8 @@ async fn clear_cover_cache(app: tauri::AppHandle) -> Result<u64, String> {
 #[derive(Default)]
 struct StreamServerState {
     port: Arc<Mutex<Option<u16>>>,
-    /// Per-launch secret used as a path prefix on every stream/prefetch/
-    /// cover URL. The frontend gets it baked into the base URL, so it's
+    /// Per-launch secret used as a path prefix on every stream/cover
+    /// URL. The frontend gets it baked into the base URL, so it's
     /// transparent to the webview; a web page in the user's browser that
     /// guesses the random port still can't form a valid URL — this closes
     /// the CSRF-spawn and DNS-rebinding-read vectors.
@@ -2343,10 +2347,201 @@ async fn get_stream_base_url(
     }
 }
 
-/// Spawn a yt-dlp downloader that writes into the shared memory buffer
-/// AND to a `<videoId>.part` file on disk. On successful exit, renames
-/// .part → .webm. Updates `state.complete` + pings `notify` on every
-/// new chunk.
+/// ANDROID_VR client identity for the native player resolve + download
+/// path. Must match between the /player POST and the googlevideo GET so
+/// client-locked stream URLs accept the request.
+const ANDROID_VR_CLIENT_VERSION: &str = "1.62.27";
+const ANDROID_VR_UA: &str =
+    "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12; XR) gzip";
+
+/// Minimum bytes before a completed download is considered real audio
+/// (storyboard-only stubs are smaller and must not be cached).
+const MIN_AUDIO_BYTES: u64 = 32 * 1024;
+
+struct ResolvedAudio {
+    url: String,
+    /// `true` when mime is webm/opus — progressive first-byte play is safe.
+    is_webm: bool,
+}
+
+/// Resolve a direct audio URL via YouTube's ANDROID_VR player API.
+///
+/// ~0.2–0.4s when it works. Avoids spawning yt-dlp entirely (the managed
+/// PyInstaller binary alone costs ~12s of process start per track).
+/// Returns `Err` on bot-check / LOGIN_REQUIRED / missing direct URLs —
+/// caller falls back to yt-dlp, which still knows the JS/poToken dance.
+async fn resolve_android_vr_audio(video_id: &str) -> Result<ResolvedAudio, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .user_agent(ANDROID_VR_UA)
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+
+    let body = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": "ANDROID_VR",
+                "clientVersion": ANDROID_VR_CLIENT_VERSION,
+                "androidSdkVersion": 32,
+                "hl": "en",
+                "gl": "US",
+                "userAgent": ANDROID_VR_UA,
+            }
+        },
+        "videoId": video_id,
+        "contentCheckOk": true,
+        "racyCheckOk": true,
+    });
+
+    let resp = client
+        .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+        .header("Content-Type", "application/json")
+        .header("X-YouTube-Client-Name", "28")
+        .header("X-YouTube-Client-Version", ANDROID_VR_CLIENT_VERSION)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("player request: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("player http {}", resp.status()));
+    }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("player json: {e}"))?;
+
+    let status = data
+        .pointer("/playabilityStatus/status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    if status != "OK" {
+        let reason = data
+            .pointer("/playabilityStatus/reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return Err(format!("playability {status}: {reason}"));
+    }
+
+    let mut candidates: Vec<(&serde_json::Value, bool, i64)> = Vec::new();
+    for key in ["adaptiveFormats", "formats"] {
+        let Some(arr) = data
+            .pointer(&format!("/streamingData/{key}"))
+            .and_then(|v| v.as_array())
+        else {
+            continue;
+        };
+        for f in arr {
+            let mime = f.get("mimeType").and_then(|v| v.as_str()).unwrap_or("");
+            if !mime.starts_with("audio/") {
+                continue;
+            }
+            let url = f.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            if url.is_empty() {
+                continue; // ciphered / sabr-only — need yt-dlp
+            }
+            let is_webm = mime.contains("webm");
+            let br = f.get("bitrate").and_then(|v| v.as_i64()).unwrap_or(0);
+            candidates.push((f, is_webm, br));
+        }
+    }
+    // Prefer webm (progressive-safe), then higher bitrate.
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
+    let (f, is_webm, _) = candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no direct audio url in player response".to_string())?;
+    let url = f
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+    Ok(ResolvedAudio { url, is_webm })
+}
+
+/// Stream a googlevideo URL into `part_path`, notifying waiters on every
+/// chunk so the progressive HTTP handler can start early.
+async fn download_url_to_part(
+    url: &str,
+    part_path: &std::path::Path,
+    state: &DownloadState,
+) -> Result<u64, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .connect_timeout(Duration::from_secs(15))
+        .user_agent(ANDROID_VR_UA)
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("download: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("download http {}", resp.status()));
+    }
+
+    let mut file = tokio::fs::File::create(part_path)
+        .await
+        .map_err(|e| format!("create part: {e}"))?;
+    let mut total = 0u64;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("read chunk: {e}"))?
+    {
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("write part: {e}"))?;
+        total += chunk.len() as u64;
+        state.notify.notify_waiters();
+    }
+    let _ = file.flush().await;
+    Ok(total)
+}
+
+/// Finalize a successful `.part` → `.webm` rename (or clean up on failure).
+async fn finalize_part(
+    video_id: &str,
+    part_path: &std::path::Path,
+    final_path: &std::path::Path,
+    success: bool,
+) -> bool {
+    let part_size = tokio::fs::metadata(part_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if success && part_size >= MIN_AUDIO_BYTES {
+        if let Err(e) = tokio::fs::rename(part_path, final_path).await {
+            eprintln!("[stream] rename: {e}");
+            let _ = tokio::fs::remove_file(part_path).await;
+            return false;
+        }
+        eprintln!("[stream] cached {video_id} ({part_size} bytes)");
+        true
+    } else {
+        if success {
+            eprintln!(
+                "[stream] download too small for {video_id}: {part_size} bytes (min {MIN_AUDIO_BYTES})"
+            );
+        } else {
+            eprintln!("[stream] download failed {video_id}");
+        }
+        let _ = tokio::fs::remove_file(part_path).await;
+        false
+    }
+}
+
+/// Spawn a downloader that writes into a `<videoId>.part` file on disk.
+/// On success, renames .part → .webm. Updates `state.complete` + pings
+/// `notify` on every new chunk so progressive HTTP can start early.
+///
+/// Fast path: ANDROID_VR player API + direct googlevideo download (~1s to
+/// first playable bytes). Fallback: yt-dlp (handles bot-check / ciphered
+/// URLs; expensive when the managed PyInstaller binary is used).
 ///
 /// `target_dir` selects which on-disk pool to write to (persistent or
 /// ephemeral). `map_key` is the prefixed key in `srv.downloads` so a
@@ -2360,136 +2555,136 @@ fn spawn_downloader(
 ) {
     let downloads = srv.downloads.clone();
     tokio::spawn(async move {
-        let url = format!("https://www.youtube.com/watch?v={video_id}");
         let part_path = target_dir.join(format!("{video_id}.part"));
         let final_path = target_dir.join(format!("{video_id}.webm"));
         let _ = tokio::fs::create_dir_all(&target_dir).await;
         let _ = tokio::fs::remove_file(&part_path).await; // clean stale
 
-        let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
-        cmd.args([
-            "-f",
-            "bestaudio[ext=webm]/bestaudio",
-            "--no-playlist",
-            "--no-warnings",
-            "--no-part",
-            "-q",
-            // YouTube regularly hands out a signed media URL that then 403s
-            // on the very first byte-range request (token/pot desync or
-            // per-URL throttling). Left alone this surfaces as a one-off
-            // "download failed" that a manual re-click fixes. Retrying the
-            // data download and the extractor a few times clears the vast
-            // majority of these inside a single spawn, before the handler
-            // ever returns 502 to the audio element.
-            "--retries",
-            "5",
-            "--extractor-retries",
-            "3",
-            "--socket-timeout",
-            "15",
-            "--extractor-args",
-            "youtube:player_client=tv,android_vr",
-            "-o",
-            "-",
-        ]);
-        cmd.arg(&url);
-        // Windows: suppress the console window for the child yt-dlp.exe
-        // (see resolve_stream_ytdlp for rationale).
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let mut child = match cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[stream] spawn {video_id}: {e}");
-                state.complete.store(true, Ordering::Release);
-                state.notify.notify_waiters();
-                downloads.lock().await.remove(&map_key);
-                return;
-            }
-        };
+        let t0 = std::time::Instant::now();
+        let mut success = false;
 
-        let mut stdout = child.stdout.take().unwrap();
-        let mut file = tokio::fs::File::create(&part_path).await.ok();
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut ok = true;
-        // Per-read timeout so a wedged yt-dlp (stalled TCP / hung extractor)
-        // can't keep this task and the child process alive forever with
-        // `complete` stuck false — otherwise every later request for the id
-        // attaches to the dead entry and blocks 120s then 504.
-        const READ_TIMEOUT: Duration = Duration::from_secs(60);
-        loop {
-            match tokio::time::timeout(READ_TIMEOUT, stdout.read(&mut buf)).await {
-                Err(_) => {
-                    eprintln!("[stream] read timeout for {video_id}; killing yt-dlp");
-                    let _ = child.start_kill();
-                    ok = false;
-                    break;
+        // --- Fast path: no subprocess ---
+        match resolve_android_vr_audio(&video_id).await {
+            Ok(resolved) => {
+                eprintln!(
+                    "[stream] {video_id}: native resolve ok in {:.2}s (webm={})",
+                    t0.elapsed().as_secs_f32(),
+                    resolved.is_webm
+                );
+                match download_url_to_part(&resolved.url, &part_path, &state).await {
+                    Ok(n) => {
+                        eprintln!(
+                            "[stream] {video_id}: native download {n} bytes in {:.2}s",
+                            t0.elapsed().as_secs_f32()
+                        );
+                        success = finalize_part(&video_id, &part_path, &final_path, true).await;
+                    }
+                    Err(e) => {
+                        eprintln!("[stream] {video_id}: native download failed: {e}");
+                        let _ = tokio::fs::remove_file(&part_path).await;
+                    }
                 }
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => {
-                    let chunk = &buf[..n];
-                    if let Some(ref mut f) = file {
-                        if let Err(e) = f.write_all(chunk).await {
-                            eprintln!("[stream] write .part: {e}");
-                            file = None;
-                            // A truncated prefix must NOT be renamed to .webm
-                            // and cached — mark the whole download failed.
-                            ok = false;
+            }
+            Err(e) => {
+                eprintln!(
+                    "[stream] {video_id}: native resolve failed ({e}); falling back to yt-dlp"
+                );
+            }
+        }
+
+        // --- Fallback: yt-dlp ---
+        if !success {
+            let url = format!("https://www.youtube.com/watch?v={video_id}");
+            let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
+            cmd.args([
+                "-f",
+                // Prefer webm/opus so progressive first-byte play works (m4a
+                // often has moov at the end and cannot decode until complete).
+                "bestaudio[ext=webm]/bestaudio",
+                "--no-playlist",
+                "--no-warnings",
+                "--no-part",
+                "-q",
+                // YouTube regularly hands out a signed media URL that then 403s
+                // on the very first byte-range request (token/pot desync or
+                // per-URL throttling). Retrying inside a single spawn clears
+                // most of these before we return 502 to the audio element.
+                "--retries",
+                "3",
+                "--extractor-retries",
+                "2",
+                "--socket-timeout",
+                "15",
+                "--extractor-args",
+                "youtube:player_client=android_vr",
+                "-o",
+                "-",
+            ]);
+            cmd.arg(&url);
+            // Windows: suppress the console window for the child yt-dlp.exe
+            // (see resolve_stream_ytdlp for rationale).
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            match cmd
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    let mut stdout = child.stdout.take().unwrap();
+                    let mut file = tokio::fs::File::create(&part_path).await.ok();
+                    let mut buf = vec![0u8; 64 * 1024];
+                    let mut ok = true;
+                    // Per-read timeout so a wedged yt-dlp can't pin this
+                    // task forever with `complete` stuck false.
+                    const READ_TIMEOUT: Duration = Duration::from_secs(60);
+                    loop {
+                        match tokio::time::timeout(READ_TIMEOUT, stdout.read(&mut buf)).await {
+                            Err(_) => {
+                                eprintln!(
+                                    "[stream] read timeout for {video_id}; killing yt-dlp"
+                                );
+                                let _ = child.start_kill();
+                                ok = false;
+                                break;
+                            }
+                            Ok(Ok(0)) => break,
+                            Ok(Ok(n)) => {
+                                let chunk = &buf[..n];
+                                if let Some(ref mut f) = file {
+                                    if let Err(e) = f.write_all(chunk).await {
+                                        eprintln!("[stream] write .part: {e}");
+                                        file = None;
+                                        ok = false;
+                                    }
+                                }
+                                state.notify.notify_waiters();
+                            }
+                            Ok(Err(e)) => {
+                                eprintln!("[stream] read stdout: {e}");
+                                ok = false;
+                                break;
+                            }
                         }
                     }
-                    state.notify.notify_waiters();
+                    if let Some(mut f) = file.take() {
+                        let _ = f.flush().await;
+                        drop(f);
+                    }
+                    let status = child.wait().await;
+                    let ytdlp_ok = ok && status.map(|s| s.success()).unwrap_or(false);
+                    success =
+                        finalize_part(&video_id, &part_path, &final_path, ytdlp_ok).await;
                 }
-                Ok(Err(e)) => {
-                    eprintln!("[stream] read stdout: {e}");
-                    ok = false;
-                    break;
+                Err(e) => {
+                    eprintln!("[stream] spawn {video_id}: {e}");
                 }
             }
-        }
-        if let Some(mut f) = file.take() {
-            let _ = f.flush().await;
-            drop(f);
-        }
-        let status = child.wait().await;
-        let success = ok && status.map(|s| s.success()).unwrap_or(false);
-
-        // Finish all file operations BEFORE signalling completion.
-        // Otherwise handlers waiting on `state.complete` can race and
-        // observe `final_path.exists() == false` in the tiny window
-        // between yt-dlp exit and our rename, returning 502 even
-        // though the download succeeded.
-        // 32 KB floor: yt-dlp can exit 0 with a near-empty payload when
-        // YouTube serves a storyboard-only response (rate-limit, geo-block,
-        // SABR fallout). Renaming such a stub to .webm would pin a
-        // permanently-broken cache entry that fails MEDIA_ERR_DECODE on
-        // every replay — drop it instead so the next request retries.
-        const MIN_AUDIO_BYTES: u64 = 32 * 1024;
-        let part_size = tokio::fs::metadata(&part_path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if success && part_size >= MIN_AUDIO_BYTES {
-            if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
-                eprintln!("[stream] rename: {e}");
-                let _ = tokio::fs::remove_file(&part_path).await;
-            } else {
-                eprintln!("[stream] cached {video_id} ({part_size} bytes)");
-            }
-        } else {
-            if success {
-                eprintln!(
-                    "[stream] download too small for {video_id}: {part_size} bytes (min {MIN_AUDIO_BYTES})"
-                );
-            } else {
-                eprintln!("[stream] download failed {video_id}");
-            }
-            let _ = tokio::fs::remove_file(&part_path).await;
         }
 
+        // Finish all file ops BEFORE signalling completion so handlers
+        // waiting on `state.complete` never observe a missing .webm in
+        // the rename window.
         state.complete.store(true, Ordering::Release);
         state.notify.notify_waiters();
 
@@ -2503,8 +2698,8 @@ fn spawn_downloader(
                 downloads_evict.lock().await.remove(&key);
             });
         } else {
-            // Failed: drop the entry immediately so the next play retries
-            // instead of getting an instant 502 for the whole 60s window.
+            // Failed: drop immediately so the next play retries instead
+            // of getting an instant 502 for the whole 60s window.
             downloads.lock().await.remove(&map_key);
         }
     });
@@ -2530,8 +2725,77 @@ async fn sniff_audio_mime(path: &std::path::Path) -> &'static str {
     }
 }
 
+/// EBML / WebM magic — progressive decode works as soon as the first
+/// cluster lands. m4a/mp4 with moov-at-end does NOT (see stream_handler).
+async fn is_webm_file(path: &std::path::Path) -> bool {
+    let mut buf = [0u8; 4];
+    let Ok(mut f) = tokio::fs::File::open(path).await else {
+        return false;
+    };
+    matches!(f.read(&mut buf).await, Ok(n) if n >= 4 && buf == [0x1A, 0x45, 0xDF, 0xA3])
+}
+
+/// Stream bytes from a growing `.part` (or the finalized `.webm`) while
+/// yt-dlp is still writing. Used to start HTMLAudioElement playback as
+/// soon as the first ~128 KB of a WebM has landed instead of waiting for
+/// the full download.
+fn progressive_part_body(
+    part_path: PathBuf,
+    final_path: PathBuf,
+    state: Arc<DownloadState>,
+) -> Body {
+    let stream = unfold(0u64, move |offset| {
+        let part_path = part_path.clone();
+        let final_path = final_path.clone();
+        let state = state.clone();
+        async move {
+            loop {
+                let path = if final_path.exists() {
+                    final_path.clone()
+                } else {
+                    part_path.clone()
+                };
+                let mut file = match tokio::fs::File::open(&path).await {
+                    Ok(f) => f,
+                    Err(_) => {
+                        if state.complete.load(Ordering::Acquire) {
+                            return None;
+                        }
+                        let notified = state.notify.notified();
+                        tokio::pin!(notified);
+                        let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
+                        continue;
+                    }
+                };
+                if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+                    return None;
+                }
+                let mut buf = vec![0u8; 64 * 1024];
+                match file.read(&mut buf).await {
+                    Ok(0) => {
+                        if state.complete.load(Ordering::Acquire) {
+                            return None;
+                        }
+                        let notified = state.notify.notified();
+                        tokio::pin!(notified);
+                        let _ = tokio::time::timeout(Duration::from_secs(30), notified).await;
+                    }
+                    Ok(n) => {
+                        let next = offset + n as u64;
+                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                        return Some((Ok::<Bytes, std::io::Error>(chunk), next));
+                    }
+                    Err(e) => return Some((Err(e), offset)),
+                }
+            }
+        }
+    });
+    Body::from_stream(stream)
+}
+
 /// GET /stream/:video_id — unified serving path supporting Range
-/// requests even during an active download.
+/// requests for completed files, and progressive first-byte play for
+/// in-progress WebM downloads.
 async fn stream_handler(
     AxumState(srv): AxumState<StreamServer>,
     Path(video_id): Path<String>,
@@ -2553,26 +2817,24 @@ async fn stream_handler(
         format!("p:{video_id}")
     };
     let final_path = target_dir.join(format!("{video_id}.webm"));
+    let part_path = target_dir.join(format!("{video_id}.part"));
 
-    // If the full file isn't on disk yet, start (or attach to) the
-    // download and block until it completes. Attempting to progressively
-    // stream yt-dlp's stdout broke in two ways:
-    //   - m4a/mp4 audio tracks often have the `moov` atom at the end of
-    //     the file, so Chromium can't decode them until every byte has
-    //     arrived. The first request then fails with
-    //     MEDIA_ERR_SRC_NOT_SUPPORTED.
-    //   - There's no valid HTTP response for a stream whose total length
-    //     is unknown AND whose Range subset has an unknown end
-    //     (`Content-Range: bytes 0-*/*` is grammatically invalid per
-    //     RFC 7233). Serving with `Accept-Ranges: none` works but then
-    //     Chromium disables seeking entirely.
+    // Cold-play strategy:
+    //   1. Start download (native player API first, yt-dlp fallback).
+    //   2. If the partial file is WebM and has ≥ START_BYTES, begin
+    //      progressive HTTP streaming immediately — don't wait for the
+    //      full file. Native resolve+first-bytes is typically <1s;
+    //      managed yt-dlp alone used to burn ~12s just starting.
+    //   3. m4a/mp4 still waits for the complete file (moov often at end →
+    //      MEDIA_ERR_SRC_NOT_SUPPORTED if streamed early).
+    //   4. Mid-file Range seeks wait for the complete file. Range probes
+    //      that start at byte 0 (WebKit's common first request) are
+    //      treated as progressive so we don't silently fall back to
+    //      full-download wait on every play.
     //
-    // Full download + `ServeFile` sidesteps both problems: Range
-    // requests, seeking, content-type detection, and large file support
-    // all become the crate's problem. The "first-play" latency is just
-    // the download time (~1-3 s on a healthy connection for a typical
-    // 3-minute track) and the existing next-track prefetcher hides it
-    // from the user on every track except the very first one.
+    // Only the currently playing track is buffered this way — no
+    // next-track prefetch.
+    const START_BYTES: u64 = 32 * 1024;
     let t0 = std::time::Instant::now();
 
     let range_hdr = req
@@ -2581,6 +2843,15 @@ async fn stream_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
+    // Allow progressive when there is no Range, or the Range starts at 0.
+    let progressive_range_ok = range_hdr.is_empty()
+        || range_hdr
+            .strip_prefix("bytes=")
+            .map(|spec| {
+                let start = spec.split('-').next().unwrap_or("");
+                start.is_empty() || start == "0"
+            })
+            .unwrap_or(false);
     eprintln!(
         "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral}",
         final_path.exists()
@@ -2610,18 +2881,59 @@ async fn stream_handler(
         };
 
         // Bounded wait — 120 s is generous for any single track; if
-        // yt-dlp is wedged past that, we'd rather fail fast than hang
+        // the downloader is wedged past that, fail fast rather than hang
         // the audio element forever.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        let mut progressive_ok = false;
         while !state.complete.load(Ordering::Acquire) {
             if tokio::time::Instant::now() >= deadline {
                 eprintln!("[stream] {video_id}: TIMEOUT after 120s");
                 return (StatusCode::GATEWAY_TIMEOUT, "download timeout")
                     .into_response();
             }
+            if progressive_range_ok {
+                if let Ok(meta) = tokio::fs::metadata(&part_path).await {
+                    if meta.len() >= START_BYTES && is_webm_file(&part_path).await {
+                        progressive_ok = true;
+                        break;
+                    }
+                }
+            }
+            if final_path.exists() {
+                break;
+            }
             let notified = state.notify.notified();
             tokio::pin!(notified);
             let _ = tokio::time::timeout(Duration::from_secs(5), notified).await;
+        }
+
+        if progressive_ok && !final_path.exists() {
+            eprintln!(
+                "[stream] {video_id}: progressive start after {:.2}s (≥{START_BYTES} webm bytes)",
+                t0.elapsed().as_secs_f32()
+            );
+            let mut resp = Response::new(progressive_part_body(
+                part_path,
+                final_path.clone(),
+                state,
+            ));
+            // Always 200 + full progressive body for incomplete files.
+            // Returning 206 without a real Content-Range confuses WebKit;
+            // a 200 for a bytes=0- probe is accepted and starts playback.
+            *resp.status_mut() = StatusCode::OK;
+            resp.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("audio/webm"),
+            );
+            resp.headers_mut().insert(
+                axum::http::header::ACCEPT_RANGES,
+                axum::http::HeaderValue::from_static("none"),
+            );
+            resp.headers_mut().insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            );
+            return resp;
         }
 
         if !final_path.exists() {
@@ -2713,53 +3025,6 @@ async fn cover_serve_handler(
     resp
 }
 
-/// GET /prefetch/:video_id — fire-and-forget cache warmer. Honours the
-/// same `?ephemeral=1` flag as /stream so non-Premium prefetches (if
-/// the frontend ever lets one through) land in the session-only pool
-/// rather than the persistent cache.
-async fn prefetch_handler(
-    AxumState(srv): AxumState<StreamServer>,
-    Path(video_id): Path<String>,
-    req: Request,
-) -> StatusCode {
-    if !sanitize_video_id(&video_id) {
-        return StatusCode::BAD_REQUEST;
-    }
-    let ephemeral = is_ephemeral(&req);
-    let target_dir = if ephemeral {
-        srv.ephemeral_dir.clone()
-    } else {
-        srv.cache_dir.clone()
-    };
-    let map_key = if ephemeral {
-        format!("e:{video_id}")
-    } else {
-        format!("p:{video_id}")
-    };
-    let final_path = target_dir.join(format!("{video_id}.webm"));
-    if final_path.exists() {
-        return StatusCode::OK;
-    }
-    let state = {
-        // Single lock hold for check-then-insert so a concurrent /stream
-        // (whose check+insert is already atomic) or a second /prefetch can't
-        // slip in between and spawn a second downloader writing the same
-        // .part file, corrupting the cached track.
-        let mut map = srv.downloads.lock().await;
-        if map.contains_key(&map_key) {
-            return StatusCode::ACCEPTED;
-        }
-        let state = Arc::new(DownloadState {
-            complete: Arc::new(AtomicBool::new(false)),
-            notify: Arc::new(Notify::new()),
-        });
-        map.insert(map_key.clone(), state.clone());
-        state
-    };
-    spawn_downloader(video_id, target_dir, map_key, srv.clone(), state);
-    StatusCode::ACCEPTED
-}
-
 /// Generate an unguessable per-launch token used as a URL path prefix on
 /// the local stream server. Uses OS-seeded RandomState (SipHash keys)
 /// instead of pulling in an RNG crate — 128 bits is ample for a localhost
@@ -2830,7 +3095,6 @@ async fn start_stream_server(
 
     let routes = Router::new()
         .route("/stream/:video_id", get(stream_handler))
-        .route("/prefetch/:video_id", get(prefetch_handler))
         .route("/cover/:filename", get(cover_serve_handler))
         .with_state(server);
     let app = Router::new()
