@@ -5,7 +5,7 @@
 <h1 align="center">YTubic</h1>
 
 <p align="center">
-  A fast, responsive YouTube Music desktop client for Windows.
+  A fast, responsive YouTube Music desktop client for Windows and Linux.
 </p>
 
 <p align="center">
@@ -43,7 +43,7 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 
 Download the latest installer from the [Releases](../../releases) page and run it.
 
-- **Windows 10/11 only** for now.
+- **Windows 10/11 and Linux** support.
 - On first launch the app downloads its own copy of yt-dlp (~12 MB) into its
   data folder and keeps it updated automatically.
 - Signing in is optional: browse and playback work anonymously; sign in to get
