@@ -100,6 +100,40 @@ export function repeatLabel(repeat: RepeatMode): string {
       : "Repeat off";
 }
 
+/** Human label for the stream resolver that fed the current track. */
+export function formatStreamMethodLabel(
+  method: string,
+  detail?: string,
+): string {
+  if (method === "…" || method === "pending") return "resolving…";
+  const base = (() => {
+    switch (method) {
+      case "cache":
+        return "cache";
+      case "web_remix":
+        return "WEB_REMIX";
+      case "android_vr":
+        return "ANDROID_VR";
+      case "ytdlp":
+        return "yt-dlp";
+      case "failed":
+        return "failed";
+      default:
+        return method;
+    }
+  })();
+  if (!detail) return base;
+  if (detail.startsWith("streaming")) return `${base} · live`;
+  if (detail.startsWith("ok")) return base;
+  if (
+    detail === "spawning" ||
+    detail === "resolving" ||
+    detail.startsWith("download")
+  )
+    return `${base} · …`;
+  return base;
+}
+
 /**
  * Segmented song/video toggle. Displayed as two tightly grouped icons —
  * the active one filled, the other ghosted — matching the layout

@@ -42,12 +42,15 @@ tauri-plugin-http = { version = "2", default-features = false, features = [
 ] }
 tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 urlencoding = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "process", "sync", "net"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 tower = "0.5"
+# Progressive stream body while yt-dlp is still writing the .part file.
+bytes = "1"
+futures-util = "0.3"
 cookie = "0.18"
 time = "0.3"
 tauri-plugin-updater = "2.10.1"

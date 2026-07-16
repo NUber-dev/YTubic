@@ -45,7 +45,7 @@ export function useAccounts() {
 /**
  * Mount once at the app root. Wires the Rust `accounts-changed`
  * event into a full context reset: stops the player, clears the
- * per-account Zustand stores, drops the prefetch memo, wipes the
+ * per-account Zustand stores, drops the meta-label memo, wipes the
  * TanStack Query cache, and resets the InnerTube client so the next
  * outbound request uses the freshly-active jar.
  *

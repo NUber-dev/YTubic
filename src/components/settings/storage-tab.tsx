@@ -442,8 +442,8 @@ function CacheGroup({ loggedIn }: { loggedIn: boolean }) {
         videoIds: ids,
       });
       await qc.invalidateQueries({ queryKey: ["cache-list"] });
-      // Drop the in-memory prefetch log: anything we'd previously marked as
-      // "warm" might now be gone from disk and should be re-prefetchable.
+      // Drop the in-memory meta-label log so sidecars can be rewritten
+      // after the on-disk cache is wiped.
       clearPrefetchMemo();
       toast.success(`${label} — freed ${formatBytes(freed)}`);
     } catch (e) {

@@ -16,8 +16,7 @@ type State = {
 /**
  * Premium-status state shared across React and non-React code. The
  * `audio-engine` + `stream.ts` modules consult this synchronously via
- * `usePremiumStore.getState()` to decide whether playback is allowed
- * and whether to fire prefetches.
+ * `usePremiumStore.getState()` to decide whether playback is allowed.
  *
  * The actual fetching/refresh is owned by the `usePremiumStatusSync`
  * hook mounted in AppShell. Keeping the store dumb means anyone with a

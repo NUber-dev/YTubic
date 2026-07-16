@@ -14,11 +14,17 @@
       "allow": [
         { "url": "https://music.youtube.com/*" },
         { "url": "https://www.youtube.com/*" },
+        { "url": "https://youtube.com/*" },
+        { "url": "https://*.youtube.com/*" },
         { "url": "https://www.google.com/*" },
+        { "url": "https://*.googleapis.com/*" },
+        { "url": "https://*.googlevideo.com/*" },
         { "url": "https://i.ytimg.com/*" },
         { "url": "https://yt3.ggpht.com/*" },
+        { "url": "https://*.ggpht.com/*" },
         { "url": "https://yt3.googleusercontent.com/*" },
         { "url": "https://lh3.googleusercontent.com/*" },
+        { "url": "https://*.googleusercontent.com/*" },
         { "url": "https://itunes.apple.com/*" },
         { "url": "https://apic-desktop.musixmatch.com/*" },
         { "url": "https://genius.com/*" }

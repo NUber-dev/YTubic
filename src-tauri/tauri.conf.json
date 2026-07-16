@@ -26,7 +26,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://localhost:* ipc: http://ipc.localhost; img-src 'self' data: blob: http://127.0.0.1:* https://*.ytimg.com https://*.ggpht.com https://*.googleusercontent.com https://music.youtube.com https://www.gstatic.com https://*.mzstatic.com; media-src 'self' blob: http://127.0.0.1:*; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://localhost:* ipc: http://ipc.localhost; img-src 'self' data: blob: http://127.0.0.1:* https://*.ytimg.com https://*.ggpht.com https://*.googleusercontent.com https://music.youtube.com https://www.gstatic.com https://*.mzstatic.com; media-src 'self' blob: http://127.0.0.1:*; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
     }
   },
   "bundle": {

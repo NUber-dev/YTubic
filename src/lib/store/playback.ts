@@ -19,6 +19,25 @@ export type RepeatMode = "off" | "all" | "one";
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
+/**
+ * Which backend filled the current track's audio.
+ * Set by AudioEngine from the Rust `stream-method` event.
+ * `cache` = already on disk; others match the resolver chain.
+ */
+export type StreamMethod =
+  | "cache"
+  | "web_remix"
+  | "android_vr"
+  | "ytdlp"
+  | "failed"
+  | string;
+
+export type StreamMethodInfo = {
+  method: StreamMethod;
+  detail?: string;
+  elapsedMs?: number;
+};
+
 export type PlaybackState = {
   // Queue
   queue: QueueTrack[];
@@ -31,6 +50,8 @@ export type PlaybackState = {
   error?: string;
   /** Resolved stream URL for the current track (set by AudioEngine). */
   streamUrl?: string;
+  /** How this track's bytes were obtained (cache / WEB_REMIX / …). */
+  streamMethod?: StreamMethodInfo;
 
   // Transport
   playing: boolean;
@@ -69,6 +90,7 @@ export type PlaybackState = {
   // Actions — status (used by AudioEngine)
   setStatus: (status: LoadStatus, error?: string) => void;
   setStreamUrl: (url?: string) => void;
+  setStreamMethod: (info?: StreamMethodInfo) => void;
   setPosition: (position: number) => void;
   setDuration: (duration: number) => void;
   seek: (seconds: number) => void;
@@ -114,6 +136,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   status: "idle",
   error: undefined,
   streamUrl: undefined,
+  streamMethod: undefined,
 
   playing: false,
   volume: 0.8,
@@ -137,6 +160,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
       index: 0,
       status: "loading",
       streamUrl: undefined,
+      streamMethod: undefined,
       position: 0,
       duration: mapped.duration ?? 0,
       playing: true,
@@ -158,6 +182,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
       index: i,
       status: "loading",
       streamUrl: undefined,
+      streamMethod: undefined,
       position: 0,
       duration: queue[i].duration ?? 0,
       playing: true,
@@ -223,6 +248,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
             playing: false,
             status: "idle",
             streamUrl: undefined,
+      streamMethod: undefined,
             position: 0,
             duration: 0,
           };
@@ -234,6 +260,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
           index: newIndex,
           status: "loading",
           streamUrl: undefined,
+      streamMethod: undefined,
           position: 0,
           duration: next[newIndex].duration ?? 0,
         };
@@ -271,6 +298,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
       index: -1,
       status: "idle",
       streamUrl: undefined,
+      streamMethod: undefined,
       playing: false,
       position: 0,
       duration: 0,
@@ -318,6 +346,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
       index: nextIndex,
       status: "loading",
       streamUrl: undefined,
+      streamMethod: undefined,
       position: 0,
       duration: track.duration ?? 0,
       playing: true,
@@ -341,6 +370,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
       index: prevIndex,
       status: "loading",
       streamUrl: undefined,
+      streamMethod: undefined,
       position: 0,
       duration: track.duration ?? 0,
       playing: true,
@@ -356,6 +386,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
       index: i,
       status: "loading",
       streamUrl: undefined,
+      streamMethod: undefined,
       position: 0,
       duration: track.duration ?? 0,
       playing: true,
@@ -365,6 +396,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
 
   setStatus: (status, error) => set({ status, error }),
   setStreamUrl: (streamUrl) => set({ streamUrl }),
+  setStreamMethod: (streamMethod) => set({ streamMethod }),
   setPosition: (position) => set({ position }),
   setDuration: (duration) => set({ duration }),
   seek: (seconds) =>
@@ -423,6 +455,7 @@ export const usePlaybackStore = isFloatingPlayerWindow()
           state.duration = state.queue[state.index]?.duration ?? 0;
           state.status = "idle";
           state.streamUrl = undefined;
+          state.streamMethod = undefined;
           state.pendingSeek = undefined;
           state.error = undefined;
         },
