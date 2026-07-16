@@ -975,13 +975,23 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// The live "session-keeper" WebView for `id`: a hidden window on
+/// Tear down any session-keeper WebView(s). Call after a refresh cycle so
+/// the heavy Music SPA WebContent process does not sit in RAM for the full
+/// 20 min between renewals — only during the short capture window.
+fn close_session_keepers(app: &tauri::AppHandle) {
+    for (label, w) in app.webview_windows() {
+        if label.starts_with("keeper-") {
+            let _ = w.destroy();
+        }
+    }
+}
+
+/// Ephemeral "session-keeper" WebView for `id`: a hidden window on
 /// music.youtube.com that reuses the account's persisted profile. As a
-/// real browser engine it stays authenticated from the stored session and
-/// keeps the server-side session (and its rotating cookies) warm, which
-/// plain HTTP replay cannot do. Built ONCE and reused; any keeper left
-/// over from a previously-active account is closed first, so at most one
-/// runs at a time. Returns (window, just_created).
+/// real browser engine it can mint / rotate the cookies that plain HTTP
+/// replay cannot. Created on demand for each refresh, then destroyed so
+/// the Music WebContent process is not resident between cycles. At most
+/// one keeper runs at a time. Returns (window, just_created).
 async fn ensure_session_keeper(
     app: &tauri::AppHandle,
     id: &str,
@@ -994,7 +1004,7 @@ async fn ensure_session_keeper(
     // at most one keeper (the active account's) ever runs.
     for (l, w) in app.webview_windows() {
         if l.starts_with("keeper-") && l != label {
-            let _ = w.close();
+            let _ = w.destroy();
         }
     }
     if let Some(win) = app.get_webview_window(&label) {
@@ -1003,13 +1013,10 @@ async fn ensure_session_keeper(
     let url = "https://music.youtube.com/"
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
-    // Hidden, undecorated, focus-less, off-screen, no taskbar entry. Built
-    // once and reused (not re-created every cycle), so there is no recurring
-    // window creation to flash on screen; the window-state plugin is told to
-    // never restore keeper windows (see `with_filter` in `run`), so a saved
-    // "visible" state can't drag it back on-screen next launch either. The
-    // webview still loads and keeps the session alive regardless of
-    // visibility or position.
+    // Hidden, undecorated, focus-less, off-screen, no taskbar entry. Lives
+    // only for the duration of one refresh cycle (see
+    // `refresh_account_cookies`). The window-state plugin never restores
+    // keeper windows (see `with_filter` in `run`).
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title("YTubic session keeper")
         .visible(false)
@@ -1030,23 +1037,34 @@ async fn ensure_session_keeper(
     Ok((win, true))
 }
 
-/// Refresh the replayed cookie snapshot for `id` from its live session-
-/// keeper WebView. Reloads the keeper to force fresh authenticated
-/// requests (which renews the session and rotates its short-lived
-/// cookies), reads the full cookie set, and overwrites `cookies.enc`. The
-/// keeper window is left OPEN for next time.
+/// Refresh the replayed cookie snapshot for `id` from a short-lived
+/// session-keeper WebView. Spins up the keeper, reloads to force fresh
+/// authenticated traffic (which renews the session and rotates short-lived
+/// cookies), snapshots the cookie set into `cookies.enc`, then **destroys**
+/// the keeper so Music's SPA is not held in RAM between cycles (~20 min).
 ///
-/// This is what survives Google's ~2h leash on *extracted* cookies: the
-/// bound browser session behind the keeper stays live, so the snapshot we
-/// replay never goes stale. Errors (leaving the existing snapshot
-/// untouched) when the account has no persisted profile or its session is
-/// logged out, so we never clobber a usable jar with an empty one.
+/// This is what survives Google's ~2h leash on *extracted* cookies: each
+/// refresh re-binds a real browser session long enough to mint a fresh jar.
+/// Errors leave the existing snapshot untouched when the account has no
+/// persisted profile or its session is logged out.
 async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     // Serialize refreshes so the periodic timer and a manual trigger can't
     // reload the keeper / rewrite the jar on top of each other.
     let guard = app.state::<RefreshGuard>();
     let _lock = guard.inner().0.lock().await;
 
+    // Always tear the keeper down when this function returns — success,
+    // error, or early exit — so a failed refresh cannot leave a 300MB+
+    // Music WebContent process around until the next cycle.
+    let result = refresh_account_cookies_inner(app, id).await;
+    close_session_keepers(app);
+    result
+}
+
+async fn refresh_account_cookies_inner(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<(), String> {
     let (win, created) = ensure_session_keeper(app, id).await?;
     // A reused keeper is reloaded to force fresh authenticated traffic; a
     // just-created one is already loading the URL from the builder.
@@ -1057,8 +1075,7 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     }
 
     // Poll the keeper's cookie store until the full authed set is present
-    // (LOGIN_INFO lands last, as at login), then snapshot it. The keeper
-    // window stays open for the next cycle.
+    // (LOGIN_INFO lands last, as at login), then snapshot it.
     let mut captured: Option<Vec<u8>> = None;
     for tick in 0..12u8 {
         tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -3106,12 +3123,11 @@ pub fn run() {
                     .await;
             });
             // Keep the active account's replayed cookie snapshot fresh.
-            // Google leashes *extracted* cookies to ~2h; reloading the
-            // hidden session-keeper every 20 min renews the bound session
-            // well inside that window, so the library never silently
-            // empties mid-session.
-            // Accounts with no persisted profile (added before this
-            // feature) are skipped until the user signs in again.
+            // Google leashes *extracted* cookies to ~2h; every 20 min we
+            // spin up the hidden session-keeper just long enough to renew
+            // cookies, then tear it down (avoids a permanent Music SPA
+            // WebContent process). Accounts with no persisted profile
+            // (added before this feature) are skipped until re-sign-in.
             let refresh_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Let migrations + the stream server settle, and give a
