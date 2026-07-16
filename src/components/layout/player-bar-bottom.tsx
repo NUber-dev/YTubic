@@ -56,18 +56,25 @@ import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
  * both use `flex-1`.
  */
 export function PlayerBarBottom() {
-  const { playing, status, error, position, duration, shuffle, repeat } =
-    usePlaybackStore(
-      useShallow((s) => ({
-        playing: s.playing,
-        status: s.status,
-        error: s.error,
-        position: s.position,
-        duration: s.duration,
-        shuffle: s.shuffle,
-        repeat: s.repeat,
-      })),
-    );
+  const {
+    playing,
+    status,
+    error,
+    position,
+    duration,
+    shuffle,
+    repeat,
+  } = usePlaybackStore(
+    useShallow((s) => ({
+      playing: s.playing,
+      status: s.status,
+      error: s.error,
+      position: s.position,
+      duration: s.duration,
+      shuffle: s.shuffle,
+      repeat: s.repeat,
+    })),
+  );
   const track = usePlaybackStore(currentTrack);
   const toggle = usePlaybackStore((s) => s.toggle);
   const next = usePlaybackStore((s) => s.next);

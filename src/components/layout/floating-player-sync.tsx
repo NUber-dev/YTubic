@@ -37,6 +37,7 @@ type TransportSnapshot = Pick<
   | "status"
   | "error"
   | "streamUrl"
+  | "streamMethod"
   | "playing"
   | "volume"
   | "muted"
@@ -57,6 +58,7 @@ function buildTransportSnapshot(s: PlaybackState): TransportSnapshot {
     status: s.status,
     error: s.error,
     streamUrl: s.streamUrl,
+    streamMethod: s.streamMethod,
     playing: s.playing,
     volume: s.volume,
     muted: s.muted,
@@ -90,6 +92,7 @@ function transportChanged(prev: PlaybackState, curr: PlaybackState): boolean {
     prev.status !== curr.status ||
     prev.error !== curr.error ||
     prev.streamUrl !== curr.streamUrl ||
+    prev.streamMethod !== curr.streamMethod ||
     prev.playing !== curr.playing ||
     prev.volume !== curr.volume ||
     prev.muted !== curr.muted ||

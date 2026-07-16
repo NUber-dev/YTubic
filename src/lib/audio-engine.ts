@@ -4,7 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { fetchRadio } from "@/lib/innertube/radio";
 import { saveTrackMeta, streamUrlFor } from "@/lib/stream";
-import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
+import {
+  usePlaybackStore,
+  type QueueTrack,
+  type StreamMethodInfo,
+} from "@/lib/store/playback";
 import { usePremiumStore } from "@/lib/store/premium";
 import { useSettingsStore } from "@/lib/store/settings";
 import { openPremiumGate } from "@/lib/store/premium-gate";
@@ -13,6 +17,52 @@ import {
   useTrackSourceStore,
 } from "@/lib/store/track-source";
 import { pickThumbnail } from "@/components/shared/thumbnail";
+
+/**
+ * Sticky per-stream-id method labels. The resolve effect used to clear
+ * `streamMethod` on every re-run; if that races with progressive start
+ * (or cache probes are suppressed after a live fetch), the chip goes
+ * blank exactly when audio begins. This map survives those clears.
+ */
+const stickyStreamMethod = new Map<string, StreamMethodInfo>();
+
+function isDefinitiveMethod(info: StreamMethodInfo | undefined): boolean {
+  if (!info) return false;
+  if (info.method === "failed" || info.method === "cache") return true;
+  const d = info.detail ?? "";
+  return d.startsWith("ok") || d.startsWith("streaming");
+}
+
+function applyStreamMethod(
+  streamId: string | undefined,
+  info: StreamMethodInfo,
+  opts?: { allowCacheClobber?: boolean },
+): void {
+  if (!streamId) return;
+  const prev = stickyStreamMethod.get(streamId);
+  // Never let a Range-request "cache" wipe the resolver that fetched.
+  if (
+    info.method === "cache" &&
+    prev &&
+    prev.method !== "cache" &&
+    !opts?.allowCacheClobber
+  ) {
+    // Keep sticky + store on the previous definitive/live label.
+    usePlaybackStore.getState().setStreamMethod(prev);
+    return;
+  }
+  // Don't regress ok → spawning/downloading for the same play.
+  if (
+    isDefinitiveMethod(prev) &&
+    !isDefinitiveMethod(info) &&
+    info.method !== "failed"
+  ) {
+    usePlaybackStore.getState().setStreamMethod(prev);
+    return;
+  }
+  stickyStreamMethod.set(streamId, info);
+  usePlaybackStore.getState().setStreamMethod(info);
+}
 
 /**
  * AudioEngine binds the playback store to a singleton HTMLAudioElement
@@ -134,6 +184,34 @@ export function useAudioEngine() {
       // fails again (e.g. a mid-stream drop on a much later replay).
       retriedTrackRef.current = null;
       store().setStatus("ready");
+      // Re-pin the method chip when audio actually starts. A resolve-effect
+      // re-run can clear the store right as progressive playback begins,
+      // and subsequent Range probes are intentionally suppressed — without
+      // this the label vanishes the moment sound starts.
+      const s = store();
+      const displayId =
+        s.index >= 0 ? s.queue[s.index]?.videoId : undefined;
+      const streamId = displayId
+        ? resolveStreamId(
+            displayId,
+            useTrackSourceStore.getState().byVideoId,
+          )
+        : undefined;
+      const sticky =
+        (streamId && stickyStreamMethod.get(streamId)) ||
+        (displayId && stickyStreamMethod.get(displayId)) ||
+        undefined;
+      if (sticky && !s.streamMethod) {
+        s.setStreamMethod(sticky);
+      } else if (sticky && s.streamMethod) {
+        // Prefer definitive sticky over a stale "spawning" still on the store.
+        if (
+          isDefinitiveMethod(sticky) &&
+          !isDefinitiveMethod(s.streamMethod)
+        ) {
+          s.setStreamMethod(sticky);
+        }
+      }
     };
     const onWaiting = () => {
       // buffering — keep status as ready; don't flip to loading on every gap.
@@ -218,6 +296,21 @@ export function useAudioEngine() {
 
     const token = ++resolveTokenRef.current;
     usePlaybackStore.getState().setStatus("loading");
+    // Keep a sticky label across re-resolves of the *same* stream id.
+    // Only show a transient "resolving" placeholder when we have nothing
+    // better yet — never wipe a definitive method to undefined (that was
+    // the "label disappears when audio starts" bug).
+    {
+      const sticky = stickyStreamMethod.get(streamVideoId);
+      if (sticky) {
+        usePlaybackStore.getState().setStreamMethod(sticky);
+      } else {
+        usePlaybackStore.getState().setStreamMethod({
+          method: "…",
+          detail: "resolving",
+        });
+      }
+    }
 
     // Persist this track's title/artist beside its cache file so the
     // Storage tab can name it without depending on the library walk.
@@ -347,6 +440,91 @@ export function useAudioEngine() {
   // "Unknown app" because it belongs to the WebView2 child process. Metadata /
   // state is pushed by the media_update effect lower down; buttons come back
   // via the media-control listener. See src-tauri/src/media.rs.
+
+  // Rust reports which resolver actually fed bytes for a videoId
+  // (cache / web_remix). Keep it on the store so
+  // the player UI can show it, and always log so we can diagnose cold
+  // starts without opening DevTools filters.
+  useEffect(() => {
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void listen<{
+      videoId?: string;
+      video_id?: string;
+      method: string;
+      detail?: string;
+      elapsedMs?: number;
+      elapsed_ms?: number;
+    }>("stream-method", (e) => {
+      const p = e.payload;
+      const videoId = p.videoId ?? p.video_id;
+      if (!videoId) return;
+      const method = p.method;
+      const detail = p.detail;
+      const elapsedMs =
+        typeof p.elapsedMs === "number"
+          ? p.elapsedMs
+          : typeof p.elapsed_ms === "number"
+            ? p.elapsed_ms
+            : undefined;
+
+      // Always remember by stream id (even if not the current track —
+      // user may have skipped; we still want the label on re-select).
+      const info: StreamMethodInfo = { method, detail, elapsedMs };
+      const prevSticky = stickyStreamMethod.get(videoId);
+      if (
+        !(
+          info.method === "cache" &&
+          prevSticky &&
+          prevSticky.method !== "cache"
+        ) &&
+        !(
+          isDefinitiveMethod(prevSticky) &&
+          !isDefinitiveMethod(info) &&
+          info.method !== "failed"
+        )
+      ) {
+        // Don't regress ok → streaming for the same method.
+        if (
+          !(
+            prevSticky &&
+            prevSticky.method === method &&
+            typeof prevSticky.detail === "string" &&
+            prevSticky.detail.startsWith("ok") &&
+            typeof detail === "string" &&
+            detail.startsWith("streaming")
+          )
+        ) {
+          stickyStreamMethod.set(videoId, info);
+        }
+      }
+
+      const st = usePlaybackStore.getState();
+      const displayId =
+        st.index >= 0 ? st.queue[st.index]?.videoId : undefined;
+      const sourceMap = useTrackSourceStore.getState().byVideoId;
+      const streamId = displayId
+        ? resolveStreamId(displayId, sourceMap)
+        : undefined;
+      if (videoId !== displayId && videoId !== streamId) return;
+
+      applyStreamMethod(videoId, stickyStreamMethod.get(videoId) ?? info);
+      const shown = stickyStreamMethod.get(videoId) ?? info;
+      const ms =
+        typeof shown.elapsedMs === "number" ? ` ${shown.elapsedMs}ms` : "";
+      const extra = shown.detail ? ` (${shown.detail})` : "";
+      console.info(
+        `[stream] method=${shown.method}${extra}${ms} id=${videoId}`,
+      );
+    }).then((un) => {
+      if (cancelled) un();
+      else dispose = un;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
 
   // Tray menu commands come via a Tauri event. `cancelled` flag
   // protects against StrictMode's mount→unmount→mount race that

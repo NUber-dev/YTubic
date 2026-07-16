@@ -1,16 +1,17 @@
 import { resetAuthCache } from "./shared";
+import { resetStreamResolveSession } from "./stream-resolve";
 
 /**
- * The whole InnerTube data layer is the hand-rolled raw-POST client in
- * `shared.ts`. A youtubei.js singleton used to live here too, but it was
- * dead code — every importer only ever used `resetInnertube` — and pulling
- * it in dragged the entire youtubei.js parser (~270 KB) into the bundle and
- * kept a second, drift-prone cookie cache. It has been removed.
+ * The browse/search/library layer is the hand-rolled raw-POST client in
+ * `shared.ts`. Stream resolve uses a lazily-loaded youtubei.js session
+ * (see `stream-resolve.ts`) for WEB_REMIX /player + URL decipher only —
+ * dynamic import so it never lands in the initial bundle.
  *
- * `resetInnertube` is kept as the stable name callers use after sign-in /
- * sign-out; it just drops the raw client's cached auth cookies so the next
- * request picks up the fresh jar.
+ * `resetInnertube` is the stable name callers use after sign-in /
+ * sign-out: drop the raw client's cached auth cookies and the youtubei
+ * session so the next request picks up the fresh jar.
  */
 export function resetInnertube() {
   resetAuthCache();
+  resetStreamResolveSession();
 }
