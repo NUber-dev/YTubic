@@ -36,6 +36,11 @@ export function useAudioEngine() {
   // track that keeps failing falls through to the normal error/skip path
   // instead of looping. Cleared on a successful `playing`.
   const retriedTrackRef = useRef<string | null>(null);
+  // When > 0, ignore element `play`/`pause` → store sync. Used while we
+  // intentionally pause during track switches (store still wants
+  // `playing: true`) so media-key-driven pauses stay the only ones that
+  // flip the UI.
+  const suppressPlayPauseSyncRef = useRef(0);
   // Bumping this re-runs the resolve effect for the *current* track
   // without any of its real deps changing — used to re-fetch a fresh
   // stream URL after a transient failure (e.g. a googlevideo 403).
@@ -139,12 +144,27 @@ export function useAudioEngine() {
       // buffering — keep status as ready; don't flip to loading on every gap.
     };
 
+    // Keep the play/pause button in sync when the OS / WebKit toggles the
+    // <audio> element directly (macOS media keys / F8 often do this instead
+    // of going through our souvlaki `media-control` path). Intentional
+    // pauses during track resolve are suppressed via the ref above.
+    const onPause = () => {
+      if (suppressPlayPauseSyncRef.current > 0) return;
+      if (store().playing) store().setPlaying(false);
+    };
+    const onPlay = () => {
+      if (suppressPlayPauseSyncRef.current > 0) return;
+      if (!store().playing) store().setPlaying(true);
+    };
+
     el.addEventListener("timeupdate", onTimeUpdate);
     el.addEventListener("durationchange", onDurationChange);
     el.addEventListener("ended", onEnded);
     el.addEventListener("error", onError);
     el.addEventListener("playing", onPlaying);
     el.addEventListener("waiting", onWaiting);
+    el.addEventListener("pause", onPause);
+    el.addEventListener("play", onPlay);
     return () => {
       el.removeEventListener("timeupdate", onTimeUpdate);
       el.removeEventListener("durationchange", onDurationChange);
@@ -152,6 +172,8 @@ export function useAudioEngine() {
       el.removeEventListener("error", onError);
       el.removeEventListener("playing", onPlaying);
       el.removeEventListener("waiting", onWaiting);
+      el.removeEventListener("pause", onPause);
+      el.removeEventListener("play", onPlay);
     };
   }, []);
 
@@ -184,7 +206,17 @@ export function useAudioEngine() {
     // Stop the previous track immediately. Without this the old src keeps
     // playing through the streamUrlFor() round-trip (~50–500 ms), so the
     // user hears the tail of track A bleed into the start of track B.
+    // Suppress play/pause→store sync: we still want `playing: true` so the
+    // new track auto-resumes once its src is ready. Hold the suppress for
+    // a short macrotask window — `pause` may fire async after `el.pause()`.
+    suppressPlayPauseSyncRef.current += 1;
     el.pause();
+    window.setTimeout(() => {
+      suppressPlayPauseSyncRef.current = Math.max(
+        0,
+        suppressPlayPauseSyncRef.current - 1,
+      );
+    }, 100);
     if (!streamVideoId) {
       el.removeAttribute("src");
       el.load();
