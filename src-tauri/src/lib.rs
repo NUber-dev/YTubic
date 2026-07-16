@@ -218,6 +218,122 @@ fn account_cookies_path(app: &tauri::AppHandle, id: &str) -> PathBuf {
     accounts_dir(app).join(id).join("cookies.enc")
 }
 
+/// Close every window that holds a lock on account webview profiles
+/// (session-keepers + the in-flight login window). Must run before we
+/// try to delete `accounts/<id>/` — on macOS WKWebView (and WebView2)
+/// the profile dir stays locked until the host window is gone, and a
+/// single non-awaited `close()` is not enough.
+fn close_auth_webviews(app: &tauri::AppHandle) {
+    for (label, w) in app.webview_windows() {
+        if label == "login" || label.starts_with("keeper-") {
+            // destroy() tears the webview down harder than close() on
+            // platforms where close is async / preventable.
+            let _ = w.destroy();
+        }
+    }
+}
+
+/// Stable WKWebsiteDataStore UUID for an account (macOS ≥ 14 / iOS ≥ 17).
+///
+/// On Apple platforms `data_directory` does **not** isolate cookies —
+/// WKWebView ignores it and all windows share the default data store
+/// unless we pass `data_store_identifier`. That's why sign-out wiped
+/// `cookies.enc` but the next "Sign in" auto-completed: Google's
+/// session was still in `~/Library/HTTPStorages/com.github.ivasy.ytubic*`.
+/// Login + session-keeper for the same account id MUST use the same
+/// identifier so the keeper can renew the session the login minted.
+#[cfg(target_os = "macos")]
+fn account_wk_data_store_id(account_id: &str) -> [u8; 16] {
+    let digest = md5::compute(format!("ytubic-wk-datastore-v1:{account_id}"));
+    *digest
+}
+
+/// Delete a per-account WK data store (macOS). No-op elsewhere / on error.
+#[cfg(target_os = "macos")]
+async fn remove_account_wk_data_store(app: &tauri::AppHandle, account_id: &str) {
+    let id = account_wk_data_store_id(account_id);
+    if let Err(e) = app.remove_data_store(id).await {
+        eprintln!("[accounts] remove_data_store({account_id}): {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn remove_account_wk_data_store(_app: &tauri::AppHandle, _account_id: &str) {}
+
+/// Wipe the app's *default* WKWebsiteDataStore residue on disk.
+///
+/// Pre-isolation logins (and any webview that still hits the default
+/// store) park Google cookies in HTTPStorages. Deleting only
+/// `accounts/*/cookies.enc` leaves that store intact, so the next
+/// login window auto-signs in without a password.
+#[cfg(target_os = "macos")]
+async fn clear_shared_webkit_auth_residue() {
+    let Some(home) = dirs_home() else { return };
+    let bundle = "com.github.ivasy.ytubic";
+    // Cookie jars for the default data store. Do NOT wipe
+    // Library/WebKit/.../LocalStorage — the main window keeps UI
+    // prefs (settings, query cache) there.
+    for rel in [
+        format!("Library/HTTPStorages/{bundle}"),
+        format!("Library/HTTPStorages/{bundle}.binarycookies"),
+    ] {
+        let path = home.join(rel);
+        if path.is_dir() {
+            if let Err(e) = tokio::fs::remove_dir_all(&path).await {
+                eprintln!("[accounts] clear webkit residue {}: {e}", path.display());
+            }
+        } else if path.exists() {
+            if let Err(e) = tokio::fs::remove_file(&path).await {
+                eprintln!("[accounts] clear webkit residue {}: {e}", path.display());
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn clear_shared_webkit_auth_residue() {}
+
+#[cfg(target_os = "macos")]
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// Retry `remove_dir_all` — webview profile dirs routinely lose the first
+/// delete to file locks (the browser subprocess outlives the window for
+/// a beat). Used by sign-out so cookies.enc cannot survive a "successful"
+/// remove_account and resurrect the session on next launch.
+async fn remove_dir_all_retry(path: &std::path::Path, label: &str) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut last_err = String::new();
+    for attempt in 0..10u8 {
+        match tokio::fs::remove_dir_all(path).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = e.to_string();
+                eprintln!("[accounts] remove {label} attempt {attempt}: {last_err}");
+                tokio::time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
+            }
+        }
+    }
+    // Last resort: wipe the cookie jar even if the webview subtree is
+    // still locked. Without cookies.enc, is_logged_in is false on boot.
+    let cookies = path.join("cookies.enc");
+    if cookies.exists() {
+        if let Err(e) = tokio::fs::remove_file(&cookies).await {
+            return Err(format!(
+                "could not remove {label} ({last_err}); also failed to wipe cookies.enc: {e}"
+            ));
+        }
+        eprintln!(
+            "[accounts] wiped cookies.enc for {label} after dir remove failed ({last_err})"
+        );
+        return Ok(());
+    }
+    Err(format!("could not remove {label}: {last_err}"))
+}
+
 /// Per-account persistent WebView2 profile. Unlike the throwaway login
 /// profile of old, this survives a successful sign-in: it holds the
 /// live, Google-bound browser session. A periodic hidden reload re-
@@ -228,11 +344,44 @@ fn account_webview_dir(app: &tauri::AppHandle, id: &str) -> PathBuf {
     accounts_dir(app).join(id).join("webview")
 }
 
-/// Chrome UA the login and refresh WebViews both present to Google. Kept
-/// identical so the session Google issues to the login window is the
-/// same one the refresh window later renews.
+/// User-Agent the login and session-keeper WebViews both present to Google
+/// (Windows / Linux). Kept identical across those two windows so a session
+/// issued at login is the same one the keeper later renews.
+///
+/// Must match the *actual* engine: WebView2 is Chromium (Chrome UA is fine
+/// on Windows). On macOS we deliberately leave the engine's native Safari
+/// UA alone — spoofing Windows Chrome is what triggers Google's
+/// "This browser or app may not be secure" block, and even a hand-rolled
+/// Safari string can drift from the real WebKit build and re-challenge.
+#[cfg(windows)]
 const YT_LOGIN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36";
+
+/// WebKitGTK on Linux — avoid Chrome-shaped UAs (same Google block as macOS).
+#[cfg(all(unix, not(target_os = "macos")))]
+const YT_LOGIN_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 \
+     (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+/// Google sign-in entry — same shape as the original Windows flow
+/// (`ServiceLogin?service=youtube&continue=…`).
+///
+/// On macOS the continue target is **www.youtube.com**, not
+/// music.youtube.com: WKWebView is not Chrome, and Music's SPA shows
+/// "not optimized for your browser / GET CHROME" without minting the
+/// `.youtube.com` cookies we need. Classic YouTube still completes SSO
+/// and sets the same cookie domain InnerTube uses. Windows keeps the
+/// original Music continue (WebView2 is Chromium).
+#[cfg(target_os = "macos")]
+const YT_LOGIN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F";
+#[cfg(not(target_os = "macos"))]
+const YT_LOGIN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
+
+/// Post-auth handoff when Google doesn't honor `continue=` (or Music
+/// shows the GET CHROME dead-end). Same platform split as `YT_LOGIN_URL`.
+#[cfg(target_os = "macos")]
+const YT_SSO_HANDOFF_URL: &str = "https://www.youtube.com/";
+#[cfg(not(target_os = "macos"))]
+const YT_SSO_HANDOFF_URL: &str = "https://music.youtube.com/";
 
 /// WebView2 browser args shared by the login window and the session-keeper.
 /// Both open the same per-account profile directory, and WebView2 requires
@@ -240,7 +389,8 @@ const YT_LOGIN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 /// these have to match. They also stop both windows from grabbing the
 /// hardware media keys or running a media session (which would hijack
 /// play/pause from the real player), and block autoplay so a hidden keeper
-/// never starts making sound on its own.
+/// never starts making sound on its own. Windows/WebView2 only.
+#[cfg(windows)]
 const YT_WEBVIEW_ARGS: &str = "--disable-features=HardwareMediaKeyHandling,MediaSessionService \
      --autoplay-policy=user-gesture-required";
 
@@ -714,6 +864,60 @@ async fn dedup_accounts_by_identity(app: &tauri::AppHandle) {
 /// - the http plugin's `.cookies` store from builds where its `cookies`
 ///   feature was still on: plaintext session-security cookies, and the
 ///   shadow copy that fed the rotation-divergence bug.
+/// Drop account rows whose cookie jar is gone, clear a dangling
+/// `active` pointer, and delete on-disk account dirs that aren't in the
+/// index. Runs at boot after migrations so a partial sign-out (dir
+/// delete lost to webview locks, index already empty) can't leave a
+/// zombie jar for the next session.
+async fn heal_accounts_state(app: &tauri::AppHandle) {
+    let mut idx = read_index(app).await;
+    let mut dirty = false;
+
+    let before = idx.accounts.len();
+    idx.accounts
+        .retain(|a| account_cookies_path(app, &a.id).exists());
+    if idx.accounts.len() != before {
+        dirty = true;
+        eprintln!(
+            "[accounts] heal: dropped {} account row(s) with missing cookies.enc",
+            before - idx.accounts.len()
+        );
+    }
+
+    if let Some(active) = idx.active.clone() {
+        if !idx.accounts.iter().any(|a| a.id == active) {
+            idx.active = idx.accounts.first().map(|a| a.id.clone());
+            dirty = true;
+            eprintln!("[accounts] heal: cleared dangling active id");
+        }
+    }
+
+    if dirty {
+        if let Err(e) = write_index(app, &idx).await {
+            eprintln!("[accounts] heal write index: {e}");
+        }
+    }
+
+    // Orphan dirs (cancelled logins, failed deletes that left the tree).
+    let dir = accounts_dir(app);
+    if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !idx.accounts.iter().any(|a| a.id == name) {
+                let _ = tokio::fs::remove_dir_all(entry.path()).await;
+            }
+        }
+    }
+
+    // Signed out but a previous build left Google cookies in the
+    // default WK data store → next Sign-in would auto-complete. Wipe
+    // that residue whenever we boot with no accounts.
+    if idx.accounts.is_empty() {
+        clear_shared_webkit_auth_residue().await;
+    }
+}
+
 async fn cleanup_login_artifacts(app: &tauri::AppHandle) {
     let cache = app
         .path()
@@ -777,21 +981,32 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     // on success.
     let account_dir = accounts_dir(&app).join(&account_id);
 
-    let url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F"
+    let url = YT_LOGIN_URL
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
 
-    let win = WebviewWindowBuilder::new(&app, "login", WebviewUrl::External(url))
+    // Original login window shape. Platform identity:
+    // - Windows: Chrome UA + WebView2 args (original)
+    // - macOS: native Safari UA + per-account data_store_identifier
+    //   (data_directory alone does not isolate WKWebView cookies)
+    let builder = WebviewWindowBuilder::new(&app, "login", WebviewUrl::External(url))
         .title("Sign in - accounts.google.com")
         .inner_size(500.0, 720.0)
         .min_inner_size(420.0, 560.0)
         .center()
-        .data_directory(webview_data.clone())
+        .data_directory(webview_data.clone());
+    #[cfg(target_os = "macos")]
+    let builder = builder.data_store_identifier(account_wk_data_store_id(&account_id));
+    #[cfg(windows)]
+    let builder = builder
         .user_agent(YT_LOGIN_UA)
         // Must match the session-keeper's args (shared profile folder).
-        .additional_browser_args(YT_WEBVIEW_ARGS)
+        .additional_browser_args(YT_WEBVIEW_ARGS);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let builder = builder.user_agent(YT_LOGIN_UA);
+    let win = builder
         // Surface the current origin in the title so the user can spot
-        // a redirect to an unexpected host (anti-phishing).
+        // a redirect to an unexpected host (anti-phishing). Original.
         .on_page_load(|win, payload| {
             let host = payload.url().host_str().unwrap_or("???");
             let _ = win.set_title(&format!("Sign in - {host}"));
@@ -837,25 +1052,17 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             });
 
             if !has_yt_auth {
-                // YT cookies aren't set yet. Two ways to land here:
-                //   1) User hasn't completed Google sign-in. Keep waiting.
-                //   2) Google sign-in succeeded but Google parked the
-                //      webview on `myaccount.google.com` (first-time
-                //      security review / "stay signed in?" prompt) and
-                //      never honored the `continue=music.youtube.com`
-                //      hint. The user is stuck on a Google settings
-                //      page and YT never gets a chance to handshake.
-                //
-                // For case (2), force-navigate to music.youtube.com.
-                // YT's auto-sign-in flow picks up the .google.com
-                // session cookies and exchanges them for .youtube.com
-                // cookies that InnerTube actually needs.
+                // YT cookies aren't set yet.
+                //   1) Still in Google 2FA / phone / passkey — wait.
+                //      Do NOT treat bare SID as "done" (interrupts challenges).
+                //   2) Google done but parked on myaccount, or landed on
+                //      music.youtube.com's GET CHROME page (macOS WKWebView).
+                //      Nudge to the platform handoff URL to mint .youtube.com
+                //      cookies without the Music SPA browser check.
                 if !nudged_to_yt {
                     let has_google_auth = cookies.iter().any(|c| {
                         let name = c.name();
-                        (name == "SAPISID"
-                            || name == "SID"
-                            || name == "__Secure-1PSID")
+                        (name == "SAPISID" || name == "__Secure-1PSID")
                             && c.domain()
                                 .map(|d| {
                                     d.trim_start_matches('.').ends_with("google.com")
@@ -863,19 +1070,43 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                                 .unwrap_or(false)
                     });
                     if has_google_auth {
-                        if let Ok(url) =
-                            "https://music.youtube.com/".parse::<tauri::Url>()
-                        {
-                            match win.navigate(url) {
-                                Ok(()) => eprintln!(
-                                    "[login] google-auth detected without YT cookies; redirected webview to music.youtube.com"
-                                ),
-                                Err(e) => eprintln!(
-                                    "[login] failed to redirect to YT: {e}"
-                                ),
+                        let current = win.url().ok();
+                        let url_s = current.as_ref().map(|u| u.as_str()).unwrap_or("");
+                        let host = current
+                            .as_ref()
+                            .and_then(|u| u.host_str())
+                            .unwrap_or("");
+                        let in_challenge = url_s.contains("/challenge")
+                            || url_s.contains("speedbump")
+                            || url_s.contains("/v3/signin")
+                            || url_s.contains("/signin/v2")
+                            || url_s.contains("identifier")
+                            || url_s.contains("/pwd")
+                            || url_s.contains("totp")
+                            || url_s.contains("idv")
+                            || url_s.contains("iap/")
+                            || url_s.contains("phone")
+                            || url_s.contains("rejected")
+                            || host.contains("gstatic.com")
+                            || host.contains("accounts.google.com");
+                        // myaccount = finished but no continue; Music host
+                        // without cookies = GET CHROME dead-end on macOS.
+                        let needs_handoff = host.contains("myaccount.google.com")
+                            || host.contains("music.youtube.com");
+                        if !in_challenge && needs_handoff {
+                            if let Ok(url) = YT_SSO_HANDOFF_URL.parse::<tauri::Url>() {
+                                match win.navigate(url) {
+                                    Ok(()) => eprintln!(
+                                        "[login] Google auth without YT cookies; \
+                                         redirected to handoff ({YT_SSO_HANDOFF_URL})"
+                                    ),
+                                    Err(e) => eprintln!(
+                                        "[login] failed to redirect to handoff: {e}"
+                                    ),
+                                }
                             }
+                            nudged_to_yt = true;
                         }
-                        nudged_to_yt = true;
                     }
                 }
                 continue;
@@ -1000,7 +1231,14 @@ async fn ensure_session_keeper(
     if let Some(win) = app.get_webview_window(&label) {
         return Ok((win, false));
     }
-    let url = "https://music.youtube.com/"
+    // Windows: Music (original). macOS: www.youtube.com — same cookie
+    // domain, avoids Music's "GET CHROME" SPA which never renews auth.
+    let keeper_url = if cfg!(target_os = "macos") {
+        "https://www.youtube.com/"
+    } else {
+        "https://music.youtube.com/"
+    };
+    let url = keeper_url
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
     // Hidden, undecorated, focus-less, off-screen, no taskbar entry. Built
@@ -1010,7 +1248,7 @@ async fn ensure_session_keeper(
     // "visible" state can't drag it back on-screen next launch either. The
     // webview still loads and keeps the session alive regardless of
     // visibility or position.
-    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title("YTubic session keeper")
         .visible(false)
         .decorations(false)
@@ -1018,13 +1256,27 @@ async fn ensure_session_keeper(
         .skip_taskbar(true)
         .position(-32000.0, -32000.0)
         .inner_size(1024.0, 768.0)
-        .data_directory(account_webview_dir(app, id))
+        .data_directory(account_webview_dir(app, id));
+    // Same WK data store as the login window for this account (macOS).
+    #[cfg(target_os = "macos")]
+    let builder = builder.data_store_identifier(account_wk_data_store_id(id));
+    #[cfg(windows)]
+    let builder = builder
         .user_agent(YT_LOGIN_UA)
-        .additional_browser_args(YT_WEBVIEW_ARGS)
+        .additional_browser_args(YT_WEBVIEW_ARGS);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let builder = builder.user_agent(YT_LOGIN_UA);
+    let win = builder
+        // macOS (and occasionally WebView2) re-shows the host window when
+        // an external page finishes loading — re-hide on every load so the
+        // user never sees a stray music.youtube.com "second sign-in".
+        .on_page_load(|win, _| {
+            let _ = win.hide();
+        })
         .build()
         .map_err(|e| format!("build session-keeper: {e}"))?;
-    // Force-hide on top of visible(false): if WebView2 shows the host window
-    // when the external page finishes loading, this puts it straight back to
+    // Force-hide on top of visible(false): if the host window flashes when
+    // the external page finishes loading, this puts it straight back to
     // hidden so the user never sees a stray music.youtube.com window.
     let _ = win.hide();
     Ok((win, true))
@@ -1051,10 +1303,18 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     // A reused keeper is reloaded to force fresh authenticated traffic; a
     // just-created one is already loading the URL from the builder.
     if !created {
-        if let Ok(u) = "https://music.youtube.com/".parse::<tauri::Url>() {
+        let keeper_url = if cfg!(target_os = "macos") {
+            "https://www.youtube.com/"
+        } else {
+            "https://music.youtube.com/"
+        };
+        if let Ok(u) = keeper_url.parse::<tauri::Url>() {
             let _ = win.navigate(u);
         }
     }
+    // Re-assert hidden after create/navigate — some platforms flash the
+    // host window when an external URL starts loading.
+    let _ = win.hide();
 
     // Poll the keeper's cookie store until the full authed set is present
     // (LOGIN_INFO lands last, as at login), then snapshot it. The keeper
@@ -1347,18 +1607,43 @@ async fn close_player_window(app: tauri::AppHandle) -> Result<(), String> {
 /// world.
 #[tauri::command]
 async fn clear_cookies(app: tauri::AppHandle) -> Result<(), String> {
+    // Snapshot ids before we wipe the index — needed for WK data stores.
+    let account_ids: Vec<String> = read_index(&app)
+        .await
+        .accounts
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+
+    // Drop webview locks before touching disk — otherwise macOS keeps
+    // cookies.enc around and the next launch looks "auto signed in".
+    close_auth_webviews(&app);
+    // Brief pause so destroy() can release profile file handles.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Per-account WKWebsiteDataStore (macOS ≥ 14). Without this, Google
+    // sessions survive sign-out and the next login auto-completes.
+    for id in &account_ids {
+        remove_account_wk_data_store(&app, id).await;
+    }
+    // Default data store residue from builds that didn't use identifiers.
+    clear_shared_webkit_auth_residue().await;
+
     let dir = accounts_dir(&app);
-    if dir.exists() {
-        tokio::fs::remove_dir_all(&dir)
-            .await
-            .map_err(|e| format!("remove accounts dir: {e}"))?;
-    }
-    let index = accounts_index_path(&app);
-    if index.exists() {
-        tokio::fs::remove_file(&index)
-            .await
-            .map_err(|e| format!("remove index: {e}"))?;
-    }
+    remove_dir_all_retry(&dir, "accounts/").await?;
+
+    // Write an empty index (don't only delete the file): migrate_* on
+    // boot treats a missing index as "maybe promote legacy cookies",
+    // and a half-deleted accounts/ could re-surface a jar.
+    write_index(
+        &app,
+        &AccountsIndex {
+            active: None,
+            accounts: vec![],
+        },
+    )
+    .await?;
+
     // Sweep any stray legacy file too — defends against a partially-
     // migrated install where someone manually copied state around.
     let legacy = legacy_cookies_enc_path(&app);
@@ -1414,6 +1699,12 @@ async fn switch_account(app: tauri::AppHandle, id: String) -> Result<(), String>
 /// one, pick the first remaining account as the new active (or
 /// `None` when this was the last). Deletes the per-account cookies
 /// directory off disk in the same call.
+///
+/// Last-account sign-out goes through the full wipe (`clear_cookies`)
+/// so no orphan jar / webview profile can resurrect the session on the
+/// next launch — that was the macOS "signed out then auto signed back
+/// in" bug: `remove_dir_all` lost to WKWebView file locks, the error
+/// was ignored, and `cookies.enc` survived.
 #[tauri::command]
 async fn remove_account(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let mut idx = read_index(&app).await;
@@ -1423,15 +1714,21 @@ async fn remove_account(app: tauri::AppHandle, id: String) -> Result<(), String>
         .position(|a| a.id == id)
         .ok_or_else(|| format!("no such account: {id}"))?;
     idx.accounts.remove(pos);
-    // Close this account's session-keeper (if running) so its webview
-    // releases the profile directory before we delete it.
-    if let Some(w) = app.get_webview_window(&format!("keeper-{id}")) {
-        let _ = w.close();
+
+    // Last account → full wipe (index + every account dir + keepers).
+    if idx.accounts.is_empty() {
+        return clear_cookies(app).await;
     }
+
+    // Close keepers/login so the profile dir is unlocked before delete.
+    close_auth_webviews(&app);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    remove_account_wk_data_store(&app, &id).await;
+
     let dir = accounts_dir(&app).join(&id);
-    if dir.exists() {
-        let _ = tokio::fs::remove_dir_all(&dir).await;
-    }
+    remove_dir_all_retry(&dir, &format!("accounts/{id}")).await?;
+
     if idx.active.as_deref() == Some(id.as_str()) {
         idx.active = idx.accounts.first().map(|a| a.id.clone());
     }
@@ -3101,6 +3398,8 @@ pub fn run() {
                 // Heal any duplicate account rows left by the old
                 // email-based dedup before the UI reads the list.
                 dedup_accounts_by_identity(&handle).await;
+                // Drop zombie jars / dangling active after a partial sign-out.
+                heal_accounts_state(&handle).await;
                 cleanup_login_artifacts(&handle).await;
                 start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
                     .await;

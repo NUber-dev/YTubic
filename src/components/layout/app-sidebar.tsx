@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
@@ -423,6 +423,7 @@ function SidebarSignInButton() {
 }
 
 function UserProfile() {
+  const qc = useQueryClient();
   const loggedIn = useQuery({
     queryKey: ["auth-logged-in"],
     queryFn: () => invoke<boolean>("is_logged_in"),
@@ -476,25 +477,28 @@ function UserProfile() {
   const tierLabel = isPremium ? "Premium" : "Free";
 
   const signOut = async () => {
-    if (!activeAccount) {
-      // Defensive: should never happen because the trigger only
-      // renders when loggedIn is true, but if accounts.data hasn't
-      // landed yet we fall back to nuking all auth state.
-      try {
-        await invoke("clear_cookies");
-        resetInnertube();
-        toast.success("Signed out");
-      } catch (e) {
-        toast.error(`Sign out failed: ${String(e)}`);
-      }
-      return;
-    }
     try {
-      await removeAccount(activeAccount.id);
-      // The Rust `remove_account` either promotes the next account to
-      // active (multi-account case) or drops the user to signed-out
-      // (last-account case). Either way `accounts-changed` fires and
-      // the listener takes care of query invalidation + client reset.
+      if (!activeAccount) {
+        // Defensive: should never happen because the trigger only
+        // renders when loggedIn is true, but if accounts.data hasn't
+        // landed yet we fall back to nuking all auth state.
+        await invoke("clear_cookies");
+      } else if (allAccounts.length <= 1) {
+        // Last (or only) account: full wipe so no orphan cookies.enc
+        // can resurrect the session after restart (macOS webview locks
+        // used to make a silent partial delete look like success).
+        await invoke("clear_cookies");
+      } else {
+        // Multi-account: drop just this row; Rust promotes the next.
+        await removeAccount(activeAccount.id);
+      }
+      // Belt-and-suspenders: accounts-changed also resets, but don't
+      // depend on event ordering for the auth cache / login flag.
+      resetInnertube();
+      void qc.invalidateQueries({ queryKey: ["auth-logged-in"] });
+      void qc.invalidateQueries({ queryKey: ["accounts"] });
+      void qc.invalidateQueries({ queryKey: ["active-account-id"] });
+      void qc.resetQueries({ queryKey: ["account-info"] });
       toast.success("Signed out");
     } catch (e) {
       toast.error(`Sign out failed: ${String(e)}`);
