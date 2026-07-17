@@ -48,6 +48,7 @@ import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import {
   useTrackSourceStore,
+  wantsVideoStream,
   type SourceKind,
 } from "@/lib/store/track-source";
 import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
@@ -296,12 +297,17 @@ export function SourceToggle({ track }: { track: QueueTrack }) {
   const record = useTrackSourceStore((s) => s.byVideoId[track.videoId]);
   const setSelected = useTrackSourceStore((s) => s.setSelected);
   const setAlternate = useTrackSourceStore((s) => s.setAlternate);
+  const preferVideo = useTrackSourceStore((s) => s.preferVideo);
+  const setPreferVideo = useTrackSourceStore((s) => s.setPreferVideo);
   const [busy, setBusy] = useState<SourceKind | null>(null);
 
   const selected: SourceKind = record?.selected ?? "song";
 
-  const switchTo = async (target: SourceKind) => {
+  const switchTo = async (target: SourceKind, opts?: { auto?: boolean }) => {
     if (busy || target === selected) return;
+    // A manual flip also sets the sticky global mode, so "watch videos"
+    // carries to the next track instead of resetting to song every time.
+    if (!opts?.auto) setPreferVideo(target === "video");
     const cachedAlt = target === "video" ? record?.video : record?.song;
     if (cachedAlt) {
       setSelected(track.videoId, target);
@@ -323,21 +329,43 @@ export function SourceToggle({ track }: { track: QueueTrack }) {
       const query = `${track.title} ${artistsLine}`.trim();
       const altId = await findAlternateVideoId(query, track.videoId, target);
       if (!altId) {
-        toast.error(
-          target === "video"
-            ? "No video version found"
-            : "No song version found",
-        );
+        if (!opts?.auto) {
+          toast.error(
+            target === "video"
+              ? "No video version found"
+              : "No song version found",
+          );
+        }
         return;
       }
       setAlternate(track.videoId, target, altId);
       setSelected(track.videoId, target);
     } catch (e) {
-      toast.error(`Couldn't switch source: ${(e as Error).message}`);
+      if (!opts?.auto) {
+        toast.error(`Couldn't switch source: ${(e as Error).message}`);
+      }
     } finally {
       setBusy(null);
     }
   };
+
+  // Sticky mode: when the global preference is video and this track has
+  // no explicit per-track choice, flip it automatically (resolving the
+  // counterpart when needed). An explicit song choice on THIS track
+  // wins over the global mode; tracks with no video version just stay
+  // songs, silently.
+  const autoTriedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!preferVideo) return;
+    if (selected === "video") return;
+    if (record?.chosen) return;
+    if (autoTriedRef.current === track.videoId) return;
+    autoTriedRef.current = track.videoId;
+    void switchTo("video", { auto: true });
+    // switchTo identity changes every render; keying on the track and
+    // the mode is what actually matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [track.videoId, preferVideo, selected, record?.chosen]);
 
   return (
     <div className="flex items-center rounded-md border bg-muted/40 p-0.5">
@@ -660,6 +688,10 @@ export function PlayerBar({
   const [queueOpen, setQueueOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const streamKind = usePlaybackStore((s) => s.streamKind);
+  const videoBuffering = usePlaybackStore((s) => s.videoBuffering);
+  const wantVideo = useTrackSourceStore((s) =>
+    track?.videoId ? wantsVideoStream(track.videoId, s.byVideoId) : false,
+  );
   const iTunesCover = useLatchedCover(track, useITunesCover(track));
   // Accent for the whole player surface, pulled from the cover art (same
   // source the fullscreen view uses) so the seek fill, play button, and
@@ -788,20 +820,36 @@ export function PlayerBar({
                   re-enables its own pointer events. */}
               <div className="relative aspect-video w-full">
                 <VideoSurface className="size-full overflow-hidden rounded-md border border-hairline bg-black" />
+                {videoBuffering ? (
+                  <div className="absolute inset-0 flex items-center justify-center rounded-md bg-black/25">
+                    <Loader2Icon className="size-6 animate-spin text-white/85" />
+                  </div>
+                ) : null}
                 <div className="absolute bottom-2 right-2">
                   <VideoQualityBadge className="opacity-70 hover:opacity-100" />
                 </div>
               </div>
             </div>
           ) : track ? (
-            <Thumbnail
-              thumbnails={track.thumbnails}
-              alt={track.title}
-              className="aspect-square w-full rounded-md border border-hairline pointer-events-none"
-              targetSize={1024}
-              highRes
-              overrideHighRes={iTunesCover}
-            />
+            <div className="pointer-events-none relative">
+              <Thumbnail
+                thumbnails={track.thumbnails}
+                alt={track.title}
+                className="aspect-square w-full rounded-md border border-hairline pointer-events-none"
+                targetSize={1024}
+                highRes
+                overrideHighRes={iTunesCover}
+              />
+              {/* Video wanted but no frames yet: the vonly stream is
+                  still resolving/downloading. Say so instead of looking
+                  like the toggle did nothing. */}
+              {wantVideo && streamKind !== "video" ? (
+                <div className="absolute bottom-2 right-2 flex items-center gap-1.5 rounded-full border border-hairline bg-black/55 px-2 py-1 text-xs font-medium text-white/85 backdrop-blur-md">
+                  <Loader2Icon className="size-3 animate-spin" />
+                  loading video
+                </div>
+              ) : null}
+            </div>
           ) : (
             <div className="aspect-square w-full rounded-md border border-hairline bg-muted" />
           )}

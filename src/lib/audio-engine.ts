@@ -576,8 +576,17 @@ export function useAudioEngine() {
       // so the surfaces keep showing artwork instead of a black box.
       usePlaybackStore.getState().setStreamKind("audio");
     };
+    const onWaiting = () => {
+      if (!cancelled) usePlaybackStore.getState().setVideoBuffering(true);
+    };
+    const onFlowing = () => {
+      if (!cancelled) usePlaybackStore.getState().setVideoBuffering(false);
+    };
     video.addEventListener("loadeddata", onLoaded);
     video.addEventListener("error", onError);
+    video.addEventListener("waiting", onWaiting);
+    video.addEventListener("playing", onFlowing);
+    video.addEventListener("canplay", onFlowing);
     master.addEventListener("play", follow);
     master.addEventListener("pause", follow);
     master.addEventListener("seeked", syncNow);
@@ -671,6 +680,9 @@ export function useAudioEngine() {
       window.clearInterval(drift);
       video.removeEventListener("loadeddata", onLoaded);
       video.removeEventListener("error", onError);
+      video.removeEventListener("waiting", onWaiting);
+      video.removeEventListener("playing", onFlowing);
+      video.removeEventListener("canplay", onFlowing);
       master.removeEventListener("play", follow);
       master.removeEventListener("pause", follow);
       master.removeEventListener("seeked", syncNow);
@@ -680,6 +692,7 @@ export function useAudioEngine() {
       const st = usePlaybackStore.getState();
       st.setStreamKind("audio");
       st.setStreamVideoHeight(null);
+      st.setVideoBuffering(false);
     };
   }, [streamVideoId, wantVideo, premiumOk, retryNonce]);
 

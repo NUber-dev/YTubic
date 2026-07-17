@@ -28,10 +28,17 @@ type State = {
    * pair stays consistent.
    */
   byVideoId: Record<string, TrackSources>;
+  /** Sticky global mode: when true, every new track tries its video
+   *  version (resolving a counterpart when needed) instead of falling
+   *  back to song. Set by the source toggle, so "watch videos" survives
+   *  track changes the way it does on YT Music. A per-track explicit
+   *  song choice still wins for that track. */
+  preferVideo: boolean;
   /** Cache an alternate id we resolved. `kind` is the kind of `altId`. */
   setAlternate: (knownId: string, kind: SourceKind, altId: string) => void;
   /** Flip the active source for a track. */
   setSelected: (anyVideoId: string, selected: SourceKind) => void;
+  setPreferVideo: (v: boolean) => void;
 };
 
 // Soft cap on `byVideoId`. Each unique track contributes two keys (song
@@ -59,6 +66,7 @@ export const useTrackSourceStore = create<State>()(
   persist(
     (set) => ({
       byVideoId: {},
+      preferVideo: false,
       setAlternate: (knownId, kind, altId) =>
         set((s) => {
           const existing = s.byVideoId[knownId];
@@ -92,6 +100,9 @@ export const useTrackSourceStore = create<State>()(
           if (existing.video) next[existing.video] = updated;
           return { byVideoId: next };
         }),
+      // NB: not bridged from the floating window (its toggle only flips
+      // per-track state); the main window owns the global mode.
+      setPreferVideo: (preferVideo) => set({ preferVideo }),
     }),
     { name: "ytm-track-source" },
   ),

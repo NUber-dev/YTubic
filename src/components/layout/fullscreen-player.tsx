@@ -199,6 +199,7 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
 
   const [scrub, setScrub] = useState<number | null>(null);
   const streamKind = usePlaybackStore((s) => s.streamKind);
+  const videoBuffering = usePlaybackStore((s) => s.videoBuffering);
   const iTunesCover = useLatchedCover(track, useITunesCover(track));
   const lyricsState = useLyricsView(track);
 
@@ -396,6 +397,11 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
               aria-hidden
               className="absolute inset-x-0 bottom-0 z-[6] h-56 bg-gradient-to-t from-black/75 via-black/35 to-transparent"
             />
+            {videoBuffering ? (
+              <div className="absolute inset-0 z-[7] flex items-center justify-center">
+                <Loader2Icon className="size-10 animate-spin text-white/80" />
+              </div>
+            ) : null}
           </>
         ) : null}
 

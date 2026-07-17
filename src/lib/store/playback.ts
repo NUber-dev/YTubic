@@ -50,6 +50,9 @@ export type PlaybackState = {
   /** Native pixel height of the active video surface (companion or
    *  muxed), for the quality badge. null while no frames are loaded. */
   streamVideoHeight: number | null;
+  /** True while the companion video is stalled waiting for data (its
+   *  audio master keeps playing). Drives the buffering spinner. */
+  videoBuffering: boolean;
 
   // Transport
   playing: boolean;
@@ -90,6 +93,7 @@ export type PlaybackState = {
   setStreamUrl: (url?: string) => void;
   setStreamKind: (kind: "audio" | "video") => void;
   setStreamVideoHeight: (height: number | null) => void;
+  setVideoBuffering: (v: boolean) => void;
   /** Fill in a queue track's duration when it arrived without one
    *  (home-card queues). Only writes missing durations. */
   patchTrackDuration: (videoId: string, seconds: number) => void;
@@ -142,6 +146,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   streamUrl: undefined,
   streamKind: "audio",
   streamVideoHeight: null,
+  videoBuffering: false,
 
   playing: false,
   volume: 0.8,
@@ -395,6 +400,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   setStreamUrl: (streamUrl) => set({ streamUrl }),
   setStreamKind: (streamKind) => set({ streamKind }),
   setStreamVideoHeight: (streamVideoHeight) => set({ streamVideoHeight }),
+  setVideoBuffering: (videoBuffering) => set({ videoBuffering }),
   patchTrackDuration: (videoId, seconds) =>
     set((s) => {
       if (!(seconds > 0)) return s;
