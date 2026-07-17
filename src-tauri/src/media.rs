@@ -1,18 +1,32 @@
-// OS media controls via `souvlaki`: on Windows this is the System Media
-// Transport Controls (SMTC) — the media tile in the Quick Settings / volume
-// flyout, the lock screen, and the hardware media keys.
+// OS media controls via `souvlaki` (the supported, no-permission path):
+// - Windows: System Media Transport Controls (SMTC) — media tile, lock screen,
+//   hardware media keys.
+// - macOS: MPNowPlayingInfoCenter + MPRemoteCommandCenter — Control Center /
+//   lock screen / F7–F9 media keys. No Accessibility permission required.
 //
-// Why we drive this from Rust instead of the webview's `navigator.mediaSession`:
-// the audio plays in an `<audio>` element inside WebView2, so Chromium creates
-// its OWN SMTC session — but that session is owned by the `msedgewebview2.exe`
-// child process, whose app identity Windows can't resolve, so the tile shows
-// "Unknown app" with no icon. There is no supported API to re-attribute a
-// WebView2 media session to the host app (WebView2Feedback #2236, open since
-// 2022). Creating the SMTC ourselves, bound to the host process's main window,
-// makes Windows resolve the tile to YTubic's own executable identity (name +
-// icon). Chromium's competing "Unknown app" tile is suppressed by disabling its
-// media session via `--disable-features=...MediaSessionService` on the main
-// window (see `additionalBrowserArgs` in tauri.conf.json).
+// macOS also uses `navigator.mediaSession` in the webview (see
+// `useAudioEngine`): once HTML <audio> is playing, WKWebView owns the Now
+// Playing session for that media, so previous/next must be registered there
+// for F7/F9 to reach us. That is still the official Media Session API —
+// not a keylogger / event tap.
+//
+// We deliberately do NOT use CGEventTap / global NSEvent monitors for media
+// keys. Those intercept HID events system-wide and trigger macOS
+// Accessibility (or Input Monitoring) prompts. Spotify/Music/etc. never do
+// that; they only register as the Now Playing target.
+//
+// Why we drive SMTC from Rust instead of the webview's `navigator.mediaSession`
+// on Windows: the audio plays in an `<audio>` element inside WebView2, so
+// Chromium creates its OWN SMTC session — but that session is owned by the
+// `msedgewebview2.exe` child process, whose app identity Windows can't resolve,
+// so the tile shows "Unknown app" with no icon. There is no supported API to
+// re-attribute a WebView2 media session to the host app (WebView2Feedback
+// #2236, open since 2022). Creating the SMTC ourselves, bound to the host
+// process's main window, makes Windows resolve the tile to YTubic's own
+// executable identity (name + icon). Chromium's competing "Unknown app" tile is
+// suppressed by disabling its media session via
+// `--disable-features=...MediaSessionService` on the main window (see
+// `additionalBrowserArgs` in tauri.conf.json).
 //
 // souvlaki's `MediaControls` is COM-backed on Windows: it is neither `Send` nor
 // `Sync`, and its calls must run on the thread that owns the window (the main
@@ -25,7 +39,9 @@ use std::time::Duration;
 use souvlaki::{
     MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig,
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
 
 thread_local! {
     static CONTROLS: RefCell<Option<MediaControls>> = const { RefCell::new(None) };
@@ -65,24 +81,7 @@ pub fn init(app: &AppHandle) {
 
     let app_handle = app.clone();
     let attached = controls.attach(move |event: MediaControlEvent| {
-        let emit = |action: &str| {
-            let _ = app_handle.emit("media-control", serde_json::json!({ "action": action }));
-        };
-        match event {
-            MediaControlEvent::Play => emit("play"),
-            MediaControlEvent::Pause => emit("pause"),
-            MediaControlEvent::Toggle => emit("toggle"),
-            MediaControlEvent::Next => emit("next"),
-            MediaControlEvent::Previous => emit("previous"),
-            MediaControlEvent::Stop => emit("stop"),
-            MediaControlEvent::SetPosition(MediaPosition(d)) => {
-                let _ = app_handle.emit(
-                    "media-control",
-                    serde_json::json!({ "action": "seek", "position": d.as_secs_f64() }),
-                );
-            }
-            _ => {}
-        }
+        emit_media_action(&app_handle, event);
     });
     if let Err(e) = attached {
         eprintln!("[media] failed to attach media controls: {e:?}");
@@ -90,6 +89,41 @@ pub fn init(app: &AppHandle) {
     }
 
     CONTROLS.with(|c| *c.borrow_mut() = Some(controls));
+
+    // souvlaki wires play/pause/previous/next. Also enable skip± so layouts
+    // that surface F7/F9 as skip (not previousTrack) still reach us — still
+    // via MPRemoteCommandCenter, no Accessibility.
+    #[cfg(target_os = "macos")]
+    macos::attach_extra_remote_commands(app.clone());
+}
+
+fn emit_media_action(app: &AppHandle, event: MediaControlEvent) {
+    let emit = |action: &str| {
+        let _ = app.emit("media-control", serde_json::json!({ "action": action }));
+    };
+    match event {
+        MediaControlEvent::Play => emit("play"),
+        MediaControlEvent::Pause => emit("pause"),
+        MediaControlEvent::Toggle => emit("toggle"),
+        MediaControlEvent::Next => emit("next"),
+        MediaControlEvent::Previous => emit("previous"),
+        MediaControlEvent::Stop => emit("stop"),
+        MediaControlEvent::Seek(dir) => match dir {
+            souvlaki::SeekDirection::Forward => emit("next"),
+            souvlaki::SeekDirection::Backward => emit("previous"),
+        },
+        MediaControlEvent::SetPosition(MediaPosition(d)) => {
+            let _ = app.emit(
+                "media-control",
+                serde_json::json!({ "action": "seek", "position": d.as_secs_f64() }),
+            );
+        }
+        _ => {}
+    }
+}
+
+fn emit_action(app: &AppHandle, action: &str) {
+    let _ = app.emit("media-control", serde_json::json!({ "action": action }));
 }
 
 /// Push the current track's metadata + playback state. Main-thread only.
@@ -173,4 +207,50 @@ pub fn media_update(
 #[tauri::command]
 pub fn media_clear(app: AppHandle) {
     let _ = app.run_on_main_thread(clear);
+}
+
+// ── macOS: extra MPRemoteCommandCenter handlers (still the public API) ──
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::emit_action;
+    use block::ConcreteBlock;
+    use cocoa::base::{id, nil, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+    use tauri::AppHandle;
+
+    // MPRemoteCommandHandlerStatusSuccess
+    const MP_REMOTE_COMMAND_HANDLER_STATUS_SUCCESS: isize = 0;
+
+    /// Register skip remote commands that souvlaki does not attach.
+    /// On some macOS / keyboard layouts F7/F9 arrive as skip rather than
+    /// previousTrack/nextTrack. Map them to previous/next (music-player
+    /// semantics: restart current / next track). No Accessibility needed.
+    pub fn attach_extra_remote_commands(app: AppHandle) {
+        unsafe {
+            let command_center: id = msg_send![class!(MPRemoteCommandCenter), sharedCommandCenter];
+
+            let attach = |cmd: id, action: &'static str| {
+                if cmd == nil {
+                    return;
+                }
+                let app = app.clone();
+                let handler = ConcreteBlock::new(move |_event: id| -> isize {
+                    emit_action(&app, action);
+                    MP_REMOTE_COMMAND_HANDLER_STATUS_SUCCESS
+                })
+                .copy();
+                let _: () = msg_send![cmd, setEnabled: YES];
+                let _: () = msg_send![cmd, addTargetWithHandler: &*handler];
+                // Leak: retained by the command center for process lifetime.
+                std::mem::forget(handler);
+            };
+
+            let skip_back: id = msg_send![command_center, skipBackwardCommand];
+            let skip_fwd: id = msg_send![command_center, skipForwardCommand];
+            attach(skip_back, "previous");
+            attach(skip_fwd, "next");
+        }
+        eprintln!("[media] macOS skip remote commands attached (→ prev/next)");
+    }
 }

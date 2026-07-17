@@ -81,6 +81,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Shell",
 ] }
 
+# macOS: attach extra MPRemoteCommandCenter skip handlers (public MediaPlayer
+# API — no Accessibility). Versions aligned with souvlaki's macOS deps.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+cocoa = "0.24"
+block = "0.1"
+
 [dev-dependencies]
 # ServiceExt::oneshot for the stream-server routing test.
 tower = { version = "0.5", features = ["util"] }

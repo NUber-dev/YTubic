@@ -16,10 +16,16 @@ import { pickThumbnail } from "@/components/shared/thumbnail";
 
 /**
  * AudioEngine binds the playback store to a singleton HTMLAudioElement
- * and drives the OS media controls (Windows SMTC) from Rust via souvlaki (see
- * the media effects below and src-tauri/src/media.rs) rather than the webview's
- * own media session — that one runs in the WebView2 child process and shows up
- * as "Unknown app" in the Windows Now Playing tile.
+ * and drives OS media controls.
+ *
+ * - Windows: SMTC + hardware keys via souvlaki in Rust (see media effects and
+ *   src-tauri/src/media.rs). The webview Media Session is disabled on WebView2
+ *   so we don't get a competing "Unknown app" tile from msedgewebview2.exe.
+ * - macOS: WKWebView claims the hardware media keys once HTML <audio> is
+ *   playing. F8 play/pause reaches the element directly; F7/F9 (previous/next,
+ *   labeled rewind/fast-forward on Mac keyboards) only fire if
+ *   `navigator.mediaSession` has action handlers. souvlaki still updates
+ *   MPNowPlayingInfoCenter for Control Center metadata.
  *
  * Mount this hook once, near the root. It owns the <audio> element's lifecycle.
  */
@@ -374,11 +380,112 @@ export function useAudioEngine() {
     }
   }, [pendingSeek]);
 
-  // OS media controls (Windows SMTC) are driven from Rust via souvlaki, not
-  // navigator.mediaSession — the webview's own media session shows up as
-  // "Unknown app" because it belongs to the WebView2 child process. Metadata /
-  // state is pushed by the media_update effect lower down; buttons come back
-  // via the media-control listener. See src-tauri/src/media.rs.
+  // Media-key actions can arrive from Media Session and/or souvlaki at once
+  // on macOS. Debounce prev/next so a single physical keypress can't skip
+  // two tracks.
+  const lastSkipAtRef = useRef(0);
+  const runSkip = (dir: "prev" | "next") => {
+    const now = performance.now();
+    if (now - lastSkipAtRef.current < 250) return;
+    lastSkipAtRef.current = now;
+    const store = usePlaybackStore.getState();
+    if (dir === "prev") store.prev();
+    else store.next();
+  };
+
+  // macOS media keys (F7 previous / F9 next): WKWebView routes hardware media
+  // keys through the page Media Session while <audio> is active. Without these
+  // handlers F7/F9 often do nothing (F8 still works by toggling the element).
+  // On Windows MediaSessionService is disabled and souvlaki owns the keys —
+  // registering here is a no-op there and does not recreate the SMTC tile.
+  // Re-bind when the current track changes: WebKit sometimes drops handlers
+  // across source swaps on the <audio> element.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+      return;
+    }
+    const ms = navigator.mediaSession;
+    const store = () => usePlaybackStore.getState();
+
+    const bind = (
+      action: MediaSessionAction,
+      handler: MediaSessionActionHandler,
+    ) => {
+      try {
+        ms.setActionHandler(action, handler);
+      } catch {
+        // Not every action is supported on every engine.
+      }
+    };
+
+    bind("play", () => store().setPlaying(true));
+    bind("pause", () => store().setPlaying(false));
+    bind("previoustrack", () => runSkip("prev"));
+    bind("nexttrack", () => runSkip("next"));
+    bind("seekto", (details) => {
+      if (typeof details.seekTime === "number") {
+        store().seek(details.seekTime);
+      }
+    });
+    // Music-player semantics for keyboard media keys: treat seek± as
+    // prev/next (restart / skip), not ±10s scrub.
+    bind("seekbackward", () => runSkip("prev"));
+    bind("seekforward", () => runSkip("next"));
+
+    return () => {
+      for (const action of [
+        "play",
+        "pause",
+        "previoustrack",
+        "nexttrack",
+        "seekto",
+        "seekbackward",
+        "seekforward",
+      ] as const) {
+        try {
+          ms.setActionHandler(action, null);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rebind on track identity
+  }, [track?.videoId]);
+
+  // Fallback when F7/F9 are delivered as normal function keys (System Settings
+  // → Keyboard → "Use F1, F2, etc. keys as standard function keys") or as the
+  // MediaTrack* key values some engines emit.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === "F7" || e.key === "MediaTrackPrevious") {
+        e.preventDefault();
+        runSkip("prev");
+      } else if (e.key === "F9" || e.key === "MediaTrackNext") {
+        e.preventDefault();
+        runSkip("next");
+      } else if (e.key === "MediaPlayPause" || e.key === "F8") {
+        // F8 usually already toggles <audio>; only handle the explicit media
+        // key name so we don't fight WebKit on F8.
+        if (e.key === "MediaPlayPause") {
+          e.preventDefault();
+          usePlaybackStore.getState().toggle();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Tray menu commands come via a Tauri event. `cancelled` flag
   // protects against StrictMode's mount→unmount→mount race that
@@ -402,10 +509,10 @@ export function useAudioEngine() {
     };
   }, []);
 
-  // SMTC / media-key button presses arrive from Rust (souvlaki) as a
-  // `media-control` event. Drive the store the same way the old
-  // navigator.mediaSession action handlers did. `cancelled` guards against
-  // StrictMode's mount→unmount→mount double-listen, like the tray listener.
+  // SMTC / media-key button presses arrive from Rust (souvlaki /
+  // MPRemoteCommandCenter) as a `media-control` event. `cancelled` guards
+  // against StrictMode's mount→unmount→mount double-listen, like the tray
+  // listener.
   useEffect(() => {
     let cancelled = false;
     let dispose: (() => void) | undefined;
@@ -423,10 +530,10 @@ export function useAudioEngine() {
           store.toggle();
           break;
         case "next":
-          store.next();
+          runSkip("next");
           break;
         case "previous":
-          store.prev();
+          runSkip("prev");
           break;
         case "seek":
           if (typeof e.payload.position === "number") store.seek(e.payload.position);
@@ -440,6 +547,7 @@ export function useAudioEngine() {
       cancelled = true;
       dispose?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runSkip via stable ref
   }, []);
 
   // Prefetch the next queued track in the background while the current
@@ -511,15 +619,17 @@ export function useAudioEngine() {
       });
   }, [autoRadio, qIndex, qLen, seedVideoId]);
 
-  // Push metadata + playback state to the OS media controls (Windows SMTC).
-  // Windows interpolates the scrubber between pushes while the state is
-  // Playing, so we don't push on every timeupdate — just on track / play-state
-  // / duration change, plus a light 2s refresh while playing to correct drift
-  // and reflect seeks. Live values are read imperatively so this OS sync never
-  // re-triggers the resolve / playback effects above.
+  // Push metadata + playback state to the OS media controls (Windows SMTC /
+  // macOS Now Playing via souvlaki) and keep the page Media Session metadata
+  // in sync so WKWebView keeps advertising previous/next for F7/F9. Windows
+  // interpolates the scrubber between pushes while Playing, so we don't push
+  // on every timeupdate — just on track / play-state / duration change, plus a
+  // light 2s refresh while playing to correct drift and reflect seeks. Live
+  // values are read imperatively so this OS sync never re-triggers the resolve
+  // / playback effects above.
   const duration = usePlaybackStore((s) => s.duration);
   useEffect(() => {
-    const push = () => {
+    const pushOs = () => {
       const s = usePlaybackStore.getState();
       const t = s.index >= 0 ? s.queue[s.index] : undefined;
       if (!t) {
@@ -536,9 +646,47 @@ export function useAudioEngine() {
         paused: !s.playing,
       }).catch(() => {});
     };
-    push();
+
+    // Media Session metadata/state: only on dep change (not the 2s tick).
+    // Action handlers are registered once above; this keeps the session
+    // "live" so macOS keeps routing F7/F9 here while audio is playing.
+    if ("mediaSession" in navigator) {
+      try {
+        const s = usePlaybackStore.getState();
+        const t = s.index >= 0 ? s.queue[s.index] : undefined;
+        if (!t) {
+          navigator.mediaSession.metadata = null;
+          navigator.mediaSession.playbackState = "none";
+        } else {
+          const thumbnail = pickThumbnail(t.thumbnails, 512) ?? "";
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: t.title,
+            artist: buildArtistLabel(t),
+            album: t.album || undefined,
+            artwork: thumbnail
+              ? [{ src: thumbnail, sizes: "512x512", type: "image/jpeg" }]
+              : undefined,
+          });
+          navigator.mediaSession.playbackState = s.playing
+            ? "playing"
+            : "paused";
+          const dur = Number.isFinite(s.duration) ? s.duration : 0;
+          if (dur > 0) {
+            navigator.mediaSession.setPositionState?.({
+              duration: dur,
+              playbackRate: 1,
+              position: Math.min(Math.max(0, s.position), dur),
+            });
+          }
+        }
+      } catch {
+        /* ignore unsupported engines */
+      }
+    }
+
+    pushOs();
     if (!playing) return;
-    const id = window.setInterval(push, 2000);
+    const id = window.setInterval(pushOs, 2000);
     return () => window.clearInterval(id);
   }, [track, playing, duration]);
 

@@ -6655,9 +6655,12 @@ name = "ytubic"
 version = "0.3.2"
 dependencies = [
  "axum",
+ "block",
+ "cocoa",
  "cookie",
  "discord-rich-presence",
  "md5",
+ "objc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
