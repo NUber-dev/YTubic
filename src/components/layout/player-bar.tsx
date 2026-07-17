@@ -357,10 +357,18 @@ export function SourceToggle({ track }: { track: QueueTrack }) {
   const autoTriedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!preferVideo) return;
-    if (selected === "video") return;
     if (record?.chosen) return;
     if (autoTriedRef.current === track.videoId) return;
     autoTriedRef.current = track.videoId;
+    // Video-native tracks get `selected: "video"` SEEDED without the
+    // `chosen` flag, and the engine only streams video for chosen
+    // records. Skipping them here left the toggle lit with audio-only
+    // playback. No counterpart hunt needed: flipping chosen is enough.
+    if (selected === "video" || track.kind === "video") {
+      setAlternate(track.videoId, "video", record?.video ?? track.videoId);
+      setSelected(track.videoId, "video");
+      return;
+    }
     void switchTo("video", { auto: true });
     // switchTo identity changes every render; keying on the track and
     // the mode is what actually matters here.
