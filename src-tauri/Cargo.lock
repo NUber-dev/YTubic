@@ -7089,10 +7089,13 @@ version = "0.4.3"
 dependencies = [
  "aes-gcm",
  "axum",
+ "block",
+ "cocoa",
  "cookie",
  "discord-rich-presence",
  "keyring",
  "md5",
+ "objc",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "resvg",

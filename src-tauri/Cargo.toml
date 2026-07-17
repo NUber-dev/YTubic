@@ -121,6 +121,13 @@ rand = "0.8"
 # `PlatformWebview::inner()` returns the same type.
 webkit2gtk = "=2.0.2"
 
+# macOS: attach extra MPRemoteCommandCenter skip handlers (public MediaPlayer
+# API — no Accessibility). Versions aligned with souvlaki's macOS deps.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+cocoa = "0.24"
+block = "0.1"
+
 [dev-dependencies]
 # ServiceExt::oneshot for the stream-server routing test.
 tower = { version = "0.5", features = ["util"] }
