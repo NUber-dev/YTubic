@@ -301,7 +301,6 @@ export function useAudioEngine() {
   const wantVideo = useTrackSourceStore((s) =>
     videoId ? wantsVideoStream(videoId, s.byVideoId) : false,
   );
-  const videoQuality = useSettingsStore((s) => s.videoQuality);
 
   // Tracks queued from surfaces without a length (home cards) carry no
   // duration, which leaves the doubled-header clamp with no reference —
@@ -597,7 +596,10 @@ export function useAudioEngine() {
       }
     }, 1000);
 
-    streamUrlFor(streamVideoId, { vonly: true, vonlyHeight: videoQuality })
+    streamUrlFor(streamVideoId, {
+      vonly: true,
+      vonlyHeight: useSettingsStore.getState().videoQuality,
+    })
       .then((src) => {
         if (cancelled) return;
         video.src = src;
@@ -607,8 +609,65 @@ export function useAudioEngine() {
         if (!cancelled) usePlaybackStore.getState().setStreamKind("audio");
       });
 
+    // Quality changes hot-swap WITHOUT tearing the surface down: a
+    // throwaway element warms the proxy's cache for the new cap first,
+    // and only then the visible element reloads, which the local cache
+    // satisfies near-instantly. Doing this as a plain src swap instead
+    // (or by keying the whole effect on the quality) blanks the video
+    // and resets streamKind, so the player visibly falls back to the
+    // artwork layout for however long the new download takes: exactly
+    // the "video disappeared, audio kept going" report.
+    let switchToken = 0;
+    let warm: HTMLVideoElement | null = null;
+    const switchQuality = async (q: number) => {
+      const token = ++switchToken;
+      try {
+        const src = await streamUrlFor(streamVideoId, {
+          vonly: true,
+          vonlyHeight: q,
+        });
+        if (cancelled || token !== switchToken) return;
+        if (warm) {
+          warm.removeAttribute("src");
+          warm.load();
+        }
+        warm = document.createElement("video");
+        warm.muted = true;
+        warm.preload = "auto";
+        const w = warm;
+        w.addEventListener(
+          "loadeddata",
+          () => {
+            if (cancelled || token !== switchToken) return;
+            video.src = src;
+            video.load();
+            w.removeAttribute("src");
+            w.load();
+            if (warm === w) warm = null;
+          },
+          { once: true },
+        );
+        w.src = src;
+        w.load();
+      } catch {
+        // keep playing at the current quality
+      }
+    };
+    let lastQuality = useSettingsStore.getState().videoQuality;
+    const unsubQuality = useSettingsStore.subscribe((state) => {
+      const q = state.videoQuality;
+      if (q === lastQuality) return;
+      lastQuality = q;
+      void switchQuality(q);
+    });
+
     return () => {
       cancelled = true;
+      unsubQuality();
+      if (warm) {
+        warm.removeAttribute("src");
+        warm.load();
+      }
       window.clearInterval(drift);
       video.removeEventListener("loadeddata", onLoaded);
       video.removeEventListener("error", onError);
@@ -622,7 +681,7 @@ export function useAudioEngine() {
       st.setStreamKind("audio");
       st.setStreamVideoHeight(null);
     };
-  }, [streamVideoId, wantVideo, premiumOk, retryNonce, videoQuality]);
+  }, [streamVideoId, wantVideo, premiumOk, retryNonce]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
