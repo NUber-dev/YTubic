@@ -2026,14 +2026,16 @@ async fn delete_cache_entries(
     for id in targets {
         // Both stream variants for the id, plus stray .part files from
         // crashed downloads.
-        for variant in [
-            StreamVariant::Audio,
-            StreamVariant::Muxed,
-            StreamVariant::VideoOnly(1080),
-            StreamVariant::VideoOnly(720),
-            StreamVariant::VideoOnly(480),
-            StreamVariant::VideoOnly(360),
-        ] {
+        for h in VONLY_HEIGHTS {
+            let (part_name, final_name) = stream_file_names(&id, StreamVariant::VideoOnly(h));
+            let path = dir.join(final_name);
+            if let Ok(meta) = tokio::fs::metadata(&path).await {
+                freed += meta.len();
+            }
+            let _ = tokio::fs::remove_file(&path).await;
+            let _ = tokio::fs::remove_file(dir.join(part_name)).await;
+        }
+        for variant in [StreamVariant::Audio, StreamVariant::Muxed] {
             let (part_name, final_name) = stream_file_names(&id, variant);
             let path = dir.join(final_name);
             if let Ok(meta) = tokio::fs::metadata(&path).await {
@@ -2125,9 +2127,19 @@ const VIDEO_FORMAT: &str = "b[ext=mp4][vcodec^=avc1][acodec!=none]/18";
 /// bare `bv[vcodec^=avc1]` tail keeps a video with nothing under the
 /// cap playable at whatever it has.
 fn vonly_format(height: u32) -> String {
-    format!(
-        "bv[ext=mp4][vcodec^=avc1][height<={height}]/bv[ext=mp4][vcodec^=avc1]/bv[vcodec^=avc1]"
-    )
+    if height > 1080 {
+        // YouTube has no h264 above 1080p; 1440p/4K are VP9 (or AV1).
+        // Modern WKWebView decodes VP9-in-WebM, and the frontend falls
+        // back to artwork if this machine's decoder refuses. The avc1
+        // rungs keep a non-VP9 video playable at 1080p.
+        format!(
+            "bv[ext=webm][vcodec^=vp9][height<={height}]/bv[ext=mp4][vcodec^=avc1][height<=1080]/bv[ext=mp4][vcodec^=avc1]/bv[vcodec^=avc1]"
+        )
+    } else {
+        format!(
+            "bv[ext=mp4][vcodec^=avc1][height<={height}]/bv[ext=mp4][vcodec^=avc1]/bv[vcodec^=avc1]"
+        )
+    }
 }
 #[cfg(not(target_os = "macos"))]
 const VIDEO_FORMAT: &str =
@@ -2306,7 +2318,7 @@ enum StreamVariant {
 
 /// Allowed vonly caps. Anything else in `?h=` falls back to 1080 so a
 /// hand-crafted query can't turn into an unbounded cache-name space.
-const VONLY_HEIGHTS: [u32; 4] = [1080, 720, 480, 360];
+const VONLY_HEIGHTS: [u32; 6] = [2160, 1440, 1080, 720, 480, 360];
 
 fn vonly_height(req: &Request) -> u32 {
     let h = req

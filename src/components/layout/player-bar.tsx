@@ -780,14 +780,17 @@ export function PlayerBar({
               outer box stays so metadata and lyrics below don't jump
               when a track flips between art and video. */}
           {track && streamKind === "video" && variant === "right" && !fullscreen ? (
-            <div className="pointer-events-none relative flex aspect-square w-full items-center justify-center">
-              <VideoSurface className="aspect-video w-full overflow-hidden rounded-md border border-hairline bg-black" />
-              {/* The wrapper is pointer-events-none (the cover doubles
-                  as a drag handle), so hover-reveal can't work here;
-                  the badge stays visible and re-enables its own
-                  pointer events. */}
-              <div className="absolute bottom-[18%] right-2">
-                <VideoQualityBadge className="opacity-70 hover:opacity-100" />
+            <div className="pointer-events-none flex aspect-square w-full items-center justify-center">
+              {/* Inner box matches the video rect exactly so the badge
+                  anchors to the video's own corner, not the square
+                  letterbox. The outer wrapper is pointer-events-none
+                  (the cover doubles as a drag handle); the badge
+                  re-enables its own pointer events. */}
+              <div className="relative aspect-video w-full">
+                <VideoSurface className="size-full overflow-hidden rounded-md border border-hairline bg-black" />
+                <div className="absolute bottom-2 right-2">
+                  <VideoQualityBadge className="opacity-70 hover:opacity-100" />
+                </div>
               </div>
             </div>
           ) : track ? (

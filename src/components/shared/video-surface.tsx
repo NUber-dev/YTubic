@@ -51,7 +51,14 @@ export function VideoSurface({ className }: { className?: string }) {
   );
 }
 
-const QUALITY_OPTIONS: VideoQuality[] = [1080, 720, 480, 360];
+const QUALITY_OPTIONS: VideoQuality[] = [2160, 1440, 1080, 720, 480, 360];
+
+function qualityLabel(q: VideoQuality): string {
+  if (q === 2160) return "4K (VP9)";
+  if (q === 1440) return "1440p (VP9)";
+  if (q === 1080) return "1080p";
+  return `${q}p`;
+}
 
 /**
  * Live "1080p" badge over a video surface, doubling as the quality
@@ -87,7 +94,7 @@ export function VideoQualityBadge({ className }: { className?: string }) {
             onClick={() => setQuality(q)}
             className="flex items-center justify-between"
           >
-            <span>{q === 1080 ? "Auto (up to 1080p)" : `${q}p`}</span>
+            <span>{qualityLabel(q)}</span>
             {quality === q ? <CheckIcon className="size-4" /> : null}
           </DropdownMenuItem>
         ))}

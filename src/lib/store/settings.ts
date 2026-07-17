@@ -6,7 +6,7 @@ import { persist } from "zustand/middleware";
 export type CloseButtonAction = "tray" | "quit";
 export type CacheAutoCleanPeriod = "off" | "daily" | "weekly" | "monthly";
 export type BackgroundMode = "ambient" | "plain";
-export type VideoQuality = 1080 | 720 | 480 | 360;
+export type VideoQuality = 2160 | 1440 | 1080 | 720 | 480 | 360;
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
