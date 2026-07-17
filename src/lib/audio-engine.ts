@@ -82,6 +82,57 @@ export function useAudioEngine() {
   // stream URL after a transient failure (e.g. a googlevideo 403).
   const [retryNonce, setRetryNonce] = useState(0);
 
+  // Video-mode startup hold: audio and frames start TOGETHER (YouTube
+  // semantics) instead of audio leading by however long the vonly
+  // download takes. Generation-keyed by the resolve token so duplicate
+  // ids, retries, and stale listeners can't release someone else's
+  // hold. Every route to el.play() must respect it.
+  const videoHoldRef = useRef<{
+    token: number;
+    audioReady: boolean;
+    videoReady: boolean;
+    timer: number;
+  } | null>(null);
+  const maybeStartHeld = () => {
+    const el = audioRef.current;
+    const h = videoHoldRef.current;
+    if (!el || !h || !h.audioReady || !h.videoReady) return;
+    window.clearTimeout(h.timer);
+    videoHoldRef.current = null;
+    const st = usePlaybackStore.getState();
+    st.setVideoStartup("ready");
+    const comp = companionVideoSingleton;
+    if (comp && Number.isFinite(el.currentTime)) {
+      comp.currentTime = el.currentTime;
+    }
+    // `playing` is the user's intent recorded during the hold; only a
+    // still-true intent becomes actual playback. Both play() calls in
+    // one task keeps the AV start close enough for the drift sync.
+    if (st.playing) {
+      void el.play().catch(() => {});
+      if (comp) void comp.play().catch(() => {});
+    }
+  };
+  /** Abandon the hold and continue audio-only (timeout / error / mode
+   *  off). Detaches the companion so a late loadeddata can't resurrect
+   *  the video mid-song at the wrong time. */
+  const fallbackHeld = (startup: "fallback" | "idle") => {
+    const el = audioRef.current;
+    const h = videoHoldRef.current;
+    if (!h) return;
+    window.clearTimeout(h.timer);
+    videoHoldRef.current = null;
+    const st = usePlaybackStore.getState();
+    st.setVideoStartup(startup);
+    st.setStreamKind("audio");
+    const comp = companionVideoSingleton;
+    if (comp) {
+      comp.removeAttribute("src");
+      comp.load();
+    }
+    if (el && st.playing) void el.play().catch(() => {});
+  };
+
   // Ensure a single media element exists. It's a <video> element, not
   // new Audio(): for audio-only streams the two behave identically, but
   // when the user switches a track to its video source the same element
@@ -464,6 +515,34 @@ export function useAudioEngine() {
     const token = ++resolveTokenRef.current;
     usePlaybackStore.getState().setStatus("loading");
 
+    // Establish the startup hold NOW (not in the async .then) so the
+    // companion becoming ready first still finds it. Staged timeout:
+    // cold 4K legitimately takes ~15s, 1080p should never.
+    if (videoHoldRef.current) {
+      window.clearTimeout(videoHoldRef.current.timer);
+      videoHoldRef.current = null;
+    }
+    if (wantVideo) {
+      const cap = useSettingsStore.getState().videoQuality;
+      const timer = window.setTimeout(
+        () => {
+          const h = videoHoldRef.current;
+          if (!h || h.token !== token) return;
+          fallbackHeld("fallback");
+        },
+        cap > 1080 ? 20_000 : 12_000,
+      );
+      videoHoldRef.current = {
+        token,
+        audioReady: false,
+        videoReady: false,
+        timer,
+      };
+      usePlaybackStore.getState().setVideoStartup("waiting");
+    } else {
+      usePlaybackStore.getState().setVideoStartup("idle");
+    }
+
     // Persist this track's title/artist beside its cache file so the
     // Storage tab can name it without depending on the library walk.
     // Read from the store imperatively (like the rest of this effect) so
@@ -494,6 +573,21 @@ export function useAudioEngine() {
         const st = usePlaybackStore.getState();
         st.setStreamUrl(src);
         el.load();
+        const hold = videoHoldRef.current;
+        if (hold && hold.token === token) {
+          el.addEventListener(
+            "canplay",
+            () => {
+              const h = videoHoldRef.current;
+              if (h && h.token === token) {
+                h.audioReady = true;
+                maybeStartHeld();
+              }
+            },
+            { once: true },
+          );
+          return;
+        }
         if (usePlaybackStore.getState().playing) {
           void el.play().catch((e) => {
             // AbortError is what we get when a pending play() is
@@ -564,17 +658,27 @@ export function useAudioEngine() {
     };
     const onLoaded = () => {
       if (cancelled) return;
-      syncNow();
-      follow();
       const st = usePlaybackStore.getState();
       st.setStreamKind("video");
       st.setStreamVideoHeight(video.videoHeight || null);
+      const h = videoHoldRef.current;
+      if (h) {
+        h.videoReady = true;
+        maybeStartHeld();
+        return;
+      }
+      syncNow();
+      follow();
     };
     const onError = () => {
       if (cancelled) return;
-      // No high-res track (or it failed to decode): stay in audio kind
+      // No high-res track (or it failed to decode): continue audio-only
       // so the surfaces keep showing artwork instead of a black box.
-      usePlaybackStore.getState().setStreamKind("audio");
+      if (videoHoldRef.current) {
+        fallbackHeld("fallback");
+      } else {
+        usePlaybackStore.getState().setStreamKind("audio");
+      }
     };
     const onWaiting = () => {
       if (!cancelled) usePlaybackStore.getState().setVideoBuffering(true);
@@ -615,7 +719,12 @@ export function useAudioEngine() {
         video.load();
       })
       .catch(() => {
-        if (!cancelled) usePlaybackStore.getState().setStreamKind("audio");
+        if (cancelled) return;
+        if (videoHoldRef.current) {
+          fallbackHeld("fallback");
+        } else {
+          usePlaybackStore.getState().setStreamKind("audio");
+        }
       });
 
     // Quality changes hot-swap WITHOUT tearing the surface down: a
@@ -693,6 +802,15 @@ export function useAudioEngine() {
       st.setStreamKind("audio");
       st.setStreamVideoHeight(null);
       st.setVideoBuffering(false);
+      // A pending hold dies with this companion instance, SILENTLY (no
+      // play call: on a track change the old src is still on the master
+      // for a beat and starting it would blip the previous song). The
+      // master resolve effect re-runs right after every cleanup of this
+      // effect and re-establishes hold state for the new inputs.
+      if (videoHoldRef.current) {
+        window.clearTimeout(videoHoldRef.current.timer);
+        videoHoldRef.current = null;
+      }
     };
   }, [streamVideoId, wantVideo, premiumOk, retryNonce]);
 
@@ -711,6 +829,10 @@ export function useAudioEngine() {
     }
     if (!el.src) return;
     if (playing) {
+      // Startup hold active: the intent is recorded in `playing` and
+      // maybeStartHeld() acts on it at release. Playing now would leak
+      // audio ahead of the frames.
+      if (videoHoldRef.current) return;
       void el.play().catch((e) => {
         if (e?.name === "AbortError") return;
         usePlaybackStore.getState().setStatus("error", e?.message ?? String(e));
@@ -774,7 +896,12 @@ export function useAudioEngine() {
     // true), so the [playing] effect never re-fires. After an `ended` event
     // the element is paused, so seeking to 0 alone leaves it silent. Resume
     // here when the store wants playback but the element is paused.
-    if (usePlaybackStore.getState().playing && el.paused && el.src) {
+    if (
+      usePlaybackStore.getState().playing &&
+      el.paused &&
+      el.src &&
+      !videoHoldRef.current
+    ) {
       void el.play().catch((e) => {
         if (e?.name === "AbortError") return;
         usePlaybackStore
@@ -795,11 +922,15 @@ export function useAudioEngine() {
   // bridges navigator.mediaSession to Windows SMTC, not to macOS, so the
   // native side handles it. Fires on track change and play/pause; the
   // seek effect below pushes the new elapsed time.
+  const videoStartupPhase = usePlaybackStore((s) => s.videoStartup);
   useEffect(() => {
     const s = usePlaybackStore.getState();
     const dur = s.duration > 0 ? s.duration : (track?.duration ?? 0);
-    pushNowPlaying(track, playing, s.position, dur);
-  }, [track, playing]);
+    // Report ACTUAL playback: while the video-startup hold is pending
+    // the element is paused, and claiming "playing" would make Now
+    // Playing extrapolate a clock that is not moving.
+    pushNowPlaying(track, playing && videoStartupPhase !== "waiting", s.position, dur);
+  }, [track, playing, videoStartupPhase]);
 
   // Tray menu commands come via a Tauri event. `cancelled` flag
   // protects against StrictMode's mount→unmount→mount race that

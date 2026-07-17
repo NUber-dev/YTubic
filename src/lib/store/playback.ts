@@ -53,6 +53,11 @@ export type PlaybackState = {
   /** True while the companion video is stalled waiting for data (its
    *  audio master keeps playing). Drives the buffering spinner. */
   videoBuffering: boolean;
+  /** Video-mode startup phase. "waiting" = playback is HELD until the
+   *  video track is ready so audio and frames start together (loader
+   *  UI); "fallback" = the video never arrived (timeout/error) and
+   *  playback continued audio-only; "ready"/"idle" = nothing pending. */
+  videoStartup: "idle" | "waiting" | "ready" | "fallback";
 
   // Transport
   playing: boolean;
@@ -94,6 +99,7 @@ export type PlaybackState = {
   setStreamKind: (kind: "audio" | "video") => void;
   setStreamVideoHeight: (height: number | null) => void;
   setVideoBuffering: (v: boolean) => void;
+  setVideoStartup: (v: "idle" | "waiting" | "ready" | "fallback") => void;
   /** Fill in a queue track's duration when it arrived without one
    *  (home-card queues). Only writes missing durations. */
   patchTrackDuration: (videoId: string, seconds: number) => void;
@@ -147,6 +153,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   streamKind: "audio",
   streamVideoHeight: null,
   videoBuffering: false,
+  videoStartup: "idle",
 
   playing: false,
   volume: 0.8,
@@ -401,6 +408,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   setStreamKind: (streamKind) => set({ streamKind }),
   setStreamVideoHeight: (streamVideoHeight) => set({ streamVideoHeight }),
   setVideoBuffering: (videoBuffering) => set({ videoBuffering }),
+  setVideoStartup: (videoStartup) => set({ videoStartup }),
   patchTrackDuration: (videoId, seconds) =>
     set((s) => {
       if (!(seconds > 0)) return s;

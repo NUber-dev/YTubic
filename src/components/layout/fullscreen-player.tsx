@@ -200,6 +200,32 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
   const [scrub, setScrub] = useState<number | null>(null);
   const streamKind = usePlaybackStore((s) => s.streamKind);
   const videoBuffering = usePlaybackStore((s) => s.videoBuffering);
+  const videoStartup = usePlaybackStore((s) => s.videoStartup);
+
+  // Video mode hides the chrome after a few idle seconds (YouTube
+  // behavior): any mouse/key activity brings it back, leaving video
+  // mode resets it visible.
+  const [chromeVisible, setChromeVisible] = useState(true);
+  useEffect(() => {
+    if (streamKind !== "video") {
+      setChromeVisible(true);
+      return;
+    }
+    let timer = window.setTimeout(() => setChromeVisible(false), 3000);
+    const wake = () => {
+      setChromeVisible(true);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setChromeVisible(false), 3000);
+    };
+    window.addEventListener("mousemove", wake);
+    window.addEventListener("keydown", wake);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("mousemove", wake);
+      window.removeEventListener("keydown", wake);
+    };
+  }, [streamKind]);
+  const chromeHidden = streamKind === "video" && !chromeVisible;
   const iTunesCover = useLatchedCover(track, useITunesCover(track));
   const lyricsState = useLyricsView(track);
 
@@ -359,7 +385,10 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
         animate={{ opacity: 1 }}
         transition={{ duration: 0.18, ease: "easeOut" }}
         style={accentStyle}
-        className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-background"
+        className={cn(
+          "fixed inset-0 z-50 flex flex-col overflow-hidden bg-background",
+          chromeHidden && "cursor-none",
+        )}
         role="dialog"
         aria-label="Now playing"
       >
@@ -392,10 +421,17 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             control strip over a legibility gradient. */}
         {streamKind === "video" ? (
           <>
+            {/* Solid black stage behind the frames: the art-tinted
+                ambient bleeding around a letterboxed video reads as a
+                glitch, real video players letterbox on black. */}
+            <div aria-hidden className="absolute inset-0 z-[4] bg-black" />
             <VideoSurface className="absolute inset-0 z-[5]" />
             <div
               aria-hidden
-              className="absolute inset-x-0 bottom-0 z-[6] h-56 bg-gradient-to-t from-black/75 via-black/35 to-transparent"
+              className={cn(
+                "absolute inset-x-0 bottom-0 z-[6] h-56 bg-gradient-to-t from-black/75 via-black/35 to-transparent transition-opacity duration-500",
+                chromeHidden && "opacity-0",
+              )}
             />
             {videoBuffering ? (
               <div className="absolute inset-0 z-[7] flex items-center justify-center">
@@ -409,7 +445,12 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
           {/* Exit chevron floats top-right instead of occupying a flex
               row, so the stage really is the full height and a
               lyric-less layout centers as one unit. */}
-          <div className="absolute right-[2vw] top-[calc(var(--titlebar-h)+0.75rem)] z-20">
+          <div
+            className={cn(
+              "absolute right-[2vw] top-[calc(var(--titlebar-h)+0.75rem)] z-20 transition-opacity duration-500",
+              chromeHidden && "pointer-events-none opacity-0",
+            )}
+          >
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -439,7 +480,12 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             )}
           >
             {streamKind === "video" ? (
-              <div className="relative flex w-[min(44rem,84vw)] min-w-0 flex-col gap-0.5 pb-1 text-center">
+              <div
+                className={cn(
+                  "relative flex w-[min(44rem,84vw)] min-w-0 flex-col gap-0.5 pb-1 text-center transition-opacity duration-500",
+                  chromeHidden && "pointer-events-none opacity-0",
+                )}
+              >
                 <VideoQualityBadge className="absolute -top-1 right-0" />
                 <span className="max-w-full truncate text-xl font-semibold">
                   {track.title}
@@ -457,12 +503,12 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
                 Without lyrics the same column simply centers alone. */}
             <div
               className={cn(
-                "flex min-w-0 shrink-0 flex-col",
+                "relative flex min-w-0 shrink-0 flex-col",
                 showLyrics ? "w-[min(32vw,50vh)]" : "w-[min(38vw,56vh)]",
               )}
             >
               <CrossfadeArt
-                  className="w-full"
+                  className="relative w-full"
                   slotKey={`${track.videoId}:${iTunesCover ? "hi" : "lo"}`}
                 >
                   <Thumbnail
@@ -474,6 +520,14 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
                     overrideHighRes={iTunesCover}
                   />
               </CrossfadeArt>
+              {videoStartup === "waiting" ? (
+                <div className="pointer-events-none absolute inset-x-0 top-0 flex aspect-square items-center justify-center">
+                  <div className="flex items-center gap-1.5 rounded-full border border-hairline bg-black/55 px-3 py-1.5 text-sm font-medium text-white/85 backdrop-blur-md">
+                    <Loader2Icon className="size-4 animate-spin" />
+                    loading video
+                  </div>
+                </div>
+              ) : null}
               <div
                 className={cn(
                   "mt-4 flex min-w-0 flex-col gap-0.5",

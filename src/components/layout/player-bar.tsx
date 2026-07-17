@@ -48,7 +48,6 @@ import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import {
   useTrackSourceStore,
-  wantsVideoStream,
   type SourceKind,
 } from "@/lib/store/track-source";
 import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
@@ -697,9 +696,7 @@ export function PlayerBar({
   const [fullscreen, setFullscreen] = useState(false);
   const streamKind = usePlaybackStore((s) => s.streamKind);
   const videoBuffering = usePlaybackStore((s) => s.videoBuffering);
-  const wantVideo = useTrackSourceStore((s) =>
-    track?.videoId ? wantsVideoStream(track.videoId, s.byVideoId) : false,
-  );
+  const videoStartup = usePlaybackStore((s) => s.videoStartup);
   const iTunesCover = useLatchedCover(track, useITunesCover(track));
   // Accent for the whole player surface, pulled from the cover art (same
   // source the fullscreen view uses) so the seek fill, play button, and
@@ -848,13 +845,15 @@ export function PlayerBar({
                 highRes
                 overrideHighRes={iTunesCover}
               />
-              {/* Video wanted but no frames yet: the vonly stream is
-                  still resolving/downloading. Say so instead of looking
-                  like the toggle did nothing. */}
-              {wantVideo && streamKind !== "video" ? (
-                <div className="absolute bottom-2 right-2 flex items-center gap-1.5 rounded-full border border-hairline bg-black/55 px-2 py-1 text-xs font-medium text-white/85 backdrop-blur-md">
-                  <Loader2Icon className="size-3 animate-spin" />
-                  loading video
+              {/* Playback is held until the video is ready (loader in
+                  the middle of the art, YouTube style). "waiting" only;
+                  a fallback start must not leave a stuck loader. */}
+              {videoStartup === "waiting" ? (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="flex items-center gap-1.5 rounded-full border border-hairline bg-black/55 px-3 py-1.5 text-xs font-medium text-white/85 backdrop-blur-md">
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                    loading video
+                  </div>
                 </div>
               ) : null}
             </div>
