@@ -36,6 +36,21 @@ export function getMediaElement(): HTMLVideoElement | null {
   return mediaElSingleton;
 }
 
+// Muted companion element that carries the high-res VIDEO-ONLY stream
+// while the singleton above stays the audio master. YouTube stopped
+// serving progressive (muxed) files above 360p and we don't ship
+// ffmpeg to merge tracks, so "video mode" plays the audio variant for
+// sound and drift-syncs these frames to it. Created on first use,
+// torn down (src dropped) whenever the current track isn't in video
+// mode.
+let companionVideoSingleton: HTMLVideoElement | null = null;
+/** The element a VideoSurface should adopt: the companion when video
+ *  mode is active, else the master (which still carries frames for the
+ *  legacy muxed fallback). */
+export function getVideoSurfaceElement(): HTMLVideoElement | null {
+  return companionVideoSingleton ?? mediaElSingleton;
+}
+
 export function useAudioEngine() {
   const audioRef = useRef<HTMLVideoElement | null>(null);
   // Guard against stale stream resolutions when the user skips mid-fetch.
@@ -465,7 +480,11 @@ export function useAudioEngine() {
     // yt-dlp and pipes the audio bytes progressively so playback starts
     // as soon as the first chunk lands (typically ~200ms after the
     // yt-dlp subprocess starts emitting bytes).
-    streamUrlFor(streamVideoId, { video: wantVideo })
+    // Master always plays the AUDIO variant, even in video mode: the
+    // companion element (effect below) carries the picture. streamKind
+    // is promoted to "video" only when the companion actually has
+    // frames, so the reset-on-src-drop above stays authoritative.
+    streamUrlFor(streamVideoId)
       .then((src) => {
         if (token !== resolveTokenRef.current) return;
         if (import.meta.env.DEV) {
@@ -474,7 +493,6 @@ export function useAudioEngine() {
         el.src = src;
         const st = usePlaybackStore.getState();
         st.setStreamUrl(src);
-        st.setStreamKind(wantVideo ? "video" : "audio");
         el.load();
         if (usePlaybackStore.getState().playing) {
           void el.play().catch((e) => {
@@ -508,6 +526,98 @@ export function useAudioEngine() {
     // `retryNonce` so the error handler can force a fresh stream-URL fetch
     // for the current track after a transient failure without changing id.
   }, [streamVideoId, wantVideo, videoId, index, premiumOk, retryNonce]);
+
+  // Companion video: when the user picked the video version, stream the
+  // high-res video-only DASH track into a muted element and keep it
+  // glued to the audio master's clock. Frames come from the companion,
+  // sound and all engine logic (duration correction, outro advance,
+  // media keys) stay on the master. Drift is trimmed continuously with
+  // a playbackRate nudge and snapped when it exceeds SNAP_S (seeks,
+  // decoder stalls).
+  useEffect(() => {
+    const master = audioRef.current;
+    if (!master) return;
+    if (!wantVideo || !streamVideoId || !premiumOk) return;
+    let cancelled = false;
+    let comp = companionVideoSingleton;
+    if (!comp) {
+      comp = document.createElement("video");
+      comp.muted = true;
+      comp.playsInline = true;
+      comp.preload = "auto";
+      companionVideoSingleton = comp;
+    }
+    const video = comp;
+
+    const SNAP_S = 0.3;
+    const syncNow = () => {
+      if (Number.isFinite(master.currentTime)) {
+        video.currentTime = master.currentTime;
+      }
+    };
+    const follow = () => {
+      if (master.paused) {
+        video.pause();
+      } else if (video.src) {
+        void video.play().catch(() => {});
+      }
+    };
+    const onLoaded = () => {
+      if (cancelled) return;
+      syncNow();
+      follow();
+      usePlaybackStore.getState().setStreamKind("video");
+    };
+    const onError = () => {
+      if (cancelled) return;
+      // No high-res track (or it failed to decode): stay in audio kind
+      // so the surfaces keep showing artwork instead of a black box.
+      usePlaybackStore.getState().setStreamKind("audio");
+    };
+    video.addEventListener("loadeddata", onLoaded);
+    video.addEventListener("error", onError);
+    master.addEventListener("play", follow);
+    master.addEventListener("pause", follow);
+    master.addEventListener("seeked", syncNow);
+    // Continuous drift trim: small offsets are absorbed by a playback-
+    // rate nudge (invisible), anything past SNAP_S snaps. Also re-snaps
+    // after decoder stalls, where the companion silently falls behind.
+    const drift = window.setInterval(() => {
+      if (video.readyState < 2 || master.paused) return;
+      const d = master.currentTime - video.currentTime;
+      if (Math.abs(d) > SNAP_S) {
+        video.currentTime = master.currentTime;
+        video.playbackRate = master.playbackRate;
+      } else {
+        video.playbackRate =
+          master.playbackRate + Math.max(-0.04, Math.min(0.04, d * 0.1));
+      }
+    }, 1000);
+
+    streamUrlFor(streamVideoId, { vonly: true })
+      .then((src) => {
+        if (cancelled) return;
+        video.src = src;
+        video.load();
+      })
+      .catch(() => {
+        if (!cancelled) usePlaybackStore.getState().setStreamKind("audio");
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(drift);
+      video.removeEventListener("loadeddata", onLoaded);
+      video.removeEventListener("error", onError);
+      master.removeEventListener("play", follow);
+      master.removeEventListener("pause", follow);
+      master.removeEventListener("seeked", syncNow);
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+      usePlaybackStore.getState().setStreamKind("audio");
+    };
+  }, [streamVideoId, wantVideo, premiumOk, retryNonce]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);

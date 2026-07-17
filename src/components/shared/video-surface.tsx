@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
-import { getMediaElement } from "@/lib/audio-engine";
+import { getVideoSurfaceElement } from "@/lib/audio-engine";
 import { cn } from "@/lib/utils";
 
 /**
@@ -21,7 +21,7 @@ export function VideoSurface({ className }: { className?: string }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const host = hostRef.current;
-    const el = getMediaElement();
+    const el = getVideoSurfaceElement();
     if (!host || !el) return;
     host.appendChild(el);
     return () => {

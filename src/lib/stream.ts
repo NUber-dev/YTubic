@@ -44,14 +44,19 @@ export async function streamUrlFor(
   videoId: string,
   opts?: {
     /** Ask the server for the progressive music-video file (`?video=1`)
-     *  instead of the audio-only download. */
+     *  instead of the audio-only download. 360p ceiling; kept as the
+     *  companion fallback. */
     video?: boolean;
+    /** Ask for the high-res video-only DASH track (`?vonly=1`), played
+     *  muted beside the audio master by the companion surface. */
+    vonly?: boolean;
   },
 ): Promise<string> {
   const base = await getStreamBaseUrl();
   const params = new URLSearchParams();
   if (!isPremium()) params.set("ephemeral", "1");
-  if (opts?.video) params.set("video", "1");
+  if (opts?.vonly) params.set("vonly", "1");
+  else if (opts?.video) params.set("video", "1");
   const qs = params.toString();
   return `${base}/stream/${encodeURIComponent(videoId)}${qs ? `?${qs}` : ""}`;
 }

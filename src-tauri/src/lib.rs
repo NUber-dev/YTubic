@@ -2000,8 +2000,11 @@ async fn delete_cache_entries(
                 // has to be swept, so enumerate every variant.
                 let id = name
                     .strip_suffix(".video.mp4")
+                    .or_else(|| name.strip_suffix(".vonly.mp4"))
                     .or_else(|| name.strip_suffix(".webm"))
                     .or_else(|| name.strip_suffix(".meta.json"))
+                    .or_else(|| name.strip_suffix(".video.part"))
+                    .or_else(|| name.strip_suffix(".vonly.part"))
                     .or_else(|| name.strip_suffix(".part"));
                 if let Some(id) = id {
                     if sanitize_video_id(id) {
@@ -2021,8 +2024,12 @@ async fn delete_cache_entries(
     for id in targets {
         // Both stream variants for the id, plus stray .part files from
         // crashed downloads.
-        for video in [false, true] {
-            let (part_name, final_name) = stream_file_names(&id, video);
+        for variant in [
+            StreamVariant::Audio,
+            StreamVariant::Muxed,
+            StreamVariant::VideoOnly,
+        ] {
+            let (part_name, final_name) = stream_file_names(&id, variant);
             let path = dir.join(final_name);
             if let Ok(meta) = tokio::fs::metadata(&path).await {
                 freed += meta.len();
@@ -2107,6 +2114,11 @@ const AUDIO_FORMAT: &str = "bestaudio[ext=webm]/bestaudio";
 /// last resort on top of that.
 #[cfg(target_os = "macos")]
 const VIDEO_FORMAT: &str = "b[ext=mp4][vcodec^=avc1][acodec!=none]/18";
+
+/// Video-only DASH track for the companion surface. h264-in-mp4 only
+/// (WKWebView decode), capped at 1080p to keep files sane.
+const VONLY_FORMAT: &str =
+    "bv[ext=mp4][vcodec^=avc1][height<=1080]/bv[ext=mp4][vcodec^=avc1]/bv[vcodec^=avc1]";
 #[cfg(not(target_os = "macos"))]
 const VIDEO_FORMAT: &str =
     "b[ext=mp4][vcodec^=avc1][acodec!=none]/18/b[ext=webm][acodec!=none]";
@@ -2149,6 +2161,56 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
         ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("stdout not utf8: {e}"))
+}
+
+/// Resolve the HLS variant URL for a music video. WKWebView plays HLS
+/// natively (AVFoundation), which is the only way past the 360p
+/// progressive ceiling without shipping ffmpeg: YouTube's iOS client
+/// exposes per-quality m3u8 variants up to 1080p, and
+/// `best[protocol^=m3u8]` picks the top one. The URL goes straight to
+/// the media element (googlevideo allows anonymous playback from the
+/// resolving IP); no proxying, no disk cache. Callers fall back to the
+/// progressive proxy stream when this errors (id has no HLS).
+#[tauri::command]
+fn resolve_hls_stream(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
+    if !sanitize_video_id(&video_id) {
+        return Err(format!("invalid videoId: {video_id}"));
+    }
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let mut command = std::process::Command::new(ytdlp::program(&ytdlp::managed_path(&app)));
+    command.args([
+        "-g",
+        "-f",
+        "best[protocol^=m3u8]",
+        "--no-playlist",
+        "--no-warnings",
+        "--extractor-args",
+        "youtube:player_client=ios",
+        &url,
+    ]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = command
+        .output()
+        .map_err(|e| format!("spawn yt-dlp: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "yt-dlp exit {}: {}",
+            output.status,
+            stderr.chars().take(400).collect::<String>()
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|e| format!("stdout not utf8: {e}"))?;
+    let line = stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("http") && l.contains("m3u8"))
+        .ok_or_else(|| "no hls url in yt-dlp output".to_string())?;
+    Ok(line.to_string())
 }
 
 /// Lifecycle of a single track's yt-dlp download. yt-dlp writes
@@ -2215,18 +2277,45 @@ fn is_video(req: &Request) -> bool {
     query_flag(req, "video")
 }
 
+/// Which of the three cached stream variants a request refers to.
+/// `Muxed` is the progressive 360p file (WKWebView-decodable audio+
+/// video in one container, the historical `?video=1`), `VideoOnly` is
+/// the high-res DASH video track used as a muted companion surface
+/// while the audio variant stays the playback master (YouTube stopped
+/// serving progressive files above 360p, and merging tracks would need
+/// ffmpeg, which we don't ship).
+#[derive(Clone, Copy, PartialEq)]
+enum StreamVariant {
+    Audio,
+    Muxed,
+    VideoOnly,
+}
+
+fn stream_variant(req: &Request) -> StreamVariant {
+    if query_flag(req, "vonly") {
+        StreamVariant::VideoOnly
+    } else if is_video(req) {
+        StreamVariant::Muxed
+    } else {
+        StreamVariant::Audio
+    }
+}
+
 /// On-disk names for one videoId's cached stream + its in-flight part
 /// file. Audio keeps the historical `.webm` name (regardless of actual
 /// container — see `sniff_stream_mime`); the video variant lives next
 /// to it so the same id can have both cached.
-fn stream_file_names(video_id: &str, video: bool) -> (String, String) {
-    if video {
-        (
+fn stream_file_names(video_id: &str, variant: StreamVariant) -> (String, String) {
+    match variant {
+        StreamVariant::Muxed => (
             format!("{video_id}.video.part"),
             format!("{video_id}.video.mp4"),
-        )
-    } else {
-        (format!("{video_id}.part"), format!("{video_id}.webm"))
+        ),
+        StreamVariant::VideoOnly => (
+            format!("{video_id}.vonly.part"),
+            format!("{video_id}.vonly.mp4"),
+        ),
+        StreamVariant::Audio => (format!("{video_id}.part"), format!("{video_id}.webm")),
     }
 }
 
@@ -2682,7 +2771,7 @@ async fn get_stream_base_url(
 /// for every pool/variant combination.
 fn spawn_downloader(
     video_id: String,
-    video: bool,
+    variant: StreamVariant,
     target_dir: PathBuf,
     map_key: String,
     srv: StreamServer,
@@ -2691,7 +2780,7 @@ fn spawn_downloader(
     let downloads = srv.downloads.clone();
     tokio::spawn(async move {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
-        let (part_name, final_name) = stream_file_names(&video_id, video);
+        let (part_name, final_name) = stream_file_names(&video_id, variant);
         let part_path = target_dir.join(part_name);
         let final_path = target_dir.join(final_name);
         let _ = tokio::fs::create_dir_all(&target_dir).await;
@@ -2700,7 +2789,11 @@ fn spawn_downloader(
         let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
         cmd.args([
             "-f",
-            if video { VIDEO_FORMAT } else { AUDIO_FORMAT },
+            match variant {
+                StreamVariant::Muxed => VIDEO_FORMAT,
+                StreamVariant::VideoOnly => VONLY_FORMAT,
+                StreamVariant::Audio => AUDIO_FORMAT,
+            },
             "--no-playlist",
             "--no-warnings",
             "--no-part",
@@ -2876,21 +2969,25 @@ async fn stream_handler(
     }
 
     let ephemeral = is_ephemeral(&req);
-    let video = is_video(&req);
+    let variant = stream_variant(&req);
     let target_dir = if ephemeral {
         srv.ephemeral_dir.clone()
     } else {
         srv.cache_dir.clone()
     };
-    // Four independent in-flight pools: {persistent, ephemeral} ×
-    // {audio, video} — the same id may legitimately be downloading in
-    // more than one of them.
+    // Independent in-flight pools: {persistent, ephemeral} ×
+    // {audio, muxed video, video-only}; the same id may legitimately
+    // be downloading in more than one of them.
     let map_key = format!(
         "{}{}:{video_id}",
         if ephemeral { "e" } else { "p" },
-        if video { "v" } else { "" },
+        match variant {
+            StreamVariant::Muxed => "v",
+            StreamVariant::VideoOnly => "vo",
+            StreamVariant::Audio => "",
+        },
     );
-    let final_path = target_dir.join(stream_file_names(&video_id, video).1);
+    let final_path = target_dir.join(stream_file_names(&video_id, variant).1);
 
     // If the full file isn't on disk yet, start (or attach to) the
     // download and block until it completes. Attempting to progressively
@@ -2920,7 +3017,12 @@ async fn stream_handler(
         .unwrap_or("")
         .to_string();
     eprintln!(
-        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral} video={video}",
+        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral} variant={}",
+        match variant {
+            StreamVariant::Muxed => "muxed",
+            StreamVariant::VideoOnly => "vonly",
+            StreamVariant::Audio => "audio",
+        },
         final_path.exists()
     );
 
@@ -2938,7 +3040,7 @@ async fn stream_handler(
                 drop(map);
                 spawn_downloader(
                     video_id.clone(),
-                    video,
+                    variant,
                     target_dir.clone(),
                     map_key.clone(),
                     srv.clone(),
@@ -2981,7 +3083,7 @@ async fn stream_handler(
     // to m4a when a video has no webm audio — serving that as
     // `video/webm` (what tower-http guesses from the extension) makes
     // Chromium refuse to decode.
-    let sniffed_ct = sniff_stream_mime(&final_path, video).await;
+    let sniffed_ct = sniff_stream_mime(&final_path, variant != StreamVariant::Audio).await;
     let mut resp = ServeFile::new(&final_path)
         .oneshot(req)
         .await
@@ -3065,7 +3167,7 @@ async fn prefetch_handler(
         return StatusCode::BAD_REQUEST;
     }
     let ephemeral = is_ephemeral(&req);
-    let video = is_video(&req);
+    let variant = stream_variant(&req);
     let target_dir = if ephemeral {
         srv.ephemeral_dir.clone()
     } else {
@@ -3074,9 +3176,13 @@ async fn prefetch_handler(
     let map_key = format!(
         "{}{}:{video_id}",
         if ephemeral { "e" } else { "p" },
-        if video { "v" } else { "" },
+        match variant {
+            StreamVariant::Muxed => "v",
+            StreamVariant::VideoOnly => "vo",
+            StreamVariant::Audio => "",
+        },
     );
-    let final_path = target_dir.join(stream_file_names(&video_id, video).1);
+    let final_path = target_dir.join(stream_file_names(&video_id, variant).1);
     if final_path.exists() {
         return StatusCode::OK;
     }
@@ -3096,7 +3202,7 @@ async fn prefetch_handler(
         map.insert(map_key.clone(), state.clone());
         state
     };
-    spawn_downloader(video_id, video, target_dir, map_key, srv.clone(), state);
+    spawn_downloader(video_id, variant, target_dir, map_key, srv.clone(), state);
     StatusCode::ACCEPTED
 }
 
@@ -3337,6 +3443,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
             resolve_stream_ytdlp,
+            resolve_hls_stream,
             get_stream_base_url,
             start_login,
             get_cookie_header,
