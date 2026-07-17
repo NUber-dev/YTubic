@@ -79,6 +79,11 @@ export function VideoQualityBadge({ className }: { className?: string }) {
         <button
           type="button"
           aria-label="Video quality"
+          title={
+            height < quality * 0.9
+              ? `this video tops out at ${height}p`
+              : undefined
+          }
           className={cn(
             "pointer-events-auto rounded-full border border-hairline bg-black/50 px-2 py-0.5 text-xs font-semibold text-white/90 backdrop-blur-md transition-colors hover:bg-black/70",
             className,
@@ -98,6 +103,14 @@ export function VideoQualityBadge({ className }: { className?: string }) {
             {quality === q ? <CheckIcon className="size-4" /> : null}
           </DropdownMenuItem>
         ))}
+        {/* The setting is a CAP, the badge is reality. When they differ
+            (a 2007 MV or an art track has no 4K), say so right in the
+            menu instead of looking like the setting silently failed. */}
+        {height < quality * 0.9 ? (
+          <div className="border-t border-hairline px-2 py-1.5 text-xs text-muted-foreground">
+            this video tops out at {height}p
+          </div>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
