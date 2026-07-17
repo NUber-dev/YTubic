@@ -17,7 +17,10 @@ import {
 } from "lucide-react";
 import { QueueBody, QueueToggleButton } from "@/components/layout/queue-panel";
 import { FullscreenPlayer } from "@/components/layout/fullscreen-player";
-import { VideoSurface } from "@/components/shared/video-surface";
+import {
+  VideoQualityBadge,
+  VideoSurface,
+} from "@/components/shared/video-surface";
 import {
   LyricsBody,
   LyricsSourceButton,
@@ -777,8 +780,15 @@ export function PlayerBar({
               outer box stays so metadata and lyrics below don't jump
               when a track flips between art and video. */}
           {track && streamKind === "video" && variant === "right" && !fullscreen ? (
-            <div className="pointer-events-none flex aspect-square w-full items-center justify-center">
+            <div className="pointer-events-none relative flex aspect-square w-full items-center justify-center">
               <VideoSurface className="aspect-video w-full overflow-hidden rounded-md border border-hairline bg-black" />
+              {/* The wrapper is pointer-events-none (the cover doubles
+                  as a drag handle), so hover-reveal can't work here;
+                  the badge stays visible and re-enables its own
+                  pointer events. */}
+              <div className="absolute bottom-[18%] right-2">
+                <VideoQualityBadge className="opacity-70 hover:opacity-100" />
+              </div>
             </div>
           ) : track ? (
             <Thumbnail

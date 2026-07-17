@@ -37,7 +37,10 @@ import {
   thumbnailUrlsBySize,
 } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
-import { VideoSurface } from "@/components/shared/video-surface";
+import {
+  VideoQualityBadge,
+  VideoSurface,
+} from "@/components/shared/video-surface";
 import { cn, artistLineFromSubtitle } from "@/lib/utils";
 
 // Where the active line rests in the fullscreen lyric pane. Apple
@@ -430,7 +433,8 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             )}
           >
             {streamKind === "video" ? (
-              <div className="flex w-[min(44rem,84vw)] min-w-0 flex-col gap-0.5 pb-1 text-center">
+              <div className="relative flex w-[min(44rem,84vw)] min-w-0 flex-col gap-0.5 pb-1 text-center">
+                <VideoQualityBadge className="absolute -top-1 right-0" />
                 <span className="max-w-full truncate text-xl font-semibold">
                   {track.title}
                 </span>

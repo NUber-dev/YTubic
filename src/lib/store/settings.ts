@@ -6,6 +6,7 @@ import { persist } from "zustand/middleware";
 export type CloseButtonAction = "tray" | "quit";
 export type CacheAutoCleanPeriod = "off" | "daily" | "weekly" | "monthly";
 export type BackgroundMode = "ambient" | "plain";
+export type VideoQuality = 1080 | 720 | 480 | 360;
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
@@ -21,6 +22,9 @@ type State = {
   /** System toast on track change while the app is in the background
    *  (see `lib/playback-notifications.ts`). */
   playbackNotifications: boolean;
+  /** Height cap for the video-mode companion stream. 1080 doubles as
+   *  "Auto": the server picks the best track at or under the cap. */
+  videoQuality: VideoQuality;
   /** Broadcast the current track to Discord as a Rich Presence status
    *  ("Listening to YTubic"). Off by default — opt-in for privacy.
    *  The IPC worker lives in `src-tauri/src/discord.rs`. */
@@ -48,6 +52,7 @@ type State = {
   markCacheCleaned: () => void;
   setBackground: (v: BackgroundMode) => void;
   setPlaybackNotifications: (v: boolean) => void;
+  setVideoQuality: (v: VideoQuality) => void;
   setDiscordRichPresence: (v: boolean) => void;
   setLastfmEnabled: (v: boolean) => void;
   setLastfmLoveSync: (v: boolean) => void;
@@ -72,6 +77,7 @@ export const useSettingsStore = create<State>()(
       lastCacheCleanAt: 0,
       background: "ambient",
       playbackNotifications: false,
+      videoQuality: 1080,
       discordRichPresence: false,
       lastfmEnabled: false,
       lastfmSessionKey: null,
@@ -84,6 +90,7 @@ export const useSettingsStore = create<State>()(
       setBackground: (background) => set({ background }),
       setPlaybackNotifications: (playbackNotifications) =>
         set({ playbackNotifications }),
+      setVideoQuality: (videoQuality) => set({ videoQuality }),
       setDiscordRichPresence: (discordRichPresence) =>
         set({ discordRichPresence }),
       setLastfmEnabled: (lastfmEnabled) => set({ lastfmEnabled }),

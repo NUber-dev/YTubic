@@ -47,6 +47,9 @@ export type PlaybackState = {
    *  to the video source) or the audio-only download. The fullscreen
    *  player uses this to swap the artwork for the live video surface. */
   streamKind: "audio" | "video";
+  /** Native pixel height of the active video surface (companion or
+   *  muxed), for the quality badge. null while no frames are loaded. */
+  streamVideoHeight: number | null;
 
   // Transport
   playing: boolean;
@@ -86,6 +89,7 @@ export type PlaybackState = {
   setStatus: (status: LoadStatus, error?: string) => void;
   setStreamUrl: (url?: string) => void;
   setStreamKind: (kind: "audio" | "video") => void;
+  setStreamVideoHeight: (height: number | null) => void;
   /** Fill in a queue track's duration when it arrived without one
    *  (home-card queues). Only writes missing durations. */
   patchTrackDuration: (videoId: string, seconds: number) => void;
@@ -137,6 +141,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   error: undefined,
   streamUrl: undefined,
   streamKind: "audio",
+  streamVideoHeight: null,
 
   playing: false,
   volume: 0.8,
@@ -389,6 +394,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   setStatus: (status, error) => set({ status, error }),
   setStreamUrl: (streamUrl) => set({ streamUrl }),
   setStreamKind: (streamKind) => set({ streamKind }),
+  setStreamVideoHeight: (streamVideoHeight) => set({ streamVideoHeight }),
   patchTrackDuration: (videoId, seconds) =>
     set((s) => {
       if (!(seconds > 0)) return s;

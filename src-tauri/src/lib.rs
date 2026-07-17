@@ -1998,13 +1998,15 @@ async fn delete_cache_entries(
             if let Some(name) = e.file_name().to_str() {
                 // A track cached only as video (`<id>.video.mp4`) still
                 // has to be swept, so enumerate every variant.
+                // `.vonly{h}.{mp4,part}` variants are matched by
+                // splitting on the marker instead of enumerating every
+                // height suffix.
                 let id = name
                     .strip_suffix(".video.mp4")
-                    .or_else(|| name.strip_suffix(".vonly.mp4"))
                     .or_else(|| name.strip_suffix(".webm"))
                     .or_else(|| name.strip_suffix(".meta.json"))
                     .or_else(|| name.strip_suffix(".video.part"))
-                    .or_else(|| name.strip_suffix(".vonly.part"))
+                    .or_else(|| name.split(".vonly").next().filter(|_| name.contains(".vonly")))
                     .or_else(|| name.strip_suffix(".part"));
                 if let Some(id) = id {
                     if sanitize_video_id(id) {
@@ -2027,7 +2029,10 @@ async fn delete_cache_entries(
         for variant in [
             StreamVariant::Audio,
             StreamVariant::Muxed,
-            StreamVariant::VideoOnly,
+            StreamVariant::VideoOnly(1080),
+            StreamVariant::VideoOnly(720),
+            StreamVariant::VideoOnly(480),
+            StreamVariant::VideoOnly(360),
         ] {
             let (part_name, final_name) = stream_file_names(&id, variant);
             let path = dir.join(final_name);
@@ -2115,10 +2120,15 @@ const AUDIO_FORMAT: &str = "bestaudio[ext=webm]/bestaudio";
 #[cfg(target_os = "macos")]
 const VIDEO_FORMAT: &str = "b[ext=mp4][vcodec^=avc1][acodec!=none]/18";
 
-/// Video-only DASH track for the companion surface. h264-in-mp4 only
-/// (WKWebView decode), capped at 1080p to keep files sane.
-const VONLY_FORMAT: &str =
-    "bv[ext=mp4][vcodec^=avc1][height<=1080]/bv[ext=mp4][vcodec^=avc1]/bv[vcodec^=avc1]";
+/// Video-only DASH selector for the companion surface. h264-in-mp4
+/// only (WKWebView decode), capped at the user's chosen height. The
+/// bare `bv[vcodec^=avc1]` tail keeps a video with nothing under the
+/// cap playable at whatever it has.
+fn vonly_format(height: u32) -> String {
+    format!(
+        "bv[ext=mp4][vcodec^=avc1][height<={height}]/bv[ext=mp4][vcodec^=avc1]/bv[vcodec^=avc1]"
+    )
+}
 #[cfg(not(target_os = "macos"))]
 const VIDEO_FORMAT: &str =
     "b[ext=mp4][vcodec^=avc1][acodec!=none]/18/b[ext=webm][acodec!=none]";
@@ -2288,12 +2298,33 @@ fn is_video(req: &Request) -> bool {
 enum StreamVariant {
     Audio,
     Muxed,
-    VideoOnly,
+    /// Payload = height cap for the DASH pick (1080/720/480/360),
+    /// which is also part of the cache filename so each quality is
+    /// cached independently.
+    VideoOnly(u32),
+}
+
+/// Allowed vonly caps. Anything else in `?h=` falls back to 1080 so a
+/// hand-crafted query can't turn into an unbounded cache-name space.
+const VONLY_HEIGHTS: [u32; 4] = [1080, 720, 480, 360];
+
+fn vonly_height(req: &Request) -> u32 {
+    let h = req
+        .uri()
+        .query()
+        .and_then(|q| {
+            q.split('&').find_map(|kv| {
+                let mut it = kv.splitn(2, '=');
+                (it.next() == Some("h")).then(|| it.next().unwrap_or(""))?.parse::<u32>().ok()
+            })
+        })
+        .unwrap_or(1080);
+    if VONLY_HEIGHTS.contains(&h) { h } else { 1080 }
 }
 
 fn stream_variant(req: &Request) -> StreamVariant {
     if query_flag(req, "vonly") {
-        StreamVariant::VideoOnly
+        StreamVariant::VideoOnly(vonly_height(req))
     } else if is_video(req) {
         StreamVariant::Muxed
     } else {
@@ -2311,9 +2342,9 @@ fn stream_file_names(video_id: &str, variant: StreamVariant) -> (String, String)
             format!("{video_id}.video.part"),
             format!("{video_id}.video.mp4"),
         ),
-        StreamVariant::VideoOnly => (
-            format!("{video_id}.vonly.part"),
-            format!("{video_id}.vonly.mp4"),
+        StreamVariant::VideoOnly(h) => (
+            format!("{video_id}.vonly{h}.part"),
+            format!("{video_id}.vonly{h}.mp4"),
         ),
         StreamVariant::Audio => (format!("{video_id}.part"), format!("{video_id}.webm")),
     }
@@ -2789,10 +2820,10 @@ fn spawn_downloader(
         let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
         cmd.args([
             "-f",
-            match variant {
-                StreamVariant::Muxed => VIDEO_FORMAT,
-                StreamVariant::VideoOnly => VONLY_FORMAT,
-                StreamVariant::Audio => AUDIO_FORMAT,
+            &match variant {
+                StreamVariant::Muxed => VIDEO_FORMAT.to_string(),
+                StreamVariant::VideoOnly(h) => vonly_format(h),
+                StreamVariant::Audio => AUDIO_FORMAT.to_string(),
             },
             "--no-playlist",
             "--no-warnings",
@@ -2982,9 +3013,9 @@ async fn stream_handler(
         "{}{}:{video_id}",
         if ephemeral { "e" } else { "p" },
         match variant {
-            StreamVariant::Muxed => "v",
-            StreamVariant::VideoOnly => "vo",
-            StreamVariant::Audio => "",
+            StreamVariant::Muxed => "v".to_string(),
+            StreamVariant::VideoOnly(h) => format!("vo{h}"),
+            StreamVariant::Audio => String::new(),
         },
     );
     let final_path = target_dir.join(stream_file_names(&video_id, variant).1);
@@ -3019,9 +3050,9 @@ async fn stream_handler(
     eprintln!(
         "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral} variant={}",
         match variant {
-            StreamVariant::Muxed => "muxed",
-            StreamVariant::VideoOnly => "vonly",
-            StreamVariant::Audio => "audio",
+            StreamVariant::Muxed => "muxed".to_string(),
+            StreamVariant::VideoOnly(h) => format!("vonly{h}"),
+            StreamVariant::Audio => "audio".to_string(),
         },
         final_path.exists()
     );
@@ -3177,9 +3208,9 @@ async fn prefetch_handler(
         "{}{}:{video_id}",
         if ephemeral { "e" } else { "p" },
         match variant {
-            StreamVariant::Muxed => "v",
-            StreamVariant::VideoOnly => "vo",
-            StreamVariant::Audio => "",
+            StreamVariant::Muxed => "v".to_string(),
+            StreamVariant::VideoOnly(h) => format!("vo{h}"),
+            StreamVariant::Audio => String::new(),
         },
     );
     let final_path = target_dir.join(stream_file_names(&video_id, variant).1);

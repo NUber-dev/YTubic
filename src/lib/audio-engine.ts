@@ -301,6 +301,7 @@ export function useAudioEngine() {
   const wantVideo = useTrackSourceStore((s) =>
     videoId ? wantsVideoStream(videoId, s.byVideoId) : false,
   );
+  const videoQuality = useSettingsStore((s) => s.videoQuality);
 
   // Tracks queued from surfaces without a length (home cards) carry no
   // duration, which leaves the doubled-header clamp with no reference —
@@ -566,7 +567,9 @@ export function useAudioEngine() {
       if (cancelled) return;
       syncNow();
       follow();
-      usePlaybackStore.getState().setStreamKind("video");
+      const st = usePlaybackStore.getState();
+      st.setStreamKind("video");
+      st.setStreamVideoHeight(video.videoHeight || null);
     };
     const onError = () => {
       if (cancelled) return;
@@ -594,7 +597,7 @@ export function useAudioEngine() {
       }
     }, 1000);
 
-    streamUrlFor(streamVideoId, { vonly: true })
+    streamUrlFor(streamVideoId, { vonly: true, vonlyHeight: videoQuality })
       .then((src) => {
         if (cancelled) return;
         video.src = src;
@@ -615,9 +618,11 @@ export function useAudioEngine() {
       video.pause();
       video.removeAttribute("src");
       video.load();
-      usePlaybackStore.getState().setStreamKind("audio");
+      const st = usePlaybackStore.getState();
+      st.setStreamKind("audio");
+      st.setStreamVideoHeight(null);
     };
-  }, [streamVideoId, wantVideo, premiumOk, retryNonce]);
+  }, [streamVideoId, wantVideo, premiumOk, retryNonce, videoQuality]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);

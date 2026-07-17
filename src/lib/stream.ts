@@ -50,12 +50,18 @@ export async function streamUrlFor(
     /** Ask for the high-res video-only DASH track (`?vonly=1`), played
      *  muted beside the audio master by the companion surface. */
     vonly?: boolean;
+    /** Height cap for the vonly track (1080/720/480/360). Server
+     *  defaults to 1080 when omitted. */
+    vonlyHeight?: number;
   },
 ): Promise<string> {
   const base = await getStreamBaseUrl();
   const params = new URLSearchParams();
   if (!isPremium()) params.set("ephemeral", "1");
-  if (opts?.vonly) params.set("vonly", "1");
+  if (opts?.vonly) {
+    params.set("vonly", "1");
+    if (opts.vonlyHeight) params.set("h", String(opts.vonlyHeight));
+  }
   else if (opts?.video) params.set("video", "1");
   const qs = params.toString();
   return `${base}/stream/${encodeURIComponent(videoId)}${qs ? `?${qs}` : ""}`;

@@ -1,5 +1,17 @@
 import { useLayoutEffect, useRef } from "react";
 import { getVideoSurfaceElement } from "@/lib/audio-engine";
+import { usePlaybackStore } from "@/lib/store/playback";
+import {
+  useSettingsStore,
+  type VideoQuality,
+} from "@/lib/store/settings";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { CheckIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -36,5 +48,50 @@ export function VideoSurface({ className }: { className?: string }) {
         className,
       )}
     />
+  );
+}
+
+const QUALITY_OPTIONS: VideoQuality[] = [1080, 720, 480, 360];
+
+/**
+ * Live "1080p" badge over a video surface, doubling as the quality
+ * picker (YouTube-style). The label is the companion element's REAL
+ * decoded height, not the requested cap, so a video with nothing above
+ * 480p reads 480p even on the Auto setting. Picking a quality re-caps
+ * the vonly stream; the audio master never rebuffers, so the swap is
+ * gapless apart from the frames reloading.
+ */
+export function VideoQualityBadge({ className }: { className?: string }) {
+  const height = usePlaybackStore((s) => s.streamVideoHeight);
+  const quality = useSettingsStore((s) => s.videoQuality);
+  const setQuality = useSettingsStore((s) => s.setVideoQuality);
+  if (!height) return null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Video quality"
+          className={cn(
+            "pointer-events-auto rounded-full border border-hairline bg-black/50 px-2 py-0.5 text-xs font-semibold text-white/90 backdrop-blur-md transition-colors hover:bg-black/70",
+            className,
+          )}
+        >
+          {height}p
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-36">
+        {QUALITY_OPTIONS.map((q) => (
+          <DropdownMenuItem
+            key={q}
+            onClick={() => setQuality(q)}
+            className="flex items-center justify-between"
+          >
+            <span>{q === 1080 ? "Auto (up to 1080p)" : `${q}p`}</span>
+            {quality === q ? <CheckIcon className="size-4" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
