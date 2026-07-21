@@ -218,15 +218,209 @@ fn account_cookies_path(app: &tauri::AppHandle, id: &str) -> PathBuf {
     accounts_dir(app).join(id).join("cookies.enc")
 }
 
-/// Per-account persistent WebView2 profile. Unlike the throwaway login
-/// profile of old, this survives a successful sign-in: it holds the
+/// Per-account persistent WebView2 profile (Windows). Unlike the throwaway
+/// login profile of old, this survives a successful sign-in: it holds the
 /// live, Google-bound browser session. A periodic hidden reload re-
 /// extracts fresh cookies from it (see `refresh_account_cookies`) so the
 /// snapshot we replay never outlives Google's ~2h leash on *extracted*
 /// cookies. That leash is what made libraries silently empty mid-session.
+///
+/// On macOS, WKWebView ignores `data_directory` — use
+/// [`account_data_store_id`] / `wk-data-store.uuid` instead.
 fn account_webview_dir(app: &tauri::AppHandle, id: &str) -> PathBuf {
     accounts_dir(app).join(id).join("webview")
 }
+
+/// Sidecar file holding the 16-byte WKWebsiteDataStore UUID (hex) for an
+/// account. Login mints one tied to the attempt id; re-login dedup copies
+/// it onto the surviving account row so the session-keeper reopens the
+/// **same** store Google already authenticated.
+fn account_data_store_id_path(app: &tauri::AppHandle, id: &str) -> PathBuf {
+    accounts_dir(app).join(id).join("wk-data-store.uuid")
+}
+
+/// Deterministic 16-byte store id for `account_id` when no sidecar exists
+/// yet. Must stay stable across launches so a post-login keeper reuses
+/// the login window's store.
+fn derive_data_store_id(account_id: &str) -> [u8; 16] {
+    // FNV-1a style expansion into 16 bytes (no extra crate). Not crypto;
+    // only needs collision resistance across local account ids.
+    const SALT: &[u8] = b"com.github.ivasy.ytubic/session-store/v1";
+    let mut out = [0u8; 16];
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in SALT.iter().chain(account_id.as_bytes()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    out[..8].copy_from_slice(&h.to_le_bytes());
+    // Second pass with a different basis so all 16 bytes depend on the id.
+    h = 0x100_0000_01b3 ^ (account_id.len() as u64);
+    for &b in account_id.as_bytes().iter().chain(SALT) {
+        h ^= u64::from(b.rotate_left(3));
+        h = h.wrapping_mul(0xcbf2_9ce4_8422_2325);
+    }
+    out[8..].copy_from_slice(&h.to_le_bytes());
+    // RFC 4122 variant / version bits so NSUUID accepts it cleanly.
+    out[6] = (out[6] & 0x0f) | 0x40;
+    out[8] = (out[8] & 0x3f) | 0x80;
+    out
+}
+
+fn write_data_store_id_file(path: &std::path::Path, store: &[u8; 16]) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let hex: String = store.iter().map(|b| format!("{b:02x}")).collect();
+    if let Err(e) = std::fs::write(path, hex) {
+        eprintln!("[auth] write data-store id {}: {e}", path.display());
+    }
+}
+
+fn write_data_store_id(app: &tauri::AppHandle, id: &str, store: &[u8; 16]) {
+    write_data_store_id_file(&account_data_store_id_path(app, id), store);
+}
+
+fn read_data_store_id_file(path: &std::path::Path) -> Option<[u8; 16]> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let text = text.trim();
+    if text.len() != 32 || !text.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        out[i] = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+fn read_data_store_id(app: &tauri::AppHandle, id: &str) -> Option<[u8; 16]> {
+    read_data_store_id_file(&account_data_store_id_path(app, id))
+}
+
+/// Attach the platform-appropriate persistent session store to a login
+/// or session-keeper window so later refreshes reopen the **same**
+/// Google-bound browser session.
+fn apply_account_session_store<'a, R, M>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+    app: &tauri::AppHandle<R>,
+    account_id: &str,
+) -> tauri::WebviewWindowBuilder<'a, R, M>
+where
+    R: tauri::Runtime,
+    M: tauri::Manager<R>,
+{
+    // Windows / Linux: real on-disk profile directory.
+    // macOS: `data_directory` is a no-op on WKWebView; use a stable
+    // `data_store_identifier` (macOS 14+) so login + keeper share one
+    // WebsiteDataStore across process restarts.
+    #[cfg(target_os = "macos")]
+    {
+        // Resolve via Manager::path so this works for any Runtime R, not
+        // only the concrete Wry AppHandle aliases used elsewhere.
+        let store_path = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("accounts")
+            .join(account_id)
+            .join("wk-data-store.uuid");
+        let store = read_data_store_id_file(&store_path).unwrap_or_else(|| {
+            let derived = derive_data_store_id(account_id);
+            write_data_store_id_file(&store_path, &derived);
+            derived
+        });
+        eprintln!(
+            "[auth] account {account_id} using WK data store {:02x}{:02x}…{:02x}{:02x}",
+            store[0], store[1], store[14], store[15]
+        );
+        builder.data_store_identifier(store)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let webview_data = app
+            .path()
+            .app_data_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("accounts")
+            .join(account_id)
+            .join("webview");
+        let _ = std::fs::create_dir_all(&webview_data);
+        builder.data_directory(webview_data)
+    }
+}
+
+/// Whether this account has enough local state for the session-keeper
+/// to attempt a cookie refresh.
+fn account_can_session_refresh(app: &tauri::AppHandle, id: &str) -> bool {
+    if !account_cookies_path(app, id).exists() {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // macOS store is opaque under WebKit; cookies.enc + stable store
+        // id is enough to open a keeper (may need one re-login after
+        // upgrading from the pre-dataStore builds).
+        let _ = id;
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        account_webview_dir(app, id).exists()
+    }
+}
+
+/// Best-effort: push a Netscape jar into a live webview's cookie store.
+/// Used when a macOS data store is cold but we still hold a usable
+/// snapshot — the browser engine can sometimes re-warm a session that
+/// plain HTTP replay cannot.
+fn inject_netscape_jar_into_webview(win: &tauri::WebviewWindow, jar: &str) -> usize {
+    let mut n = 0usize;
+    for line in jar.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 7 {
+            continue;
+        }
+        let domain = f[0];
+        let path = f[2];
+        let secure = f[3] == "TRUE";
+        let expiry: i64 = f[4].parse().unwrap_or(0);
+        let name = f[5];
+        let value = f[6];
+        let mut c = cookie::Cookie::new(name.to_owned(), value.to_owned());
+        // cookie crate wants host without a leading dot for Domain=.
+        c.set_domain(domain.trim_start_matches('.').to_owned());
+        c.set_path(path.to_owned());
+        if secure {
+            c.set_secure(true);
+        }
+        if expiry > 0 {
+            if let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(expiry) {
+                c.set_expires(cookie::Expiration::DateTime(dt));
+            }
+        }
+        if win.set_cookie(c).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+#[cfg(target_os = "macos")]
+async fn remove_account_data_store(app: &tauri::AppHandle, id: &str) {
+    let store = match read_data_store_id(app, id) {
+        Some(s) => s,
+        None => derive_data_store_id(id),
+    };
+    if let Err(e) = app.remove_data_store(store).await {
+        eprintln!("[auth] remove data store for {id}: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn remove_account_data_store(_app: &tauri::AppHandle, _id: &str) {}
 
 /// Chrome UA the login and refresh WebViews both present to Google. Kept
 /// identical so the session Google issues to the login window is the
@@ -769,6 +963,10 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     // extracts from periodically, so the replayed snapshot never outlives
     // Google's ~2h leash on extracted cookies.
     let account_id = generate_account_id();
+    // Pin the store id before the window opens so login + a later
+    // session-keeper (and re-login dedup) all land on the same UUID.
+    let login_store_id = derive_data_store_id(&account_id);
+    write_data_store_id(&app, &account_id, &login_store_id);
     let webview_data = account_webview_dir(&app, &account_id);
     if let Err(e) = tokio::fs::create_dir_all(&webview_data).await {
         eprintln!("[login] mkdir webview-data: {e}");
@@ -781,28 +979,33 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
 
-    let win = WebviewWindowBuilder::new(&app, "login", WebviewUrl::External(url))
-        .title("Sign in - accounts.google.com")
-        .inner_size(500.0, 720.0)
-        .min_inner_size(420.0, 560.0)
-        .center()
-        .data_directory(webview_data.clone())
-        .user_agent(YT_LOGIN_UA)
-        // Must match the session-keeper's args (shared profile folder).
-        .additional_browser_args(YT_WEBVIEW_ARGS)
-        // Surface the current origin in the title so the user can spot
-        // a redirect to an unexpected host (anti-phishing).
-        .on_page_load(|win, payload| {
-            let host = payload.url().host_str().unwrap_or("???");
-            let _ = win.set_title(&format!("Sign in - {host}"));
-        })
-        .build()
-        .map_err(|e| e.to_string())?;
+    let win = apply_account_session_store(
+        WebviewWindowBuilder::new(&app, "login", WebviewUrl::External(url))
+            .title("Sign in - accounts.google.com")
+            .inner_size(500.0, 720.0)
+            .min_inner_size(420.0, 560.0)
+            .center()
+            .user_agent(YT_LOGIN_UA)
+            // Must match the session-keeper's args (shared profile folder).
+            .additional_browser_args(YT_WEBVIEW_ARGS)
+            // Surface the current origin in the title so the user can spot
+            // a redirect to an unexpected host (anti-phishing).
+            .on_page_load(|win, payload| {
+                let host = payload.url().host_str().unwrap_or("???");
+                let _ = win.set_title(&format!("Sign in - {host}"));
+            }),
+        &app,
+        &account_id,
+    )
+    .build()
+    .map_err(|e| e.to_string())?;
 
     let app_poll = app.clone();
     // Failure paths wipe the whole account dir (profile + jar); on
     // success we keep it so the live session can be refreshed later.
     let cleanup_dir = account_dir.clone();
+    let cleanup_store = login_store_id;
+    let cleanup_account_id = account_id.clone();
     tauri::async_runtime::spawn(async move {
         // Set to true once we've redirected the webview to YT ourselves.
         // Guards against thrashing if YT auto-sign-in is slow and we
@@ -817,6 +1020,13 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             let Some(win) = app_poll.get_webview_window("login") else {
                 let _ = app_poll.emit("login-cancelled", ());
                 let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
+                // Drop the orphan WK store so cancelled attempts don't
+                // pile up under ~/Library/WebKit/.../WebsiteDataStore.
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = app_poll.remove_data_store(cleanup_store).await;
+                }
+                let _ = cleanup_account_id;
                 return;
             };
 
@@ -828,13 +1038,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 }
             };
 
-            let has_yt_auth = cookies.iter().any(|c| {
-                let name = c.name();
-                (name == "__Secure-1PSID" || name == "SAPISID")
-                    && c.domain()
-                        .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                        .unwrap_or(false)
-            });
+            let has_yt_auth = cookies.iter().any(cookie_is_yt_auth);
 
             if !has_yt_auth {
                 // YT cookies aren't set yet. Two ways to land here:
@@ -976,18 +1180,18 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// The live "session-keeper" WebView for `id`: a hidden window on
-/// music.youtube.com that reuses the account's persisted profile. As a
-/// real browser engine it stays authenticated from the stored session and
-/// keeps the server-side session (and its rotating cookies) warm, which
-/// plain HTTP replay cannot do. Built ONCE and reused; any keeper left
-/// over from a previously-active account is closed first, so at most one
-/// runs at a time. Returns (window, just_created).
+/// music.youtube.com that reuses the account's persisted profile / WK
+/// data store. As a real browser engine it stays authenticated from the
+/// stored session and keeps the server-side session (and its rotating
+/// cookies) warm, which plain HTTP replay cannot do. Built ONCE and
+/// reused; any keeper left over from a previously-active account is
+/// closed first, so at most one runs at a time. Returns (window, just_created).
 async fn ensure_session_keeper(
     app: &tauri::AppHandle,
     id: &str,
 ) -> Result<(tauri::WebviewWindow, bool), String> {
-    if !account_webview_dir(app, id).exists() {
-        return Err(format!("no persisted profile for {id}"));
+    if !account_can_session_refresh(app, id) {
+        return Err(format!("no session profile for {id}"));
     }
     let label = format!("keeper-{id}");
     // Close a stale keeper left over from a previously-active account, so
@@ -1010,19 +1214,22 @@ async fn ensure_session_keeper(
     // "visible" state can't drag it back on-screen next launch either. The
     // webview still loads and keeps the session alive regardless of
     // visibility or position.
-    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
-        .title("YTubic session keeper")
-        .visible(false)
-        .decorations(false)
-        .focused(false)
-        .skip_taskbar(true)
-        .position(-32000.0, -32000.0)
-        .inner_size(1024.0, 768.0)
-        .data_directory(account_webview_dir(app, id))
-        .user_agent(YT_LOGIN_UA)
-        .additional_browser_args(YT_WEBVIEW_ARGS)
-        .build()
-        .map_err(|e| format!("build session-keeper: {e}"))?;
+    let win = apply_account_session_store(
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+            .title("YTubic session keeper")
+            .visible(false)
+            .decorations(false)
+            .focused(false)
+            .skip_taskbar(true)
+            .position(-32000.0, -32000.0)
+            .inner_size(1024.0, 768.0)
+            .user_agent(YT_LOGIN_UA)
+            .additional_browser_args(YT_WEBVIEW_ARGS),
+        app,
+        id,
+    )
+    .build()
+    .map_err(|e| format!("build session-keeper: {e}"))?;
     // Force-hide on top of visible(false): if WebView2 shows the host window
     // when the external page finishes loading, this puts it straight back to
     // hidden so the user never sees a stray music.youtube.com window.
@@ -1041,6 +1248,18 @@ async fn ensure_session_keeper(
 /// replay never goes stale. Errors (leaving the existing snapshot
 /// untouched) when the account has no persisted profile or its session is
 /// logged out, so we never clobber a usable jar with an empty one.
+fn cookie_is_yt_auth(c: &cookie::Cookie<'_>) -> bool {
+    let n = c.name();
+    let is_auth = n == "__Secure-1PSID"
+        || n == "__Secure-3PSID"
+        || n == "SAPISID"
+        || n == "__Secure-3PAPISID";
+    is_auth
+        && c.domain()
+            .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
+            .unwrap_or(false)
+}
+
 async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
     // Serialize refreshes so the periodic timer and a manual trigger can't
     // reload the keeper / rewrite the jar on top of each other.
@@ -1060,17 +1279,35 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     // (LOGIN_INFO lands last, as at login), then snapshot it. The keeper
     // window stays open for the next cycle.
     let mut captured: Option<Vec<u8>> = None;
+    let mut seeded_from_jar = false;
     for tick in 0..12u8 {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let Ok(cookies) = win.cookies() else { continue };
-        let has_yt_auth = cookies.iter().any(|c| {
-            let n = c.name();
-            (n == "__Secure-1PSID" || n == "SAPISID")
-                && c.domain()
-                    .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                    .unwrap_or(false)
-        });
+        let has_yt_auth = cookies.iter().any(cookie_is_yt_auth);
         if !has_yt_auth {
+            // Cold WK store after upgrade / first launch: push the jar
+            // into the live webview once and reload so Google can renew
+            // short-lived cookies in a real browser context.
+            if !seeded_from_jar {
+                if let Ok(enc) = tokio::fs::read(account_cookies_path(app, id)).await {
+                    if let Ok(Ok(plain)) =
+                        tokio::task::spawn_blocking(move || secure_store::decrypt(&enc)).await
+                    {
+                        if let Ok(jar) = String::from_utf8(plain) {
+                            let n = inject_netscape_jar_into_webview(&win, &jar);
+                            eprintln!(
+                                "[refresh] seeded {n} cookies from jar into keeper for {id}"
+                            );
+                            if let Ok(u) =
+                                "https://music.youtube.com/".parse::<tauri::Url>()
+                            {
+                                let _ = win.navigate(u);
+                            }
+                        }
+                    }
+                }
+                seeded_from_jar = true;
+            }
             continue;
         }
         let has_login_info = cookies.iter().any(|c| {
@@ -1163,7 +1400,12 @@ async fn get_cookie_header(
 #[tauri::command]
 async fn is_logged_in(app: tauri::AppHandle) -> Result<bool, String> {
     let header = read_cookie_header(&app, "music.youtube.com").await;
-    Ok(header.contains("SAPISID") || header.contains("__Secure-1PSID"))
+    // Safari-style sessions often mint `__Secure-3PSID` / `__Secure-3PAPISID`
+    // without the older `SAPISID` / `__Secure-1PSID` pair.
+    Ok(header.contains("SAPISID")
+        || header.contains("__Secure-1PSID")
+        || header.contains("__Secure-3PSID")
+        || header.contains("__Secure-3PAPISID"))
 }
 
 /// Hard-exit the process. The window's close button hides into the tray
@@ -1347,6 +1589,14 @@ async fn close_player_window(app: tauri::AppHandle) -> Result<(), String> {
 /// world.
 #[tauri::command]
 async fn clear_cookies(app: tauri::AppHandle) -> Result<(), String> {
+    // Tear down keepers + WK stores before wiping on-disk account dirs.
+    let idx = read_index(&app).await;
+    for a in &idx.accounts {
+        if let Some(w) = app.get_webview_window(&format!("keeper-{}", a.id)) {
+            let _ = w.close();
+        }
+        remove_account_data_store(&app, &a.id).await;
+    }
     let dir = accounts_dir(&app);
     if dir.exists() {
         tokio::fs::remove_dir_all(&dir)
@@ -1428,6 +1678,7 @@ async fn remove_account(app: tauri::AppHandle, id: String) -> Result<(), String>
     if let Some(w) = app.get_webview_window(&format!("keeper-{id}")) {
         let _ = w.close();
     }
+    remove_account_data_store(&app, &id).await;
     let dir = accounts_dir(&app).join(&id);
     if dir.exists() {
         let _ = tokio::fs::remove_dir_all(&dir).await;
@@ -1530,11 +1781,12 @@ async fn update_account_meta(
             }
         }
         // Re-login replaces the older row's session with the freshly
-        // captured one, so its live WebView profile has to move over too.
-        // Otherwise the renewed account would have no profile to refresh
-        // from and would die at ~2h like the old snapshot-only flow. The
-        // just-closed login window can hold WebView2 file locks for a
-        // beat, so retry the move briefly before giving up.
+        // captured one, so its live WebView profile / WK data-store id
+        // has to move over too. Otherwise the renewed account would have
+        // no profile to refresh from and would die at ~2h like the old
+        // snapshot-only flow. The just-closed login window can hold
+        // WebView2 file locks for a beat, so retry the move briefly
+        // before giving up.
         let this_webview = account_webview_dir(&app, &id);
         if this_webview.exists() {
             let other_webview = account_webview_dir(&app, &other_id);
@@ -1553,6 +1805,16 @@ async fn update_account_meta(
                      re-login needed to re-arm session refresh"
                 );
             }
+        }
+        // macOS: the live Google session lives in a WKWebsiteDataStore
+        // keyed by UUID, not under the webview/ directory. Point the
+        // surviving account at the store the login window just used.
+        if let Some(store) = read_data_store_id(&app, &id) {
+            write_data_store_id(&app, &other_id, &store);
+            eprintln!(
+                "[accounts] transferred WK data store {:02x}{:02x}… to {other_id}",
+                store[0], store[1]
+            );
         }
         let _ = tokio::fs::remove_dir_all(accounts_dir(&app).join(&id)).await;
         if let Some(this_pos) = idx.accounts.iter().position(|a| a.id == id) {
@@ -3107,20 +3369,20 @@ pub fn run() {
             });
             // Keep the active account's replayed cookie snapshot fresh.
             // Google leashes *extracted* cookies to ~2h; reloading the
-            // hidden session-keeper every 20 min renews the bound session
+            // hidden session-keeper every 15 min renews the bound session
             // well inside that window, so the library never silently
-            // empties mid-session.
-            // Accounts with no persisted profile (added before this
-            // feature) are skipped until the user signs in again.
+            // empties mid-session. On macOS the keeper reuses a stable
+            // WKWebsiteDataStore id (see apply_account_session_store).
+            // Accounts with no cookies.enc yet are skipped until sign-in.
             let refresh_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Let migrations + the stream server settle, and give a
                 // just-completed login time to persist its profile.
-                tokio::time::sleep(Duration::from_secs(20)).await;
+                tokio::time::sleep(Duration::from_secs(8)).await;
                 loop {
                     let idx = read_index(&refresh_handle).await;
                     if let Some(active) = idx.active {
-                        if account_webview_dir(&refresh_handle, &active).exists() {
+                        if account_can_session_refresh(&refresh_handle, &active) {
                             match refresh_account_cookies(&refresh_handle, &active).await {
                                 Ok(()) => {
                                     eprintln!("[refresh] renewed snapshot for {active}")
@@ -3129,7 +3391,7 @@ pub fn run() {
                             }
                         }
                     }
-                    tokio::time::sleep(Duration::from_secs(20 * 60)).await;
+                    tokio::time::sleep(Duration::from_secs(15 * 60)).await;
                 }
             });
             // OS media controls (the Windows SMTC tile in Quick Settings / the
