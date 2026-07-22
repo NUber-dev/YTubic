@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { detectEditable, extractShuffleEndpoint } from "./playlist";
+import {
+  detectEditable,
+  extractShuffleEndpoint,
+  extractSuggestions,
+} from "./playlist";
 import type { YtNode } from "./shared";
 
 // Shapes lifted from a real playlist browse header: the Shuffle button's
@@ -128,5 +132,78 @@ describe("detectEditable", () => {
         contents: { rows: [{ watchEndpoint: { videoId: "abc" } }] },
       }),
     ).toBe(false);
+  });
+});
+
+// A minimal song row the responsive-list parser accepts: title + watch
+// endpoint in the first flex column, optional playlistItemData.
+function songRow(videoId: string, title: string, setVideoId?: string): YtNode {
+  return {
+    musicResponsiveListItemRenderer: {
+      flexColumns: [
+        {
+          musicResponsiveListItemFlexColumnRenderer: {
+            text: {
+              runs: [
+                {
+                  text: title,
+                  navigationEndpoint: { watchEndpoint: { videoId } },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      ...(setVideoId
+        ? { playlistItemData: { videoId, playlistSetVideoId: setVideoId } }
+        : {}),
+    },
+  };
+}
+
+describe("extractSuggestions", () => {
+  const response = (): YtNode => ({
+    contents: {
+      sectionListRenderer: {
+        contents: [
+          {
+            musicPlaylistShelfRenderer: {
+              contents: [songRow("own1", "In the playlist", "SET1")],
+              continuations: [
+                { nextContinuationData: { continuation: "next-token" } },
+              ],
+            },
+          },
+          {
+            musicShelfRenderer: {
+              contents: [
+                songRow("sug1", "Suggested one"),
+                songRow("sug2", "Suggested two"),
+              ],
+              continuations: [
+                { reloadContinuationData: { continuation: "reload-token" } },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  });
+
+  it("returns only the reload-continuation shelf's rows plus its token", () => {
+    const s = extractSuggestions(response());
+    expect(s).toBeDefined();
+    expect(s!.tracks.map((t) => t.id)).toEqual(["sug1", "sug2"]);
+    expect(s!.refreshToken).toBe("reload-token");
+  });
+
+  it("ignores plain shelves without a reload continuation", () => {
+    const r = response();
+    const shelf = (r.contents.sectionListRenderer.contents[1] as YtNode)
+      .musicShelfRenderer as YtNode;
+    shelf.continuations = [
+      { nextContinuationData: { continuation: "next-token" } },
+    ];
+    expect(extractSuggestions(r)).toBeUndefined();
   });
 });

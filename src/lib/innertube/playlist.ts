@@ -8,6 +8,7 @@ import {
   mapResponsiveListItem,
   rawBrowse,
   rawBrowseContinuation,
+  rawBrowseReloadContinuation,
   rawNext,
   readRuns,
   readThumbnails,
@@ -49,6 +50,29 @@ function extractHeader(json: YtNode): YtNode {
   };
   walk(json);
   return result ?? {};
+}
+
+/** First node found under the given renderer key, walking the whole tree. */
+function findFirstByKey(root: YtNode, key: string): YtNode | undefined {
+  const seen = new WeakSet<object>();
+  let result: YtNode | undefined;
+  const walk = (node: unknown) => {
+    if (result || !node || typeof node !== "object") return;
+    if (seen.has(node as object)) return;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const c of node) walk(c);
+      return;
+    }
+    const n = node as YtNode;
+    if (n[key] && typeof n[key] === "object") {
+      result = n[key];
+      return;
+    }
+    for (const k of Object.keys(n)) walk(n[k]);
+  };
+  walk(root);
+  return result;
 }
 
 /**
@@ -138,6 +162,16 @@ export function extractShuffleEndpoint(
   return result;
 }
 
+/**
+ * The "Suggestions" shelf YTM appends below an editable playlist:
+ * recommended additions, NOT part of the playlist itself. Refreshing via
+ * the reload token returns a fresh batch (and a new token).
+ */
+export type PlaylistSuggestions = {
+  tracks: ShelfItem[];
+  refreshToken?: string;
+};
+
 /** First page plus the continuation pointer for the next one. */
 export type PlaylistFirstPage = PlaylistPage & {
   continuationToken?: string;
@@ -145,6 +179,8 @@ export type PlaylistFirstPage = PlaylistPage & {
   shuffle?: PlaylistShuffle;
   /** True when the signed-in user owns the playlist (rows are removable). */
   isEditable?: boolean;
+  /** Suggested additions (editable playlists only). */
+  suggestions?: PlaylistSuggestions;
 };
 
 /** Every subsequent page — only tracks and the next token. */
@@ -163,6 +199,72 @@ function collectTracks(resp: YtNode, seenIds: Set<string>): ShelfItem[] {
     }
   }
   return out;
+}
+
+/** Rows + reload token from a suggestions shelf (renderer or continuation). */
+function parseSuggestionsShelf(shelf: YtNode): PlaylistSuggestions {
+  const tracks: ShelfItem[] = [];
+  for (const row of collectResponsiveRows(shelf.contents ?? [])) {
+    const mapped = mapResponsiveListItem(row);
+    if (mapped && mapped.kind === "song") tracks.push(mapped);
+  }
+  return {
+    tracks,
+    refreshToken:
+      shelf.continuations?.[0]?.reloadContinuationData?.continuation,
+  };
+}
+
+/**
+ * Find the Suggestions shelf in a playlist browse response. It's the
+ * musicShelfRenderer carrying a RELOAD continuation — the playlist's own
+ * rows live in musicPlaylistShelfRenderer (with a next-continuation), so
+ * this can never match them.
+ */
+export function extractSuggestions(
+  json: YtNode,
+): PlaylistSuggestions | undefined {
+  const seen = new WeakSet<object>();
+  let result: PlaylistSuggestions | undefined;
+  const walk = (node: unknown) => {
+    if (result || !node || typeof node !== "object") return;
+    if (seen.has(node as object)) return;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const c of node) walk(c);
+      return;
+    }
+    const n = node as YtNode;
+    const shelf = n.musicShelfRenderer;
+    if (shelf?.continuations?.[0]?.reloadContinuationData?.continuation) {
+      result = parseSuggestionsShelf(shelf);
+      return;
+    }
+    for (const k of Object.keys(n)) walk(n[k]);
+  };
+  walk(json);
+  return result;
+}
+
+/** Fetch a fresh batch of suggestions via the shelf's reload token. */
+export async function fetchPlaylistSuggestions(
+  token: string,
+): Promise<PlaylistSuggestions> {
+  const json = await rawBrowseReloadContinuation(token);
+  const shelf = json?.continuationContents?.musicShelfContinuation;
+  if (shelf) return parseSuggestionsShelf(shelf);
+  // Newer layouts answer continuations with onResponseReceivedActions
+  // instead of continuationContents — sweep rows and the new reload
+  // token from the whole envelope.
+  const tracks: ShelfItem[] = [];
+  for (const row of collectResponsiveRows(json)) {
+    const mapped = mapResponsiveListItem(row);
+    if (mapped && mapped.kind === "song") tracks.push(mapped);
+  }
+  return {
+    tracks,
+    refreshToken: findFirstByKey(json, "reloadContinuationData")?.continuation,
+  };
 }
 
 /**
@@ -203,9 +305,24 @@ export async function fetchPlaylistFirstPage(
   const shuffle =
     extractShuffleEndpoint(header) ?? extractShuffleEndpoint(json, rawId);
 
+  // Scope track collection to the playlist's own shelf. Editable
+  // playlists append a "Suggestions" musicShelfRenderer to the same
+  // section list — walking the whole response used to sweep those
+  // suggested rows into the playlist as if they were members.
+  const playlistShelf = findFirstByKey(json, "musicPlaylistShelfRenderer");
+  const trackScope = playlistShelf ?? json;
   const seenIds = new Set<string>();
-  let tracks = collectTracks(json, seenIds);
-  let continuationToken = findContinuationToken(json);
+  let tracks = collectTracks(trackScope, seenIds);
+  let continuationToken = findContinuationToken(trackScope);
+  let suggestions = extractSuggestions(json);
+  if (!suggestions && playlistShelf) {
+    // Suggestions shelf in a shape we don't recognize: whatever song rows
+    // sit OUTSIDE the playlist shelf are suggestion rows (the playlist's
+    // own are already in seenIds). No refresh token in this path, so the
+    // UI simply hides its Refresh button.
+    const stray = collectTracks(json, seenIds);
+    if (stray.length > 0) suggestions = { tracks: stray };
+  }
 
   // Fallback: "radio-style" community playlists (RDCLAK5..., RDAMPL...,
   // RDAT...) are computed lazily — /browse returns only a header, and
@@ -253,6 +370,7 @@ export async function fetchPlaylistFirstPage(
     continuationToken,
     shuffle,
     isEditable: detectEditable(json),
+    suggestions,
   };
 }
 

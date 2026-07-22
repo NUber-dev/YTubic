@@ -27,6 +27,14 @@ type Props = {
   /** Enables "Remove from playlist" on rows; set only by an editable
    *  (user-owned) playlist page. */
   removal?: PlaylistRemovalContext;
+  /**
+   * Render all rows directly instead of windowing them. For short
+   * secondary lists (e.g. playlist Suggestions): the virtualizer anchors
+   * to the app scroller with a scrollMargin measured once per
+   * tracks-change, so a list sitting BELOW other growing content (infinite
+   * scroll) would keep a stale offset and window the wrong rows.
+   */
+  virtualize?: boolean;
   className?: string;
 };
 
@@ -93,6 +101,7 @@ export function TrackList({
   hideAlbum = false,
   showPlays = false,
   removal,
+  virtualize = true,
   className,
 }: Props) {
   const active = usePlaybackStore(currentTrack);
@@ -165,6 +174,30 @@ export function TrackList({
   if (tracks.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">No tracks to display.</p>
+    );
+  }
+
+  if (!virtualize) {
+    return (
+      <div className={cn("flex flex-col", className)}>
+        {tracks.map((t, idx) => (
+          <div key={`${t.id}:${idx}`} style={{ paddingBottom: 2 }}>
+            <TrackRow
+              track={t}
+              idx={idx}
+              tracks={tracks}
+              gridTemplate={gridTemplate}
+              hideThumbnails={hideThumbnails}
+              showAlbum={showAlbum}
+              showPlays={showPlays}
+              isActive={active?.videoId === t.id}
+              playing={playing}
+              videoSourceSelected={sourcePrefs[t.id]?.selected === "video"}
+              removal={removal}
+            />
+          </div>
+        ))}
+      </div>
     );
   }
 

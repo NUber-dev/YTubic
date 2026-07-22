@@ -239,7 +239,11 @@ export async function innertubePost(
   endpoint: string,
   body: Record<string, unknown>,
 ): Promise<YtNode> {
-  const url = `https://music.youtube.com/youtubei/v1/${endpoint}?prettyPrint=false`;
+  // `endpoint` may already carry query params (reload continuations are
+  // passed as `browse?ctoken=…` — the server ignores them in the body).
+  const url = `https://music.youtube.com/youtubei/v1/${endpoint}${
+    endpoint.includes("?") ? "&" : "?"
+  }prettyPrint=false`;
   const auth = await authHeaders();
   const visitor = loadVisitorData();
   const visitorHeader: Record<string, string> = visitor
@@ -289,6 +293,17 @@ export function rawNext(body: Record<string, unknown>): Promise<YtNode> {
  */
 export function rawBrowseContinuation(token: string): Promise<YtNode> {
   return innertubePost("browse", { continuation: token });
+}
+
+/**
+ * Follow a RELOAD continuation (`reloadContinuationData`) — the kind the
+ * playlist Suggestions shelf uses for its refresh action. Unlike next-
+ * continuations these are sent as query params, matching the web client
+ * (`?ctoken=…&continuation=…&type=next`); in the body they're ignored.
+ */
+export function rawBrowseReloadContinuation(token: string): Promise<YtNode> {
+  const t = encodeURIComponent(token);
+  return innertubePost(`browse?ctoken=${t}&continuation=${t}&type=next`, {});
 }
 
 /**

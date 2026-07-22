@@ -8,14 +8,18 @@ import {
   Loader2Icon,
   PinIcon,
   PinOffIcon,
+  RefreshCwIcon,
   SearchIcon,
   XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   fetchPlaylistContinuation,
   fetchPlaylistFirstPage,
+  fetchPlaylistSuggestions,
   type PlaylistFirstPage,
   type PlaylistNextPage,
+  type PlaylistSuggestions,
 } from "@/lib/innertube/playlist";
 import { fetchShuffleQueue } from "@/lib/innertube/radio";
 import type { ShelfItem } from "@/lib/innertube/types";
@@ -97,6 +101,39 @@ function PlaylistPageView() {
 
   const pages = query.data?.pages ?? [];
   const header = pages[0] as PlaylistFirstPage | undefined;
+
+  // Suggestions live in local state (seeded from the first page) so the
+  // Refresh button can swap in a new batch without touching the
+  // infinite-query cache of the playlist itself.
+  const [suggestions, setSuggestions] = useState<
+    PlaylistSuggestions | undefined
+  >(undefined);
+  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
+  const headerSuggestions = header?.suggestions;
+  useEffect(() => {
+    setSuggestions(headerSuggestions);
+  }, [headerSuggestions]);
+
+  const refreshSuggestions = async () => {
+    const token = suggestions?.refreshToken;
+    if (!token || suggestionsBusy) return;
+    setSuggestionsBusy(true);
+    try {
+      const next = await fetchPlaylistSuggestions(token);
+      if (next.tracks.length > 0) {
+        // Keep the old token if the new batch didn't carry one, so the
+        // button stays usable.
+        setSuggestions({
+          tracks: next.tracks,
+          refreshToken: next.refreshToken ?? token,
+        });
+      }
+    } catch (e) {
+      toast.error(`Couldn't refresh suggestions: ${String(e)}`);
+    } finally {
+      setSuggestionsBusy(false);
+    }
+  };
   const tracks = useMemo(() => pages.flatMap((p) => p.tracks), [pages]);
   const sortedTracks = useMemo(
     () =>
@@ -373,6 +410,33 @@ function PlaylistPageView() {
           )}
         </div>
       )}
+
+      {/* Suggested additions — YTM only ships this shelf on playlists the
+          user owns. Kept out of the main list (its rows are NOT playlist
+          members) and hidden while a search filter is active. */}
+      {removal && suggestions && suggestions.tracks.length > 0 && !normalizedQuery ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold tracking-tight">
+              Suggestions
+            </h2>
+            {suggestions.refreshToken ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void refreshSuggestions()}
+                disabled={suggestionsBusy}
+              >
+                <RefreshCwIcon
+                  className={suggestionsBusy ? "animate-spin" : undefined}
+                />
+                Refresh
+              </Button>
+            ) : null}
+          </div>
+          <TrackList tracks={suggestions.tracks} virtualize={false} />
+        </div>
+      ) : null}
     </div>
   );
 }
