@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChevronDownIcon, ShieldIcon, TriangleAlertIcon } from "lucide-react";
 import {
   Dialog,
@@ -143,6 +144,36 @@ export function WhatsNewDialog() {
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Note-panel body with `[label](url)` markdown links and bare URLs
+ * turned into clickable links that open in the system browser (dialog
+ * text can't use plain anchors in Tauri).
+ */
+function NoteText({ text }: { text: string }) {
+  const parts = text.split(
+    /(\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/\S+)/g,
+  );
+  return (
+    <p className="text-[13.5px] leading-relaxed text-muted-foreground">
+      {parts.map((part, i) => {
+        const md = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/.exec(part);
+        const url = md ? md[2] : /^https?:\/\//.test(part) ? part : null;
+        if (!url) return part;
+        return (
+          <button
+            key={i}
+            type="button"
+            onClick={() => void openUrl(url)}
+            className="text-primary underline-offset-2 hover:underline"
+          >
+            {md ? md[1] : part.replace(/^https?:\/\//, "")}
+          </button>
+        );
+      })}
+    </p>
   );
 }
 
@@ -297,9 +328,7 @@ function TimelineEntry({
               <div className="mb-1.5 text-xs font-bold uppercase tracking-wider text-muted-foreground">
                 A note from the developer
               </div>
-              <p className="text-[13.5px] leading-relaxed text-muted-foreground">
-                {entry.note}
-              </p>
+              <NoteText text={entry.note} />
             </div>
           ) : null}
 

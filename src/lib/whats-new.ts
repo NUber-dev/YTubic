@@ -55,6 +55,56 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.0",
+    date: "July 23, 2026",
+    summary: "YTubic comes to Linux and macOS",
+    image: "/whats-new/0.4.0.jpg",
+    imageAlign: "top",
+    changes: [
+      {
+        type: "new",
+        title: "Linux and macOS support",
+        text: "YTubic now runs on Linux and macOS, in beta while the rough edges get filed down. Grab the build for your platform from the releases page.",
+      },
+      {
+        type: "improved",
+        title: "Artist pages",
+        text: "Redesigned from the ground up: a Subscribe button, reworked scrolling and header behavior across the app, and full track, album, and release lists behind every More link.",
+      },
+      {
+        type: "improved",
+        title: "Resizable layout",
+        text: "Drag to resize the sidebar and the player panel.",
+      },
+      {
+        type: "fixed",
+        title: "Playlist suggestions",
+        text: "Suggested tracks are no longer mixed into your playlists. They live in their own Suggestions section at the end, with a Refresh button for a fresh batch.",
+      },
+      {
+        type: "fixed",
+        title: "True shuffle",
+        text: "Shuffling a playlist now uses YouTube Music's server-side shuffle across every track, not just the ones that had loaded.",
+      },
+      {
+        type: "fixed",
+        title: "Remove from playlist",
+        text: "Take tracks out of your own playlists straight from the track menu.",
+      },
+      {
+        type: "fixed",
+        title: "Last.fm avatar",
+        text: "Your Last.fm profile picture now shows up in the Integrations tab.",
+      },
+      {
+        type: "fixed",
+        title: "Collapsed sidebar",
+        text: "Fixed clicks not landing on the Library button and the Sign in button sitting off-center.",
+      },
+    ],
+    note: "I need your help with the macOS and Linux versions. I put them together from pull requests by [ameenalasady](https://github.com/NUber-dev/YTubic/pull/1) and [yuvrajangadsingh](https://github.com/NUber-dev/YTubic/pull/33), but I have no way to run and test them myself, so they may not work at all. I've created a Discord server so we have an easier place to discuss future fixes, suggestions, and improvements: https://discord.gg/v7JGAWWWj",
+  },
+  {
     version: "0.3.2",
     date: "July 11, 2026",
     summary: "Last.fm connections fixed for good",
