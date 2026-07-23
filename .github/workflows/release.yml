@@ -86,3 +86,82 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+  # The bundler names its output per-packager (`_x64-setup.exe`, `_amd64.deb`,
+  # `-1.x86_64.rpm`), which doesn't tell a visitor which file is for which OS.
+  # Rename every asset to `YTubic_<version>_<OS>_<arch>.<ext>` once all three
+  # builds have uploaded. `latest.json` points at the assets by URL, so it is
+  # rewritten in the same step — the minisign signatures cover file contents,
+  # not names, so they stay valid. Runs after `build` so the manifest is final.
+  rename-assets:
+    name: Clarify asset names
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Rename assets and repoint the updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+
+          # Draft releases are not reachable through /releases/tags/<tag>.
+          release_id=$(gh api "repos/$REPO/releases" --paginate \
+            --jq "[.[] | select(.tag_name==\"$TAG\")][0].id")
+          if [ -z "$release_id" ] || [ "$release_id" = "null" ]; then
+            echo "No release found for $TAG" >&2
+            exit 1
+          fi
+
+          : > renames.sed
+          gh api "repos/$REPO/releases/$release_id/assets" --paginate \
+            --jq '.[] | "\(.id) \(.name)"' > assets.txt
+
+          while read -r id name; do
+            case "$name" in
+              latest.json)                 continue ;;
+              *-setup.exe)                 new="YTubic_${version}_Windows_x64_Setup.exe" ;;
+              *-setup.exe.sig)             new="YTubic_${version}_Windows_x64_Setup.exe.sig" ;;
+              *.app.tar.gz)                new="YTubic_${version}_macOS_Universal.app.tar.gz" ;;
+              *.app.tar.gz.sig)            new="YTubic_${version}_macOS_Universal.app.tar.gz.sig" ;;
+              *.dmg)                       new="YTubic_${version}_macOS_Universal.dmg" ;;
+              *.AppImage)                  new="YTubic_${version}_Linux_x86_64.AppImage" ;;
+              *.AppImage.sig)              new="YTubic_${version}_Linux_x86_64.AppImage.sig" ;;
+              *.deb)                       new="YTubic_${version}_Linux_x86_64.deb" ;;
+              *.deb.sig)                   new="YTubic_${version}_Linux_x86_64.deb.sig" ;;
+              *.rpm)                       new="YTubic_${version}_Linux_x86_64.rpm" ;;
+              *.rpm.sig)                   new="YTubic_${version}_Linux_x86_64.rpm.sig" ;;
+              *)                           echo "skipping unrecognized asset: $name"; continue ;;
+            esac
+            # `[ ... ] && continue` would abort the whole step under `set -e`
+            # on every already-correct asset, so branch explicitly.
+            if [ "$name" = "$new" ]; then
+              continue
+            fi
+            gh api --method PATCH "repos/$REPO/releases/assets/$id" \
+              -f "name=$new" --jq '.name' < /dev/null
+            echo "s|$name|$new|g" >> renames.sed
+          done < assets.txt
+
+          manifest_id=$(gh api "repos/$REPO/releases/$release_id/assets" --paginate \
+            --jq '[.[] | select(.name=="latest.json")][0].id')
+          if [ -z "$manifest_id" ] || [ "$manifest_id" = "null" ]; then
+            echo "No latest.json in this release; nothing to repoint."
+            exit 0
+          fi
+          if [ ! -s renames.sed ]; then
+            echo "Assets were already named correctly."
+            exit 0
+          fi
+
+          gh api -H "Accept: application/octet-stream" \
+            "repos/$REPO/releases/assets/$manifest_id" > latest.json
+          sed -i -f renames.sed latest.json
+          gh release upload "$TAG" latest.json --clobber -R "$REPO"
+
+          echo "Updated manifest URLs:"
+          grep -o '"url": "[^"]*"' latest.json | sort -u
