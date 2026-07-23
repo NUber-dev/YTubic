@@ -21,7 +21,11 @@ const REPO_URL = "https://github.com/NUber-dev/YTubic";
 const DISCORD_URL = "https://discord.gg/v7JGAWWWj";
 
 const CREDITS: { name: string; role: string; url: string }[] = [
-  { name: "yt-dlp", role: "audio streaming", url: "https://github.com/yt-dlp/yt-dlp" },
+  {
+    name: "yt-dlp",
+    role: "audio streaming",
+    url: "https://github.com/yt-dlp/yt-dlp",
+  },
   { name: "LRCLIB", role: "synced lyrics", url: "https://lrclib.net" },
   { name: "Musixmatch", role: "lyrics", url: "https://www.musixmatch.com" },
   { name: "Genius", role: "lyrics", url: "https://genius.com" },
@@ -61,19 +65,23 @@ export function AboutDialog({
             <img src="/ytubic-icon.svg" alt="" className="size-12" />
             <div className="flex flex-col items-start">
               <DialogTitle className="text-lg">YTubic</DialogTitle>
-              <DialogDescription>
-                {version ? `Version ${version}` : " "}
-                {version && IS_BETA_PLATFORM
-                  ? ` · beta for ${IS_MAC ? "macOS" : "Linux"}`
-                  : ""}
-              </DialogDescription>
-              <button
-                type="button"
-                onClick={() => void openWhatsNew()}
-                className="mt-0.5 text-xs text-primary underline-offset-2 hover:underline"
-              >
-                What's new
-              </button>
+              {/* Version and the What's New link share one row so the
+                  header stays two lines tall next to the 48px icon. */}
+              <div className="flex items-center gap-2">
+                <DialogDescription>
+                  {version ? `Version ${version}` : " "}
+                  {version && IS_BETA_PLATFORM
+                    ? ` · beta for ${IS_MAC ? "macOS" : "Linux"}`
+                    : ""}
+                </DialogDescription>
+                <button
+                  type="button"
+                  onClick={() => void openWhatsNew()}
+                  className="text-xs text-primary underline-offset-2 hover:underline"
+                >
+                  What's new
+                </button>
+              </div>
             </div>
           </div>
         </DialogHeader>
