@@ -355,6 +355,22 @@
     opacity: 0.05;
   }
 
+  /* Attention pulse on the newest version chip in the What's New
+     timeline. Uses box-shadow (not outline) so it layers under the
+     chip's solid outline that punches a gap in the timeline rail. */
+  @keyframes whats-new-pulse {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 50%, transparent);
+    }
+    70%,
+    100% {
+      box-shadow: 0 0 0 9px transparent;
+    }
+  }
+  .whats-new-pulse {
+    animation: whats-new-pulse 2.6s ease-out infinite;
+  }
+
   /* Top-of-column blur strip. Strongest at the top of the overlay,
      fades to fully transparent at its bottom edge — so the active line
      (positioned at ~36% from the top of the viewport) sits just below
