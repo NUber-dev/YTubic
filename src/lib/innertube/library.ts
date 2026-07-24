@@ -1,8 +1,10 @@
 import type { ShelfItem } from "./types";
 import {
   collectShelfNodes,
+  findContinuationToken,
   mapShelfWrapper,
   rawBrowse,
+  rawBrowseContinuation,
   type YtNode,
 } from "./shared";
 
@@ -33,6 +35,49 @@ async function browseSections(browseId: string): Promise<LibrarySection[]> {
     if (items.length === 0) return;
     out.push({ id: `${title}-${i}`, title, items });
   });
+
+  let token = findContinuationToken(json);
+  for (let i = 0; token && i < 100; i++) {
+    try {
+      const nextPageJson = await rawBrowseContinuation(token);
+      const cc = nextPageJson?.continuationContents;
+      if (!cc) break;
+
+      let nextShelfNodes: YtNode[] = [];
+      if (cc.gridContinuation?.items) {
+        nextShelfNodes = collectShelfNodes([{ gridRenderer: { items: cc.gridContinuation.items } }]);
+      } else if (cc.sectionListContinuation?.contents) {
+        nextShelfNodes = collectShelfNodes(cc.sectionListContinuation.contents);
+      } else if (cc.musicShelfContinuation?.contents) {
+        nextShelfNodes = collectShelfNodes([{ musicShelfRenderer: { contents: cc.musicShelfContinuation.contents } }]);
+      } else if (cc.musicPlaylistShelfContinuation?.contents) {
+        nextShelfNodes = collectShelfNodes([{ musicShelfRenderer: { contents: cc.musicPlaylistShelfContinuation.contents } }]);
+      }
+
+      let addedAny = false;
+      nextShelfNodes.forEach((wrapper, j) => {
+        const { items } = mapShelfWrapper(wrapper, j);
+        if (items.length > 0) {
+          addedAny = true;
+          if (out.length === 0) {
+            out.push({ id: "library-continuation-0", title: "Library", items: [] });
+          }
+          out[0].items.push(...items);
+        }
+      });
+
+      if (!addedAny) break;
+
+      const nextToken = findContinuationToken(nextPageJson);
+      token = nextToken === token ? undefined : nextToken;
+    } catch (e) {
+      if (import.meta.env.DEV) {
+        console.debug("[library] continuation fetch failed:", e);
+      }
+      break;
+    }
+  }
+
   return out;
 }
 
