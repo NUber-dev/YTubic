@@ -155,6 +155,12 @@ async function runMockInstall(): Promise<void> {
  */
 export function useUpdateStartupCheck(): void {
   useEffect(() => {
+    // Local builds ride a personal branch; accepting an upstream release
+    // would replace them wholesale. The automatic check is therefore OFF
+    // by default for every local build — only release CI, which sets
+    // VITE_ENABLE_UPDATE_CHECK=1, gets the startup check. The manual
+    // check in the menu always works.
+    if (import.meta.env.VITE_ENABLE_UPDATE_CHECK !== "1") return;
     const t = window.setTimeout(() => {
       void checkForUpdates({ silent: true });
     }, 5000);
