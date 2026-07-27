@@ -3583,9 +3583,12 @@ pub fn run() {
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
             let handle = app.handle().clone();
-            // Register macOS system Now Playing remote-command handlers
-            // (Control Center / media keys / AirPods). No-op off macOS.
-            now_playing::init(app.handle());
+            // macOS Now Playing is owned by the WEBVIEW's media session
+            // (navigator.mediaSession in audio-engine.ts). Registering the
+            // native MPNowPlayingInfoCenter/MPRemoteCommandCenter bridge
+            // alongside it put TWO rows in the system widget (a blank
+            // "YTubic" twin above the real track) and double-fired
+            // transport presses, so now_playing::init is no longer called.
             eprintln!("[stream-server] cache dir: {cache_dir:?}");
             eprintln!("[stream-server] ephemeral dir: {ephemeral_dir:?}");
             eprintln!("[stream-server] cover dir: {cover_dir:?}");
