@@ -93,19 +93,28 @@ export function VideoQualityBadge({ className }: { className?: string }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-36">
-        {QUALITY_OPTIONS.map((q) => (
-          <DropdownMenuItem
-            key={q}
-            onClick={() => setQuality(q)}
-            className="flex items-center justify-between"
-          >
-            <span>{qualityLabel(q)}</span>
-            {quality === q ? <CheckIcon className="size-4" /> : null}
-          </DropdownMenuItem>
-        ))}
-        {/* The setting is a CAP, the badge is reality. When they differ
-            (a 2007 MV or an art track has no 4K), say so right in the
-            menu instead of looking like the setting silently failed. */}
+        {/* The setting is a CAP, the badge is reality. When the video
+            tops out below the cap, tiers above its real max are not
+            offered at all — listing a 4K row for a 1080p video reads as
+            a choice that then silently fails. The check marks what is
+            actually playing in that case, not the unreachable cap. */}
+        {(() => {
+          const topsOut = height < quality * 0.9;
+          const visible = topsOut
+            ? QUALITY_OPTIONS.filter((q) => q <= height * 1.05)
+            : QUALITY_OPTIONS;
+          const checked = topsOut ? visible[0] : quality;
+          return visible.map((q) => (
+            <DropdownMenuItem
+              key={q}
+              onClick={() => setQuality(q)}
+              className="flex items-center justify-between"
+            >
+              <span>{qualityLabel(q)}</span>
+              {checked === q ? <CheckIcon className="size-4" /> : null}
+            </DropdownMenuItem>
+          ));
+        })()}
         {height < quality * 0.9 ? (
           <div className="border-t border-hairline px-2 py-1.5 text-xs text-muted-foreground">
             this video tops out at {height}p
