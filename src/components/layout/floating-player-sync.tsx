@@ -37,6 +37,7 @@ type TransportSnapshot = Pick<
   | "playing"
   | "volume"
   | "muted"
+  | "playbackRate"
   | "position"
   | "duration"
 >;
@@ -57,6 +58,7 @@ function buildTransportSnapshot(s: PlaybackState): TransportSnapshot {
     playing: s.playing,
     volume: s.volume,
     muted: s.muted,
+    playbackRate: s.playbackRate,
     position: s.position,
     duration: s.duration,
   };
@@ -90,6 +92,7 @@ function transportChanged(prev: PlaybackState, curr: PlaybackState): boolean {
     prev.playing !== curr.playing ||
     prev.volume !== curr.volume ||
     prev.muted !== curr.muted ||
+    prev.playbackRate !== curr.playbackRate ||
     prev.position !== curr.position ||
     prev.duration !== curr.duration
   );
@@ -102,6 +105,7 @@ type PlaybackAction =
   | { type: "seek"; seconds: number }
   | { type: "setVolume"; volume: number }
   | { type: "toggleMute" }
+  | { type: "setPlaybackRate"; rate: number }
   | { type: "setShuffle"; on: boolean }
   | { type: "cycleRepeat" }
   | { type: "goTo"; index: number }
@@ -196,6 +200,10 @@ export function FloatingPlayerSync() {
             break;
           case "toggleMute":
             store.toggleMute();
+            break;
+          case "setPlaybackRate":
+            // Rate is validated inside the store (PLAYBACK_RATES allow-list).
+            store.setPlaybackRate(a.rate as never);
             break;
           case "setShuffle":
             store.setShuffle(a.on);
