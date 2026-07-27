@@ -32,6 +32,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
@@ -40,7 +48,15 @@ import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
 import { PlayerCoverMenu } from "@/components/layout/player-cover-menu";
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
-import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
+import {
+  usePlaybackStore,
+  currentTrack,
+  PLAYBACK_RATES,
+  formatPlaybackRate,
+  type PlaybackRate,
+  type QueueTrack,
+  type RepeatMode,
+} from "@/lib/store/playback";
 import { useScrubStore } from "@/lib/store/scrub";
 import {
   useTrackSourceStore,
@@ -48,7 +64,6 @@ import {
 } from "@/lib/store/track-source";
 import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
 import { lookupITunesCover, cacheCoverToDisk } from "@/lib/cover-art";
-import type { QueueTrack, RepeatMode } from "@/lib/store/playback";
 
 /**
  * Look up a 3000×3000 studio cover from iTunes for the now-playing
@@ -272,6 +287,58 @@ export function ProgressSlider({
         className="[&_[data-slot=slider-track]]:bg-white/20"
       />
     </div>
+  );
+}
+
+/**
+ * Playback-speed picker. Shows the current rate as a compact label
+ * ("1×", "0.5×", …) and opens a radio menu of the discrete steps from
+ * `PLAYBACK_RATES`. Non-1× rates light up brand-colored so a slowed or
+ * sped track is obvious at a glance.
+ */
+export function SpeedControl() {
+  const playbackRate = usePlaybackStore((s) => s.playbackRate);
+  const setPlaybackRate = usePlaybackStore((s) => s.setPlaybackRate);
+  const active = playbackRate !== 1;
+
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`Playback speed ${formatPlaybackRate(playbackRate)}`}
+              aria-pressed={active}
+              className={cn(
+                "min-w-9 px-1.5 text-xs font-semibold tabular-nums",
+                active && "text-brand",
+              )}
+            >
+              {formatPlaybackRate(playbackRate)}
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Playback speed</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="center" side="top" className="w-36">
+        <DropdownMenuLabel>Speed</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={String(playbackRate)}
+          onValueChange={(v) => {
+            const n = Number(v);
+            if (Number.isFinite(n)) setPlaybackRate(n as PlaybackRate);
+          }}
+        >
+          {PLAYBACK_RATES.map((rate) => (
+            <DropdownMenuRadioItem key={rate} value={String(rate)}>
+              {formatPlaybackRate(rate)}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -709,6 +776,7 @@ export function PlayerBar({
             open={queueOpen}
             onToggle={() => setQueueOpen((v) => !v)}
           />
+          <SpeedControl />
           <VolumeControl compact={compactControls} />
         </div>
         <div className="flex items-center gap-1">
