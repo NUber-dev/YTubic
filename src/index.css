@@ -159,6 +159,16 @@
     @apply overflow-hidden;
   }
 
+  /* Trackpad diagonal scrolls rubber-band inner panes sideways in
+     WKWebView even with overflow-x hidden — the elastic bounce is its
+     own mechanism. Pin the x axis on every app scroller. */
+  .app-scroll,
+  .lyrics-no-scrollbar,
+  .lyrics-plain {
+    overscroll-behavior-x: none;
+    overflow-x: clip;
+  }
+
   /* Push the floating shadcn sidebar below the custom title bar so the
      sidebar's logo header doesn't overlap the window-control strip.
      The sidebar component itself uses `fixed inset-y-0`, which we

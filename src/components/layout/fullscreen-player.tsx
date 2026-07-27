@@ -412,7 +412,7 @@ export function FullscreenPlayer({ onClose }: { onClose: () => void }) {
             gets this for free by having black chrome). */}
         <div
           aria-hidden
-          className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/60 via-black/25 to-transparent"
+          className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-black via-black/40 to-transparent"
         />
         <div aria-hidden className="bg-cover-noise absolute inset-0" />
         {/* Video tracks take the WHOLE stage, Apple Music MV style: the
