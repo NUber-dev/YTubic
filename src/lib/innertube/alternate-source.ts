@@ -1,35 +1,91 @@
 import { fetchSearch } from "./search";
 import { fetchRadio } from "./radio";
-import { normalizeForMatch, tokenOverlap } from "@/lib/lyrics/match";
+import { normalizeForMatch, normalizeKeepingQualifiers, tokenOverlap } from "@/lib/lyrics/match";
 import type { SourceKind } from "@/lib/store/track-source";
 import type { MinimalArtist, ShelfItemKind } from "./types";
 
 /**
- * Find the alternate-source videoId for a track. Given a song's videoId
- * (and the title / artist line we've got in metadata), search YT Music
- * with the opposite kind filter and pick the first result that isn't
- * the input id. Title/artist match is implicit in YT's relevance
- * ranking — we don't try to fuzzy-match because YT already does that
- * better than we could.
+ * Find the alternate-source videoId for a track by searching YT Music
+ * with the opposite kind filter. Every candidate must pass identity
+ * gates before we accept it — trusting YT's relevance ranking alone
+ * played completely unrelated clips for title collisions (a 2:49
+ * "Dilbar" remix toggled into the 15:54 Bollywood "Dilbar"). Same
+ * discipline as the lyrics matcher and the clean-audio hunt: the title
+ * must actually match, the artists must overlap when both sides name
+ * them, and the duration must be in the plausible window for a
+ * song<->video counterpart. No match beats a wrong match — the toggle
+ * shows "No video version found" on null.
  *
- * Used to play the uncensored / original audio when YT Music's "song"
- * version is the censored one (common for Russian artists working
- * around the local lyric ban — switching to the music-video source
- * gets you the real recording).
+ * Also used to play the uncensored / original audio when YT Music's
+ * "song" version is the censored one (common for Russian artists
+ * working around the local lyric ban).
  */
 export async function findAlternateVideoId(
-  query: string,
-  currentVideoId: string,
+  track: {
+    videoId: string;
+    title: string;
+    artists?: MinimalArtist[];
+    duration?: number;
+  },
   targetKind: SourceKind,
 ): Promise<string | null> {
-  if (!query.trim()) return null;
+  const artistsLine = track.artists?.map((a) => a.name).join(" ") ?? "";
+  const query = `${track.title} ${artistsLine}`.trim();
+  if (!query) return null;
   const filter = targetKind === "video" ? "videos" : "songs";
   const results = await fetchSearch(query, filter);
+  const reqTitle = normalizeForMatch(track.title);
+  const reqArtists = normalizeForMatch(artistsLine);
+
+  const passes = (item: {
+    kind: ShelfItemKind;
+    id: string;
+    title: string;
+    artists?: MinimalArtist[];
+    duration?: number;
+  }): boolean => {
+    if (item.kind !== "song" && item.kind !== "video") return false;
+    if (item.id === track.videoId) return false;
+
+    const hitTitle = normalizeForMatch(item.title ?? "");
+    let titleExact = hitTitle === reqTitle;
+    if (titleExact) {
+      // normalizeForMatch strips parenthetical qualifiers, so "Song (Remix)"
+      // and "Song" look identical to it. The qualifier-preserving form must
+      // agree too, or the "exact" match is a different version of the song.
+      titleExact =
+        normalizeKeepingQualifiers(item.title ?? "") ===
+        normalizeKeepingQualifiers(track.title);
+    }
+    if (!titleExact && tokenOverlap(reqTitle, hitTitle) < 0.6) return false;
+
+    if (reqArtists && item.artists?.length) {
+      const hitArtists = normalizeForMatch(
+        item.artists.map((a) => a.name).join(" "),
+      );
+      if (tokenOverlap(reqArtists, hitArtists) === 0) return false;
+    }
+
+    // Duration window: a music video runs a little longer than the album
+    // audio (intro/outro), the song side a little shorter. Never accept a
+    // counterpart in a different league (compilations, hour loops, clips).
+    if (track.duration && item.duration) {
+      const delta = item.duration - track.duration;
+      if (targetKind === "video") {
+        if (delta < -45 || delta > 240) return false;
+      } else {
+        if (delta < -240 || delta > 45) return false;
+      }
+    } else if (!titleExact) {
+      // No duration to vouch and the title only fuzzy-matches: too risky.
+      return false;
+    }
+    return true;
+  };
+
   for (const shelf of results.shelves) {
     for (const item of shelf.items) {
-      if (item.kind !== "song" && item.kind !== "video") continue;
-      if (item.id === currentVideoId) continue;
-      return item.id;
+      if (passes(item)) return item.id;
     }
   }
   return null;

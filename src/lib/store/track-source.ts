@@ -104,7 +104,21 @@ export const useTrackSourceStore = create<State>()(
       // per-track state); the main window owns the global mode.
       setPreferVideo: (preferVideo) => set({ preferVideo }),
     }),
-    { name: "ytm-track-source" },
+    {
+      name: "ytm-track-source",
+      // v2: drop all cached song<->video pairs once. The pre-gate resolver
+      // (blind first-search-result) poisoned this cache with unrelated
+      // videos (a 0:38 track cached against a 12:29 upload); pairs are
+      // cheap to re-resolve and every new lookup is identity-gated now.
+      version: 2,
+      migrate: (persisted: unknown, version: number) => {
+        const prev = (persisted ?? {}) as Partial<State>;
+        if (version < 2) {
+          return { byVideoId: {}, preferVideo: prev.preferVideo ?? false };
+        }
+        return prev as State;
+      },
+    },
   ),
 );
 

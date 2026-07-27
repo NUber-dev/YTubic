@@ -210,9 +210,7 @@ function SourceMenuItems({ track }: { track: QueueTrack }) {
     }
     setBusy(target);
     try {
-      const artistsLine = track.artists?.map((a) => a.name).join(" ") ?? "";
-      const query = `${track.title} ${artistsLine}`.trim();
-      const altId = await findAlternateVideoId(query, track.videoId, target);
+      const altId = await findAlternateVideoId(track, target);
       if (!altId) {
         toast.error(
           target === "video"
