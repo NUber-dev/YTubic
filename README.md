@@ -2,25 +2,44 @@
   <img src="assets/branding/ytubic-icon.svg" alt="YTubic" width="96" />
 </p>
 
-<h1 align="center">YTubic</h1>
+<h1 align="center">YTubic for macOS</h1>
 
 <p align="center">
-  A fast, responsive YouTube Music desktop client for Windows.
+  A fast, responsive YouTube Music desktop client — the macOS port.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL-3.0" /></a>
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white" alt="macOS — Apple Silicon" />
 </p>
 
 <p align="center">
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20Windows-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download for Windows" height="60" />
+    <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20for%20macOS-FF0000?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" height="60" />
   </a>
 </p>
+
+> **This is the macOS port of [YTubic](https://github.com/NUber-dev/YTubic), built by [@NUber-dev](https://github.com/NUber-dev).**
+> The app itself is their work — the original ships Windows-only. This fork carries the macOS
+> support on top of it: native window chrome, system media controls, an Apple Music style
+> fullscreen, video mode, and the login fix consumer Google accounts need on WKWebView.
+> Same GPL-3.0 license as upstream. **On Windows? Use [the original](https://github.com/NUber-dev/YTubic)** — it has installers and auto-updates.
 
 Built as a reaction to the sluggish webview-wrapper experience — YTubic talks to YouTube's InnerTube API directly, renders its own UI, and caches aggressively, so navigation and playback feel instant.
 
 ![YTubic — artist page with the player and synced lyrics](assets/screenshots/artist-page.jpg)
+
+## What the macOS port adds
+
+Everything below is on top of upstream's app:
+
+- **Native Mac window** — traffic lights on the overlay titlebar, window edges melted into the app chrome
+- **System media controls** — Now Playing in Control Center and on the lock screen, media keys, playback state kept in sync both ways
+- **Apple Music style fullscreen** — ambient backdrop that crossfades, notch band blended into the artwork
+- **Video mode** — watch the video version of a track, 1080p/1440p/4K through a YouTube style quality picker that only offers tiers the video actually has
+- **Better synced lyrics** — picks the right record instead of the closest one, auto-aligns padded intros, manual nudges stick to the track
+- **Search history** — recent queries saved and surfaced on the empty search page
+- **Sign-in that works** — consumer Google accounts get "this browser may not be secure" on WKWebView; the port fixes the user agent so login goes through
 
 ## Features
 
@@ -30,8 +49,8 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 - **Synced lyrics** — line-by-line synced lyrics from multiple providers (LRCLIB, Musixmatch, Genius)
 - **Hi-res cover art** — upgrades album covers to high-resolution studio art when available
 - **Full library support** — your playlists, likes, albums and artists; search with filters; radio/autoplay queues
-- **Windows integration** — media keys, System Media Transport Controls, tray icon, single instance
-- **Auto-updates** — the app updates itself from GitHub Releases, and keeps its yt-dlp copy fresh automatically
+- **macOS integration** — media keys, Now Playing in Control Center and on the lock screen, single instance
+- **yt-dlp stays current** — the app keeps its own yt-dlp copy updated automatically (the app's own auto-updater is Windows-only; on macOS you grab a new build from Releases)
 
 > **Disclaimer:** YTubic is an unofficial client. It is not affiliated with,
 > endorsed by, or sponsored by Google or YouTube. "YouTube" and "YouTube Music"
@@ -41,20 +60,32 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 
 ## Install
 
-Download the latest installer from the [Releases](../../releases) page and run it.
+1. Download the `.dmg` from the [Releases](../../releases/latest) page.
+2. Open it and drag **YTubic** onto the Applications folder.
+3. macOS will refuse to open it the first time — see the FAQ right below.
 
-- **Windows 10/11 only** for now.
+- **Apple Silicon only** (M1/M2/M3/M4). Intel Macs are not supported.
 - On first launch the app downloads its own copy of yt-dlp (~12 MB) into its
-  data folder and keeps it updated automatically.
+  data folder and keeps it updated automatically. The first song takes a
+  moment because of this; after that it is fast.
 - Signing in is optional: browse and playback work anonymously; sign in to get
   your library, likes, and playlists.
 
 ### FAQ
 
-**Windows says "Windows protected your PC" (SmartScreen).**
-The installer is not code-signed (certificates are expensive for a free
-open-source project). Click "More info" → "Run anyway". The source code is
-public — you can audit it or build it yourself.
+**macOS says "Apple could not verify YTubic is free of malware".**
+The app is not signed with an Apple Developer certificate (they cost $99/yr,
+which is a lot for a free open-source port). It is not malware. Open Terminal
+and run:
+
+```bash
+xattr -cr /Applications/YTubic.app
+```
+
+then open it normally. That command only removes the "downloaded from the
+internet" quarantine flag. Prefer no Terminal? Try to open the app, let macOS
+block it, then go to **System Settings → Privacy & Security**, scroll down and
+click **Open Anyway**. The source is public — audit it or build it yourself.
 
 **My antivirus flags the app / yt-dlp.**
 yt-dlp is a widely-used open-source downloader that some AV vendors
@@ -74,7 +105,7 @@ yt-dlp copy every ~3 days). Restarting the app forces the check.
 
 ## Stack
 
-- **Shell:** Tauri 2 (Rust backend, system webview — WebView2 on Windows)
+- **Shell:** Tauri 2 (Rust backend, system webview — WKWebView on macOS)
 - **Frontend:** React 19 + TypeScript
 - **Build:** Vite 7
 - **Styling:** Tailwind CSS v4
@@ -127,6 +158,7 @@ src-tauri/               # Rust backend (axum stream proxy, cookies, tray)
 
 ## Credits
 
+- **[YTubic](https://github.com/NUber-dev/YTubic) by [@NUber-dev](https://github.com/NUber-dev)** — the app this port is built on. Everything except the macOS work listed above is theirs.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — audio streaming
 - [LRCLIB](https://lrclib.net) — synced lyrics
 - Musixmatch and Genius — lyrics sources
@@ -136,4 +168,5 @@ src-tauri/               # Rust backend (axum stream proxy, cookies, tray)
 ## License
 
 [GPL-3.0](LICENSE) — free to use, modify, and redistribute; derivative works
-must stay open source under the same license.
+must stay open source under the same license. This port keeps the original
+license and copyright intact.
