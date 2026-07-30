@@ -55,6 +55,38 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.1",
+    date: "July 30, 2026",
+    summary: "No more being signed out for no reason",
+    changes: [
+      {
+        type: "fixed",
+        title: "Signed out after a restart, a lock, or standby",
+        text: "YTubic could open with a Sign in button after a reboot, after locking your screen, or after sitting idle, while your account was perfectly fine the whole time. It was giving up on a single account check that failed only because the network wasn't up yet, then trusting that failure for the rest of the session. It now retries, re-checks the moment your connection is back, and never mistakes a failed check for a sign-out.",
+      },
+      {
+        type: "fixed",
+        title: "The Premium dialog on every track",
+        text: "The same failed check also made YTubic forget your Premium status and put the upgrade dialog in front of every song you played. Fixed along with it.",
+      },
+      {
+        type: "fixed",
+        title: "Staying signed in through sleep",
+        text: "The background job that keeps your session alive now goes by real elapsed time rather than a timer that may not run while your PC is asleep, so a session that went stale gets renewed shortly after you come back. It also waits for the network instead of spending its attempt on a connection that isn't up yet, and retries within seconds after a failure instead of waiting a full 20 minutes.",
+      },
+      {
+        type: "fixed",
+        title: "Shutting down at the wrong moment",
+        text: "Turning off your PC while YTubic was saving your session could leave that file half-written, which really did sign you out. Those saves are now all-or-nothing.",
+      },
+      {
+        type: "fixed",
+        title: "Accounts that couldn't stay signed in",
+        text: "Some older accounts have no way to renew their session and were quietly dying with no explanation. The account menu now tells you when that's the case, so you can sign in again and re-link it.",
+      },
+    ],
+  },
+  {
     version: "0.4.0",
     date: "July 23, 2026",
     summary: "YTubic comes to Linux and macOS",
