@@ -28,7 +28,30 @@ mod appid;
 mod discord;
 mod lastfm;
 mod media;
+mod power;
 mod ytdlp;
+
+/// Write `bytes` to `path` atomically: a sibling temp file, flushed to
+/// disk, then renamed over the target.
+///
+/// A bare `fs::write` truncates first, so losing the process mid-write
+/// leaves a zero-length file, and a Windows shutdown does exactly that
+/// to a running app. A truncated `cookies.enc` or `accounts.json` reads
+/// as "signed out" with no way back short of a re-login, which is the
+/// hard-logout variant of the bug users report after a cold boot.
+async fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut tmp_name = path.file_name().unwrap_or_default().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let mut f = tokio::fs::File::create(&tmp).await?;
+    f.write_all(bytes).await?;
+    // fsync before the rename: without it NTFS can publish the renamed
+    // directory entry while the contents are still only in the page
+    // cache, which is the same torn file by another route.
+    f.sync_all().await?;
+    drop(f);
+    tokio::fs::rename(&tmp, path).await
+}
 
 fn sanitize_video_id(id: &str) -> bool {
     !id.is_empty()
@@ -334,6 +357,14 @@ struct AccountSummary {
     channel_photo_url: Option<String>,
     #[serde(rename = "isActive")]
     is_active: bool,
+    /// False for accounts with no persisted WebView2 profile: added
+    /// before the session-keeper shipped, or whose profile could not be
+    /// moved during a dedup. Their snapshot can never be renewed, so
+    /// they die whenever Google decides the extracted cookies are stale
+    /// and there is nothing the app can do about it. The UI offers a
+    /// re-link instead of leaving the user to discover it.
+    #[serde(rename = "canRefresh")]
+    can_refresh: bool,
 }
 
 fn accounts_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -404,12 +435,32 @@ fn legacy_cookies_enc_path(app: &tauri::AppHandle) -> PathBuf {
         .join("cookies.enc")
 }
 
+/// Read `accounts.json`. Every failure degrades to an empty index, and
+/// an empty index means `active: None`, which reads as signed out AND
+/// makes the periodic refresh loop a no-op, so nothing can heal it.
+/// That makes the difference between "file isn't there yet" (normal on
+/// a first run) and "file is there but unreadable" (a real fault, most
+/// likely a torn write from a shutdown) worth logging loudly.
 async fn read_index(app: &tauri::AppHandle) -> AccountsIndex {
     let path = accounts_index_path(app);
-    let Ok(bytes) = tokio::fs::read(&path).await else {
-        return AccountsIndex::default();
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return AccountsIndex::default(),
+        Err(e) => {
+            eprintln!("[accounts] read accounts.json failed: {e}; treating as signed out");
+            return AccountsIndex::default();
+        }
     };
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    match serde_json::from_slice(&bytes) {
+        Ok(idx) => idx,
+        Err(e) => {
+            eprintln!(
+                "[accounts] accounts.json is unparseable ({} bytes): {e}; treating as signed out",
+                bytes.len()
+            );
+            AccountsIndex::default()
+        }
+    }
 }
 
 async fn write_index(app: &tauri::AppHandle, idx: &AccountsIndex) -> Result<(), String> {
@@ -420,7 +471,9 @@ async fn write_index(app: &tauri::AppHandle, idx: &AccountsIndex) -> Result<(), 
             .map_err(|e| format!("mkdir accounts dir: {e}"))?;
     }
     let bytes = serde_json::to_vec_pretty(idx).map_err(|e| format!("serialize: {e}"))?;
-    tokio::fs::write(&path, bytes)
+    // Atomic: `useAccountMetaBackfill` rewrites this on every launch, so
+    // a truncating write opens a signed-out window on every start.
+    write_atomic(&path, &bytes)
         .await
         .map_err(|e| format!("write index: {e}"))
 }
@@ -511,14 +564,52 @@ fn generate_account_id() -> String {
 /// Read the encrypted cookie jar for the active account and decrypt
 /// it in memory. Returns `None` when nobody is signed in or
 /// decryption fails (treat as logged-out).
+///
+/// The three ways this returns `None` look identical from the outside
+/// but mean very different things: no active account, a jar that
+/// vanished or was torn by a shutdown, and a DPAPI blob we can no
+/// longer decrypt (a different Windows user, a restored profile), so
+/// each is logged distinctly. A silent `None` here is the single most
+/// common way a signed-in user is shown a sign-in button.
 async fn read_cookies_plain(app: &tauri::AppHandle) -> Option<String> {
     let path = active_cookies_path(app).await?;
-    let encrypted = tokio::fs::read(&path).await.ok()?;
-    let plain = tokio::task::spawn_blocking(move || secure_store::decrypt(&encrypted))
-        .await
-        .ok()?
-        .ok()?;
-    String::from_utf8(plain).ok()
+    read_jar_at(&path).await
+}
+
+/// Decrypt one account's jar off disk. Split out of
+/// `read_cookies_plain` so a refresh can compare against the specific
+/// account it is refreshing rather than whichever one is active.
+async fn read_jar_at(path: &std::path::Path) -> Option<String> {
+    let encrypted = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("[auth] no cookie jar at {}", path.display());
+            return None;
+        }
+        Err(e) => {
+            eprintln!("[auth] read cookie jar failed: {e}");
+            return None;
+        }
+    };
+    let len = encrypted.len();
+    let plain = match tokio::task::spawn_blocking(move || secure_store::decrypt(&encrypted)).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            eprintln!("[auth] decrypt cookie jar failed ({len} bytes): {e}");
+            return None;
+        }
+        Err(e) => {
+            eprintln!("[auth] decrypt join failed: {e}");
+            return None;
+        }
+    };
+    match String::from_utf8(plain) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("[auth] cookie jar is not valid UTF-8: {e}");
+            None
+        }
+    }
 }
 
 /// Serialize a list of cookies into the Netscape cookie-jar format that
@@ -586,17 +677,49 @@ struct JarEntry {
 /// (`Max-Age=0` / past `Expires`). Only google/youtube domains are
 /// accepted — same filter as the login capture.
 ///
-/// Returns `(new_jar, value_changed, needs_write)`:
-/// `value_changed` — a cookie value was replaced, added or removed, so
-/// cached Cookie headers are stale; `needs_write` additionally covers
-/// attribute-only refreshes (expiry bumps) that should persist but
-/// don't invalidate caches.
+/// Cookies that identify the account.
+///
+/// A `Set-Cookie` deletion for one of these takes the app from signed
+/// in to signed out with no way back except a re-login, and this path
+/// runs on every InnerTube response including 4xx ones. The HTTP replay
+/// layer is not the authority on whether the user signed out; the
+/// keeper is, because it holds the real browser session. So a deletion
+/// here is refused and reported, and the caller forces a keeper refresh
+/// to get the truth. Rotation cookies (`*SIDCC`, `*PSIDTS`,
+/// `LOGIN_INFO`) stay deletable: tracking those is the point of the
+/// merge.
+const PROTECTED_COOKIES: [&str; 9] = [
+    "SID",
+    "HSID",
+    "SSID",
+    "APISID",
+    "SAPISID",
+    "__Secure-1PSID",
+    "__Secure-3PSID",
+    "__Secure-1PAPISID",
+    "__Secure-3PAPISID",
+];
+
+/// Outcome of folding a batch of `Set-Cookie` headers into a jar.
+struct JarMerge {
+    jar: String,
+    /// A cookie value was replaced, added or removed, so cached Cookie
+    /// headers are stale.
+    value_changed: bool,
+    /// Also covers attribute-only refreshes (expiry bumps) that should
+    /// persist but don't invalidate caches.
+    needs_write: bool,
+    /// `domain name` of every identity cookie the server tried to
+    /// expire and we refused to drop.
+    blocked_deletions: Vec<String>,
+}
+
 fn merge_set_cookies_into_jar(
     jar: &str,
     set_cookies: &[String],
     host: &str,
     now_ts: i64,
-) -> (String, bool, bool) {
+) -> JarMerge {
     let mut entries: Vec<JarEntry> = Vec::new();
     for line in jar.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
@@ -619,6 +742,8 @@ fn merge_set_cookies_into_jar(
 
     let mut value_changed = false;
     let mut needs_write = false;
+    let mut blocked_deletions: Vec<String> = Vec::new();
+    let host_bare = host.trim_start_matches('.').to_ascii_lowercase();
 
     for raw in set_cookies {
         let Ok(c) = cookie::Cookie::parse(raw.trim()) else {
@@ -636,6 +761,15 @@ fn merge_set_cookies_into_jar(
             || bare == "google.com"
             || bare.ends_with(".google.com");
         if !allowed {
+            continue;
+        }
+        // RFC 6265 §5.3.5: a response may only set a cookie whose
+        // Domain the responding host sits at or below. Without this a
+        // music.youtube.com response could plant a cookie on
+        // `.google.com`, which we would then replay to Google as though
+        // Google had issued it.
+        let domain_matches = host_bare == bare || host_bare.ends_with(&format!(".{bare}"));
+        if !domain_matches {
             continue;
         }
 
@@ -656,6 +790,10 @@ fn merge_set_cookies_into_jar(
             .position(|e| e.name == c.name() && e.domain.trim_start_matches('.') == bare);
 
         if remove {
+            if PROTECTED_COOKIES.contains(&c.name()) {
+                blocked_deletions.push(format!("{bare} {}", c.name()));
+                continue;
+            }
             if let Some(i) = pos {
                 entries.remove(i);
                 value_changed = true;
@@ -703,7 +841,12 @@ fn merge_set_cookies_into_jar(
             e.domain, e.include_sub, e.path, e.secure, e.expiry, e.name, e.value
         ));
     }
-    (out, value_changed, needs_write)
+    JarMerge {
+        jar: out,
+        value_changed,
+        needs_write,
+        blocked_deletions,
+    }
 }
 
 /// Stable "same account" key derived from an account's backfilled meta.
@@ -1065,7 +1208,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                         return;
                     }
                 };
-            if let Err(e) = tokio::fs::write(&cookies_path, &encrypted).await {
+            if let Err(e) = write_atomic(&cookies_path, &encrypted).await {
                 eprintln!("[login] write account cookies: {e}");
                 let _ = win.close();
                 let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
@@ -1118,6 +1261,12 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Counts completed page loads in the session-keeper webview, bumped
+/// from its `on_page_load` hook. At most one keeper ever runs, so a
+/// single global counter is enough: `refresh_account_cookies` samples
+/// it before navigating and waits for it to move.
+static KEEPER_PAGE_LOADS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The live "session-keeper" WebView for `id`: a hidden window on
 /// music.youtube.com that reuses the account's persisted profile. As a
 /// real browser engine it stays authenticated from the stored session and
@@ -1164,6 +1313,16 @@ async fn ensure_session_keeper(
         .data_directory(account_webview_dir(app, id))
         .user_agent(YT_LOGIN_UA)
         .additional_browser_args(YT_WEBVIEW_ARGS)
+        // Proof of life. Without it `refresh_account_cookies` cannot
+        // tell a keeper that actually reloaded from one whose renderer
+        // is wedged or dead: the persisted cookie store stays readable
+        // either way, so the loop happily logged "renewed snapshot"
+        // having renewed nothing.
+        .on_page_load(|_win, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                KEEPER_PAGE_LOADS.fetch_add(1, Ordering::Relaxed);
+            }
+        })
         .build()
         .map_err(|e| format!("build session-keeper: {e}"))?;
     // Force-hide on top of visible(false): if WebView2 shows the host window
@@ -1190,7 +1349,11 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     let guard = app.state::<RefreshGuard>();
     let _lock = guard.inner().0.lock().await;
 
+    // Sampled BEFORE navigating: the capture below only trusts a cookie
+    // store the keeper has actually reloaded into.
+    let loads_before = KEEPER_PAGE_LOADS.load(Ordering::Relaxed);
     let (win, created) = ensure_session_keeper(app, id).await?;
+    eprintln!("[refresh] start id={id} keeper_created={created}");
     // A reused keeper is reloaded to force fresh authenticated traffic; a
     // just-created one is already loading the URL from the builder.
     if !created {
@@ -1203,8 +1366,24 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     // (LOGIN_INFO lands last, as at login), then snapshot it. The keeper
     // window stays open for the next cycle.
     let mut captured: Option<Vec<u8>> = None;
+    let mut captured_at = 0u8;
+    let mut captured_count = 0usize;
+    let mut captured_login_info = false;
+    let mut saw_page_load = false;
     for tick in 0..12u8 {
         tokio::time::sleep(Duration::from_millis(1500)).await;
+        // A wedged or dead renderer still hands back a readable cookie
+        // store, so presence of cookies proves nothing about whether the
+        // reload happened. Wait for the page-load hook to fire before
+        // trusting anything, but give up waiting after ~9 s rather than
+        // fail the refresh outright: the snapshot on disk staying fresh
+        // matters more than perfect evidence that it was renewed.
+        if !saw_page_load {
+            saw_page_load = KEEPER_PAGE_LOADS.load(Ordering::Relaxed) > loads_before;
+            if !saw_page_load && tick < 6 {
+                continue;
+            }
+        }
         let Ok(cookies) = win.cookies() else { continue };
         let has_yt_auth = cookies.iter().any(|c| {
             let n = c.name();
@@ -1227,12 +1406,41 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
         if !has_login_info && tick < 4 {
             continue;
         }
+        captured_at = tick;
+        captured_count = cookies.len();
+        captured_login_info = has_login_info;
         captured = Some(cookies_to_netscape(&cookies).into_bytes());
         break;
     }
     let Some(plain) = captured else {
         return Err("no auth cookies after reload (profile logged out?)".into());
     };
+    eprintln!(
+        "[refresh] captured at tick={captured_at} cookies={captured_count} \
+         has_login_info={captured_login_info} page_load_confirmed={saw_page_load}"
+    );
+
+    // The keeper's snapshot replaces the jar wholesale, which throws away
+    // whatever `merge_response_cookies` echoed in since the last cycle.
+    // Two clients of one Google session, synced one way. Measurement says
+    // the keeper's values are the newer ones, so replacing is currently
+    // the right call and the semantics stay as they were, but the diff
+    // has never been visible. Log it: if the keeper ever starts REGRESSING
+    // values the replay path already learned, this is what will say so.
+    if let Some(existing) = read_jar_at(&account_cookies_path(app, id)).await {
+        let snapshot = String::from_utf8_lossy(&plain).into_owned();
+        let before = jar_cookie_keys(&existing);
+        let after = jar_cookie_keys(&snapshot);
+        let dropped: Vec<&String> = before.difference(&after).collect();
+        if !dropped.is_empty() {
+            eprintln!("[refresh] snapshot drops cookie(s) the jar held: {dropped:?}");
+        }
+        let changed = changed_cookie_names(&existing, &snapshot);
+        if !changed.is_empty() {
+            eprintln!("[refresh] snapshot rotates {changed:?}");
+        }
+    }
+
     let encrypted = tokio::task::spawn_blocking(move || secure_store::encrypt(&plain))
         .await
         .map_err(|e| format!("encrypt join: {e}"))?
@@ -1241,9 +1449,18 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     if let Some(dir) = path.parent() {
         let _ = tokio::fs::create_dir_all(dir).await;
     }
-    tokio::fs::write(&path, encrypted)
+    // Atomic, like `merge_response_cookies`: this path runs every 20
+    // minutes for the whole life of the app, so it is by far the most
+    // likely write to be interrupted by a shutdown, and a torn
+    // `cookies.enc` reads as "signed out".
+    write_atomic(&path, &encrypted)
         .await
         .map_err(|e| format!("write refreshed cookies: {e}"))?;
+    // Tell the UI. Without this the frontend has no way to learn that a
+    // session it already gave up on is healthy again, so a single failed
+    // `/account_menu` at launch would keep showing a sign-in button for
+    // the rest of the session.
+    let _ = app.emit("session-refreshed", id);
     Ok(())
 }
 
@@ -1262,6 +1479,156 @@ async fn refresh_active_session(app: tauri::AppHandle) -> Result<bool, String> {
         Err(e) => {
             eprintln!("[refresh] {active}: {e}");
             Err(e)
+        }
+    }
+}
+
+/// How long a healthy snapshot may age before it is renewed.
+const REFRESH_INTERVAL_SECS: i64 = 20 * 60;
+/// Wall-clock backoff after a failed refresh before falling back to the
+/// normal interval. Capped deliberately: the dominant failure is
+/// "profile logged out", which is permanent for an abandoned profile,
+/// and hammering authenticated reloads is the exact pattern
+/// `merge_response_cookies` blames for server-side revocation.
+const REFRESH_BACKOFF_SECS: [i64; 3] = [30, 120, 300];
+/// Longest the loop ever sleeps in one go. Short enough that a wall
+/// clock which jumped forward across a suspend is noticed promptly, no
+/// matter what the monotonic clock did while the machine was out.
+const REFRESH_TICK_SECS: u64 = 60;
+
+fn now_ts() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// Wall-clock stamp of the last successful refresh, stored beside the
+/// jar. Read back on the next cycle purely so the log can report how
+/// long the snapshot actually went unrenewed: that number is what
+/// settles whether a suspend stalled the loop on a user's machine.
+fn last_refresh_path(app: &tauri::AppHandle, id: &str) -> PathBuf {
+    accounts_dir(app).join(id).join("last-refresh")
+}
+
+async fn read_last_refresh(app: &tauri::AppHandle, id: &str) -> Option<i64> {
+    let raw = tokio::fs::read_to_string(last_refresh_path(app, id)).await.ok()?;
+    raw.trim().parse().ok()
+}
+
+async fn write_last_refresh(app: &tauri::AppHandle, id: &str, ts: i64) {
+    let path = last_refresh_path(app, id);
+    if let Some(dir) = path.parent() {
+        let _ = tokio::fs::create_dir_all(dir).await;
+    }
+    let _ = tokio::fs::write(&path, ts.to_string()).await;
+}
+
+/// Keep the active account's replayed cookie snapshot fresh.
+///
+/// Driven by a wall-clock deadline rather than one long
+/// `tokio::time::sleep`. Tokio timers ride `Instant` (QPC on Windows),
+/// and whether that advances across S3 sleep and S0 Modern Standby is
+/// not something to bet a session on: if it does not, a 20-minute timer
+/// effectively never fires across a long standby; if it does, it fires
+/// the moment the machine wakes, into a network stack that has not come
+/// back yet. A deadline in wall-clock seconds is immune either way, and
+/// the resume notification wakes us straight out of the tick.
+async fn run_refresh_loop(app: tauri::AppHandle) {
+    let resume = power::resume_signal();
+    // Wall-clock deadline for the next attempt; 0 means "right now".
+    let mut next_due: i64 = 0;
+    let mut failures: usize = 0;
+    // So an account that can never refresh is reported once, not once
+    // per tick.
+    let mut warned_profileless: Option<String> = None;
+    // Likewise for a machine that sits offline: log the transition, not
+    // every retry, or a laptop left off Wi-Fi overnight fills the file.
+    let mut warned_offline = false;
+
+    loop {
+        if now_ts() >= next_due {
+            match read_index(&app).await.active {
+                None => next_due = now_ts() + REFRESH_INTERVAL_SECS,
+                Some(active) if !account_webview_dir(&app, &active).exists() => {
+                    if warned_profileless.as_deref() != Some(active.as_str()) {
+                        eprintln!(
+                            "[refresh] {active} has no persisted webview profile; its snapshot \
+                             cannot be renewed until the user signs in again"
+                        );
+                        warned_profileless = Some(active.clone());
+                    }
+                    next_due = now_ts() + REFRESH_INTERVAL_SECS;
+                }
+                Some(active) => {
+                    warned_profileless = None;
+                    // Don't spend the attempt on a NIC that hasn't come
+                    // back yet: that is what made a resume cost a full
+                    // cycle before.
+                    if !power::wait_for_network(Duration::from_secs(60)).await {
+                        if !warned_offline {
+                            eprintln!("[refresh] no internet; deferring until it comes back");
+                            warned_offline = true;
+                        }
+                        next_due = now_ts() + 30;
+                    } else {
+                        if warned_offline {
+                            eprintln!("[refresh] internet is back");
+                            warned_offline = false;
+                        }
+                        let previous = read_last_refresh(&app, &active).await;
+                        match refresh_account_cookies(&app, &active).await {
+                            Ok(()) => {
+                                let now = now_ts();
+                                match previous {
+                                    Some(t) => eprintln!(
+                                        "[refresh] renewed snapshot for {active} \
+                                         (previous succeeded {}s ago)",
+                                        now - t
+                                    ),
+                                    None => eprintln!("[refresh] renewed snapshot for {active}"),
+                                }
+                                write_last_refresh(&app, &active, now).await;
+                                failures = 0;
+                                next_due = now + REFRESH_INTERVAL_SECS;
+                            }
+                            Err(e) => {
+                                eprintln!("[refresh] {active}: {e}");
+                                // Separate "the keeper misbehaved" from
+                                // "the session is genuinely gone". Only
+                                // on the first failure, so a permanently
+                                // dead profile doesn't probe on a loop.
+                                if failures == 0 {
+                                    match probe_session_alive(&app).await {
+                                        Ok(true) => eprintln!(
+                                            "[refresh] the jar still authenticates, so the \
+                                             keeper is what failed"
+                                        ),
+                                        Ok(false) => eprintln!(
+                                            "[refresh] the jar no longer authenticates; this \
+                                             account needs a re-login"
+                                        ),
+                                        Err(e) => eprintln!("[refresh] liveness probe failed: {e}"),
+                                    }
+                                }
+                                failures += 1;
+                                let wait = REFRESH_BACKOFF_SECS
+                                    .get(failures - 1)
+                                    .copied()
+                                    .unwrap_or(REFRESH_INTERVAL_SECS);
+                                next_due = now_ts() + wait;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let delay = (next_due - now_ts()).clamp(1, REFRESH_TICK_SECS as i64) as u64;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
+            _ = resume.notified() => {
+                eprintln!("[power] resumed from sleep; forcing a session refresh");
+                next_due = 0;
+                failures = 0;
+            }
         }
     }
 }
@@ -1299,10 +1666,75 @@ async fn get_cookie_header(app: tauri::AppHandle, host: String) -> Result<String
     Ok(read_cookie_header(&app, &host).await)
 }
 
+/// Does this `Cookie:` header carry what an authenticated InnerTube
+/// call actually needs: an APISID to build the SAPISIDHASH with, and a
+/// session id to identify the account.
+///
+/// Exact names, on purpose. The old check was `contains("SAPISID") ||
+/// contains("__Secure-1PSID")`, and `__Secure-1PSID` is a prefix of both
+/// `__Secure-1PSIDTS` and `__Secure-1PSIDCC`, so a jar that had lost the
+/// real session id still reported a live session. That is why looking
+/// at `cookies.enc` never told us anything during the logout
+/// investigation.
+fn header_has_auth_cookie(header: &str) -> bool {
+    let mut has_apisid = false;
+    let mut has_sid = false;
+    for part in header.split(';') {
+        let Some((name, _)) = part.split_once('=') else {
+            continue;
+        };
+        match name.trim() {
+            "SAPISID" | "__Secure-1PAPISID" | "__Secure-3PAPISID" => has_apisid = true,
+            "SID" | "__Secure-1PSID" | "__Secure-3PSID" => has_sid = true,
+            _ => {}
+        }
+    }
+    has_apisid && has_sid
+}
+
+/// Cheap, offline "is there a usable session on disk". Says nothing
+/// about whether Google still honors it; `probe_session` does that.
 #[tauri::command]
 async fn is_logged_in(app: tauri::AppHandle) -> Result<bool, String> {
     let header = read_cookie_header(&app, "music.youtube.com").await;
-    Ok(header.contains("SAPISID") || header.contains("__Secure-1PSID"))
+    Ok(header_has_auth_cookie(&header))
+}
+
+/// Ask music.youtube.com whether the jar we replay still authenticates.
+///
+/// `is_logged_in` only proves that a cookie by the right name sits in a
+/// file. This is the real thing: the signed-in home page carries
+/// `"LOGGED_IN":true` in its bootstrap config and the anonymous one
+/// carries `false`, which discriminates cleanly (the signed-in document
+/// is also markedly larger). Used to tell "the keeper broke" apart from
+/// "the session is genuinely gone" when a refresh fails, and exposed as
+/// a command for diagnosing a user's machine.
+async fn probe_session_alive(app: &tauri::AppHandle) -> Result<bool, String> {
+    let cookie = read_cookie_header(app, "music.youtube.com").await;
+    if !header_has_auth_cookie(&cookie) {
+        return Ok(false);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("build probe client: {e}"))?;
+    let res = client
+        .get("https://music.youtube.com/")
+        .header("Cookie", cookie)
+        .header("User-Agent", YT_LOGIN_UA)
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .send()
+        .await
+        .map_err(|e| format!("probe request: {e}"))?;
+    let body = res.text().await.map_err(|e| format!("probe body: {e}"))?;
+    Ok(body.contains("\"LOGGED_IN\":true"))
+}
+
+#[tauri::command]
+async fn probe_session(app: tauri::AppHandle) -> Result<bool, String> {
+    let alive = probe_session_alive(&app).await?;
+    eprintln!("[probe] session alive: {alive}");
+    Ok(alive)
 }
 
 /// Hard-exit the process. The window's close button hides into the tray
@@ -1504,7 +1936,9 @@ async fn list_accounts(app: tauri::AppHandle) -> Result<Vec<AccountSummary>, Str
         .into_iter()
         .map(|a| {
             let is_active = active.as_deref() == Some(a.id.as_str());
+            let can_refresh = account_webview_dir(&app, &a.id).exists();
             AccountSummary {
+                can_refresh,
                 id: a.id,
                 email: a.email,
                 name: a.name,
@@ -1859,30 +2293,92 @@ async fn merge_response_cookies(
     };
 
     let now_ts = time::OffsetDateTime::now_utc().unix_timestamp();
-    let (merged, value_changed, needs_write) =
-        merge_set_cookies_into_jar(&jar, &set_cookies, &host, now_ts);
-    if !needs_write {
-        return Ok(false);
+    let merged = merge_set_cookies_into_jar(&jar, &set_cookies, &host, now_ts);
+
+    // An identity cookie the server tried to expire. We did not apply
+    // it (see PROTECTED_COOKIES): the keeper's live browser session is
+    // the authority on whether this account is actually signed out, so
+    // ask it, out of band, instead of letting one response hard-log the
+    // user out. If the session really is gone the keeper refresh fails
+    // and leaves the jar alone; if it is fine, the snapshot is renewed.
+    if !merged.blocked_deletions.is_empty() {
+        eprintln!(
+            "[auth] refused server expiry of identity cookie(s) {:?} from {host}; \
+             re-checking the session against the keeper",
+            merged.blocked_deletions
+        );
+        let app_probe = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Some(active) = read_index(&app_probe).await.active {
+                if let Err(e) = refresh_account_cookies(&app_probe, &active).await {
+                    eprintln!("[auth] post-expiry keeper re-check failed: {e}");
+                }
+            }
+        });
     }
 
-    let bytes = merged.into_bytes();
+    // The merge still honors deletions for non-identity cookies, which
+    // is correct browser behavior. It has never been logged, so we have
+    // no idea how often it fires in the field. Report it.
+    for gone in jar_cookie_keys(&jar).difference(&jar_cookie_keys(&merged.jar)) {
+        eprintln!("[auth] server expired cookie {gone} (response host {host})");
+    }
+
+    if !merged.needs_write {
+        return Ok(false);
+    }
+    let value_changed = merged.value_changed;
+    let bytes = merged.jar.into_bytes();
     let encrypted = tokio::task::spawn_blocking(move || secure_store::encrypt(&bytes))
         .await
         .map_err(|e| format!("encrypt join: {e}"))?
         .map_err(|e| format!("encrypt cookies: {e}"))?;
-    // Write-then-rename: this path now runs on live rotations, not just
-    // at login, and a torn cookies.enc reads as "signed out".
-    let tmp = path.with_extension("enc.tmp");
-    tokio::fs::write(&tmp, &encrypted)
+    // Write-then-rename: this path runs on live rotations, not just at
+    // login, and a torn cookies.enc reads as "signed out".
+    write_atomic(&path, &encrypted)
         .await
-        .map_err(|e| format!("write jar tmp: {e}"))?;
-    tokio::fs::rename(&tmp, &path)
-        .await
-        .map_err(|e| format!("swap jar: {e}"))?;
+        .map_err(|e| format!("write jar: {e}"))?;
     if value_changed {
         eprintln!("[auth] echoed rotated session cookie(s) into the active jar");
     }
     Ok(value_changed)
+}
+
+/// `domain name` keys for every entry in a Netscape jar, so two jars
+/// can be diffed to see what a merge added or dropped.
+fn jar_cookie_keys(jar: &str) -> std::collections::HashSet<String> {
+    jar.lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() >= 7).then(|| format!("{} {}", f[0], f[5]))
+        })
+        .collect()
+}
+
+/// `domain name` -> value for every entry in a Netscape jar.
+fn jar_cookie_values(jar: &str) -> HashMap<String, String> {
+    jar.lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() >= 7).then(|| (format!("{} {}", f[0], f[5]), f[6].to_string()))
+        })
+        .collect()
+}
+
+/// Names present in both jars whose value differs. Values themselves are
+/// never logged; only which cookies moved.
+fn changed_cookie_names(before: &str, after: &str) -> Vec<String> {
+    let a = jar_cookie_values(before);
+    let b = jar_cookie_values(after);
+    let mut out: Vec<String> = a
+        .iter()
+        .filter(|(k, v)| b.get(*k).is_some_and(|nv| nv != *v))
+        .map(|(k, _)| k.clone())
+        .collect();
+    out.sort();
+    out
 }
 
 /// File (under the store plugin's default dir) + key holding the
@@ -3123,6 +3619,7 @@ pub fn run() {
             get_auth_context,
             merge_response_cookies,
             is_logged_in,
+            probe_session,
             refresh_active_session,
             clear_cookies,
             list_accounts,
@@ -3193,6 +3690,11 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            eprintln!(
+                "[boot] YTubic {} starting (debug={})",
+                app.package_info().version,
+                cfg!(debug_assertions)
+            );
             let port = port_handle.clone();
             let token = token_handle.clone();
             // User-chosen cache root (Settings → Storage) or the OS
@@ -3225,32 +3727,17 @@ pub fn run() {
                 start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
                     .await;
             });
-            // Keep the active account's replayed cookie snapshot fresh.
-            // Google leashes *extracted* cookies to ~2h; reloading the
-            // hidden session-keeper every 20 min renews the bound session
-            // well inside that window, so the library never silently
-            // empties mid-session.
-            // Accounts with no persisted profile (added before this
-            // feature) are skipped until the user signs in again.
+            // Subscribe to resume-from-sleep before the loop starts, so a
+            // machine that wakes during startup is not missed.
+            if let Err(e) = power::init() {
+                eprintln!("[power] resume notifications unavailable: {e}");
+            }
             let refresh_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Let migrations + the stream server settle, and give a
                 // just-completed login time to persist its profile.
                 tokio::time::sleep(Duration::from_secs(20)).await;
-                loop {
-                    let idx = read_index(&refresh_handle).await;
-                    if let Some(active) = idx.active {
-                        if account_webview_dir(&refresh_handle, &active).exists() {
-                            match refresh_account_cookies(&refresh_handle, &active).await {
-                                Ok(()) => {
-                                    eprintln!("[refresh] renewed snapshot for {active}")
-                                }
-                                Err(e) => eprintln!("[refresh] {active}: {e}"),
-                            }
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_secs(20 * 60)).await;
-                }
+                run_refresh_loop(refresh_handle).await;
             });
             // Native media controls: SMTC on Windows, MPRIS on Linux, and Now
             // Playing on macOS. setup() runs on the main thread, as required by
@@ -3348,7 +3835,7 @@ mod tests {
         });
     }
 
-    use super::merge_set_cookies_into_jar;
+    use super::{header_has_auth_cookie, merge_set_cookies_into_jar};
 
     const NOW: i64 = 1_700_000_000;
     const HOST: &str = "music.youtube.com";
@@ -3365,12 +3852,12 @@ mod tests {
         let lines = vec![
             "SIDCC=new-sidcc; Domain=.youtube.com; Path=/; Secure; Max-Age=31536000".to_string(),
         ];
-        let (out, changed, dirty) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
-        assert!(changed && dirty);
-        assert!(out.contains("SIDCC\tnew-sidcc"));
-        assert!(!out.contains("old-sidcc"));
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(m.value_changed && m.needs_write);
+        assert!(m.jar.contains("SIDCC\tnew-sidcc"));
+        assert!(!m.jar.contains("old-sidcc"));
         assert!(
-            out.contains("SAPISID\told-sapisid"),
+            m.jar.contains("SAPISID\told-sapisid"),
             "untouched cookie survives"
         );
     }
@@ -3381,25 +3868,58 @@ mod tests {
             "LOGIN_INFO=abc; Domain=.youtube.com; Path=/; Secure; HttpOnly; Max-Age=63072000"
                 .to_string(),
         ];
-        let (out, changed, _) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
-        assert!(changed);
-        assert!(out.contains(".youtube.com\tTRUE\t/\tTRUE\t1763072000\tLOGIN_INFO\tabc"));
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(m.value_changed);
+        assert!(m
+            .jar
+            .contains(".youtube.com\tTRUE\t/\tTRUE\t1763072000\tLOGIN_INFO\tabc"));
     }
 
     #[test]
     fn merge_inserts_host_only_cookie_under_response_host() {
         let lines = vec!["PZS=1; Path=/; Secure; Max-Age=600".to_string()];
-        let (out, changed, _) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
-        assert!(changed);
-        assert!(out.contains(".music.youtube.com\tTRUE\t/\tTRUE"));
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(m.value_changed);
+        assert!(m.jar.contains(".music.youtube.com\tTRUE\t/\tTRUE"));
     }
 
     #[test]
     fn merge_removes_expired_cookie() {
         let lines = vec!["SIDCC=gone; Domain=.youtube.com; Path=/; Max-Age=0".to_string()];
-        let (out, changed, _) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
-        assert!(changed);
-        assert!(!out.contains("SIDCC"));
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(m.value_changed);
+        assert!(!m.jar.contains("SIDCC"));
+    }
+
+    // A response must never be able to sign the user out. Google sends a
+    // deletion burst for the identity cookies on a real sign-out, and
+    // `captureSetCookies` runs before the `res.ok` bail, so a 4xx could
+    // carry one too.
+    #[test]
+    fn merge_refuses_to_delete_identity_cookies() {
+        let lines = vec![
+            "SAPISID=EXPIRED; Domain=.youtube.com; Path=/; Max-Age=0".to_string(),
+            "SIDCC=gone; Domain=.youtube.com; Path=/; Max-Age=0".to_string(),
+        ];
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(
+            m.jar.contains("SAPISID\told-sapisid"),
+            "identity cookie must survive a server expiry"
+        );
+        assert!(!m.jar.contains("SIDCC"), "rotation cookies stay deletable");
+        assert_eq!(m.blocked_deletions, vec!["youtube.com SAPISID".to_string()]);
+    }
+
+    // RFC 6265 §5.3.5. Without the host check a music.youtube.com
+    // response could plant a cookie on .google.com that we would then
+    // replay to Google as if Google had issued it.
+    #[test]
+    fn merge_rejects_a_domain_the_response_host_is_not_under() {
+        let lines =
+            vec!["EVIL=1; Domain=.google.com; Path=/; Secure; Max-Age=1000".to_string()];
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(!m.value_changed && !m.needs_write);
+        assert_eq!(m.jar, jar(), "jar must be untouched");
     }
 
     #[test]
@@ -3408,9 +3928,33 @@ mod tests {
             "tracker=1; Domain=.example.com; Path=/; Max-Age=1000".to_string(),
             "__cf_bm=x; Domain=.genius.com; Path=/; Max-Age=1000".to_string(),
         ];
-        let (out, changed, dirty) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
-        assert!(!changed && !dirty);
-        assert_eq!(out, jar(), "jar must be untouched");
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        assert!(!m.value_changed && !m.needs_write);
+        assert_eq!(m.jar, jar(), "jar must be untouched");
+    }
+
+    // `is_logged_in` used to substring-match, and `__Secure-1PSID` is a
+    // prefix of both `__Secure-1PSIDTS` and `__Secure-1PSIDCC`, so a jar
+    // that had lost the real SID still reported a live session.
+    #[test]
+    fn auth_check_ignores_prefix_lookalike_cookies() {
+        assert!(!header_has_auth_cookie(
+            "__Secure-1PSIDTS=a; __Secure-1PSIDCC=b; SIDCC=c"
+        ));
+    }
+
+    #[test]
+    fn auth_check_needs_both_an_apisid_and_a_sid() {
+        assert!(!header_has_auth_cookie("SAPISID=a; SIDCC=b"));
+        assert!(!header_has_auth_cookie("__Secure-1PSID=a; YSC=b"));
+        assert!(header_has_auth_cookie("SAPISID=a; __Secure-1PSID=b"));
+        assert!(header_has_auth_cookie("__Secure-3PAPISID=a; SID=b"));
+    }
+
+    #[test]
+    fn auth_check_tolerates_spacing_and_empty_input() {
+        assert!(header_has_auth_cookie("  SAPISID=a ;   SID=b  "));
+        assert!(!header_has_auth_cookie(""));
     }
 
     #[test]
@@ -3418,7 +3962,8 @@ mod tests {
         let lines = vec![
             "SIDCC=old-sidcc; Domain=.youtube.com; Path=/; Secure; Max-Age=31536000".to_string(),
         ];
-        let (out, changed, dirty) = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        let m = merge_set_cookies_into_jar(&jar(), &lines, HOST, NOW);
+        let (out, changed, dirty) = (m.jar, m.value_changed, m.needs_write);
         assert!(!changed, "same value must not invalidate the header cache");
         assert!(dirty, "but the fresher expiry should be written");
         assert!(out.contains(&format!("{}", NOW + 31_536_000)));

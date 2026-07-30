@@ -76,6 +76,16 @@ windows-sys = { version = "0.59", features = [
     # process so the SMTC media tile resolves (via the installer's matching Start
     # Menu shortcut) to "YTubic" instead of "Unknown app". See src/appid.rs.
     "Win32_UI_Shell",
+    # PowerRegisterSuspendResumeNotification: wake the session-refresh loop on
+    # resume from sleep/standby instead of waiting out a tokio timer that may
+    # not have advanced while the machine was suspended. See src/power.rs.
+    "Win32_System_Power",
+    # DEVICE_NOTIFY_CALLBACK + the PBT_APM* event codes the callback receives.
+    "Win32_UI_WindowsAndMessaging",
+    # GetNetworkConnectivityHint: don't burn a refresh attempt on a NIC that
+    # hasn't reassociated yet after a resume. See src/power.rs.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
 ] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
