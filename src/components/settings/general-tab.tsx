@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
 import { IS_MAC } from "@/lib/platform";
+import { authLoggedInQuery } from "@/lib/store/auth-queries";
 import { useSettingsStore } from "@/lib/store/settings";
 
 export function GeneralTab() {
@@ -33,11 +34,7 @@ export function GeneralTab() {
 
 function AccountGroup() {
   const [signingIn, setSigningIn] = useState(false);
-  const loggedIn = useQuery({
-    queryKey: ["auth-logged-in"],
-    queryFn: () => invoke<boolean>("is_logged_in"),
-    staleTime: 30_000,
-  });
+  const loggedIn = useQuery(authLoggedInQuery);
 
   useEffect(() => {
     // This tab owns the in-flight spinner + the toast feedback for a

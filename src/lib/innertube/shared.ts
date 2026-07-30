@@ -139,8 +139,11 @@ async function loadAuthContext(): Promise<AuthContext> {
     },
     () => {
       authPromise = null;
-      if (epoch !== authEpoch) return EMPTY_AUTH;
-      authCache = { value: EMPTY_AUTH, loadedAt: Date.now() };
+      // Do NOT cache the failure. Pinning EMPTY_AUTH for the full TTL
+      // meant one unlucky invoke (a jar being rewritten by the keeper
+      // refresh, IPC hiccup at launch) made every request for the next
+      // five minutes anonymous, which reads to the rest of the app,
+      // and to YouTube, as a signed-out user.
       return EMPTY_AUTH;
     },
   );

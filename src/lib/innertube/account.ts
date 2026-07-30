@@ -19,13 +19,22 @@ export type PremiumStatus = null | "free" | "premium";
  * `account/account_menu`. Anonymous calls return a generic sign-in
  * popup with no `activeAccountHeaderRenderer` — we treat that as
  * "not signed in" and return null.
+ *
+ * A transport failure REJECTS; it must never resolve to `null`. The
+ * two used to be indistinguishable, which is what made the app claim
+ * you were signed out after a cold boot or a resume from standby: the
+ * request failed because the NIC wasn't up yet, the caller cached that
+ * `null` as fresh authoritative data, and the sidebar rendered a
+ * sign-in button at a session that was perfectly alive. `null` now
+ * means one thing only: Google answered, and said anonymous.
  */
 export async function fetchAccountInfo(): Promise<AccountInfo | null> {
   let json: YtNode;
   try {
     json = await innertubePost("account/account_menu", {});
-  } catch {
-    return null;
+  } catch (e) {
+    console.warn("[auth] account_menu failed:", e);
+    throw e;
   }
 
   const header: YtNode | undefined =
@@ -66,13 +75,20 @@ export async function fetchAccountInfo(): Promise<AccountInfo | null> {
  *
  * Returns `null` when not signed in so the caller can show the right
  * gate ("sign in" vs "upgrade").
+ *
+ * Rejects rather than returning `null` on a transport failure, for the
+ * same reason as `fetchAccountInfo`: a swallowed network error here
+ * pinned the Premium store to `null` for the next 30 minutes, which
+ * opens the Premium gate on every track. That is the "no premium
+ * account detected" popup users reported alongside the false logout.
  */
 export async function fetchPremiumStatus(): Promise<PremiumStatus> {
   let json: YtNode;
   try {
     json = await innertubePost("account/account_menu", {});
-  } catch {
-    return null;
+  } catch (e) {
+    console.warn("[premium] account_menu failed:", e);
+    throw e;
   }
 
   const popup: YtNode | undefined =

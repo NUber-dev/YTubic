@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { usePremiumGateDialog } from "@/lib/store/premium-gate";
 import { usePremiumStore } from "@/lib/store/premium";
+import { authLoggedInQuery } from "@/lib/store/auth-queries";
 
 const PREMIUM_URL = "https://music.youtube.com/music_premium";
 const YTM_URL = "https://music.youtube.com";
@@ -36,12 +37,7 @@ export function PremiumGateDialog() {
 
   // Same key as usePremiumStatusSync, so it's served from the query
   // cache with no extra invoke round-trip in the common case.
-  const loggedIn = useQuery({
-    queryKey: ["auth-logged-in"],
-    queryFn: () => invoke<boolean>("is_logged_in"),
-    staleTime: 30_000,
-    enabled: open,
-  });
+  const loggedIn = useQuery({ ...authLoggedInQuery, enabled: open });
 
   // Premium confirmed while the dialog is up: nothing to explain.
   useEffect(() => {
