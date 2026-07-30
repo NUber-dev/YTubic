@@ -10,6 +10,8 @@
     "build": "vite build && tsc --noEmit",
     "preview": "vite preview",
     "tauri": "tauri",
+    "//tauri:dev": "Runs the desktop app in dev with its OWN bundle identifier (see src-tauri/tauri.dev.conf.json). Without the override, a dev run and the installed release share %APPDATA%\\com.github.ivasy.ytubic, so both their session-refresh loops write the same accounts.json and cookies.enc and each overwrites the other's snapshot. Costs one extra sign-in for the dev instance.",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
