@@ -395,7 +395,16 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
       <div
         ref={scrollRef}
         className={cn(
-          "lyrics-no-scrollbar flex h-full flex-col gap-1 overflow-y-auto px-1 pt-0 pb-16",
+          // The right inset is the room the active line's `scale-[1.06]`
+          // needs. Text wraps against the layout box, but the scale is a
+          // paint-time transform anchored at `origin-left`, so the active
+          // line paints 6% wider than the box it wrapped inside and the
+          // tail of the top row fell outside the column (`overflow-y-auto`
+          // clips the x axis too). Reserving the overhang here rather than
+          // on the active line alone keeps every line wrapping at the same
+          // width, so nothing reflows at the moment a line lights up.
+          // Percentage, not a fixed inset: the player card is resizable.
+          "lyrics-no-scrollbar flex h-full flex-col gap-1 overflow-y-auto pl-1 pr-[6%] pt-0 pb-16",
           // Mask kicks in only after the karaoke has moved past the
           // first line — that way the first line stays crisp at the
           // top of the column while the song hasn't started or is on
