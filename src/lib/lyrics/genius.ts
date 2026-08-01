@@ -1,6 +1,11 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { hitMatches, normalizeForMatch } from "@/lib/lyrics/match";
+import {
+  createDeadline,
+  lyricsFetch,
+  throwForStatus,
+  type Deadline,
+} from "@/lib/lyrics/http";
 
 /**
  * Genius (https://genius.com) — plain text only. The official API
@@ -46,70 +51,78 @@ type GeniusSearchResponse = {
 
 export async function fetchGeniusLyrics(
   p: GeniusParams,
+  signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
 
-  const url = await findSongUrl(p);
-  if (!url) return null;
+  const deadline = createDeadline(signal);
+  try {
+    const url = await findSongUrl(p, deadline);
+    if (!url) return null;
 
-  const text = await scrapeLyrics(url);
-  if (!text) return null;
+    const text = await scrapeLyrics(url, deadline);
+    if (!text) return null;
 
-  return { kind: "plain", text, source: "Genius" };
+    return { kind: "plain", text, source: "Genius" };
+  } finally {
+    deadline.done();
+  }
 }
 
-async function findSongUrl(p: GeniusParams): Promise<string | null> {
+async function findSongUrl(
+  p: GeniusParams,
+  deadline: Deadline,
+): Promise<string | null> {
   const q = p.artist ? `${p.title} ${p.artist}` : p.title;
   const url = new URL(SEARCH_URL);
   url.searchParams.set("q", q);
 
-  try {
-    const r = await tauriFetch(url.toString(), {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    });
-    if (!r.ok) return null;
-    const json = (await r.json()) as GeniusSearchResponse;
-    const hits = json?.response?.hits ?? [];
+  // Transport failures and non-2xx responses propagate: Genius being
+  // unreachable is not evidence that this track has no lyrics, and letting
+  // it resolve to null would cache that lie for 24h. See http.ts.
+  const r = await lyricsFetch(url.toString(), deadline, {
+    "User-Agent": USER_AGENT,
+    Accept: "application/json",
+  });
+  if (!r.ok) throwForStatus(r.status, "Genius search");
+  const json = (await r.json()) as GeniusSearchResponse;
+  const hits = json?.response?.hits ?? [];
 
-    // Hits come back ordered by relevance. Keep only song hits whose
-    // lyrics page is actually populated (Genius lists "unreleased"
-    // tracks with stub pages that scrape to nothing).
-    const usable = hits.filter(
-      (h) =>
-        h.type === "song" &&
-        h.result?.url &&
-        h.result?.lyrics_state !== "unreleased",
-    );
-    const reqTitle = normalizeForMatch(p.title);
-    const reqArtist = p.artist ? normalizeForMatch(p.artist) : "";
-    for (const h of usable) {
-      const hitTitle = normalizeForMatch(h.result?.title ?? "");
-      const hitArtist = normalizeForMatch(h.result?.primary_artist?.name ?? "");
-      if (hitMatches(reqTitle, reqArtist, hitTitle, hitArtist)) {
-        return h.result?.url ?? null;
-      }
+  // Hits come back ordered by relevance. Keep only song hits whose
+  // lyrics page is actually populated (Genius lists "unreleased"
+  // tracks with stub pages that scrape to nothing).
+  const usable = hits.filter(
+    (h) =>
+      h.type === "song" &&
+      h.result?.url &&
+      h.result?.lyrics_state !== "unreleased",
+  );
+  const reqTitle = normalizeForMatch(p.title);
+  const reqArtist = p.artist ? normalizeForMatch(p.artist) : "";
+  for (const h of usable) {
+    const hitTitle = normalizeForMatch(h.result?.title ?? "");
+    const hitArtist = normalizeForMatch(h.result?.primary_artist?.name ?? "");
+    if (hitMatches(reqTitle, reqArtist, hitTitle, hitArtist)) {
+      return h.result?.url ?? null;
     }
-    // No hit passed the title/artist check — better no lyrics than a
-    // confidently-wrong different song.
-    return null;
-  } catch {
-    return null;
   }
+  // No hit passed the title/artist check. That IS an answer: better no
+  // lyrics than a confidently-wrong different song, and it is worth caching.
+  return null;
 }
 
-async function scrapeLyrics(songUrl: string): Promise<string | null> {
-  try {
-    const r = await tauriFetch(songUrl, {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT, Accept: "text/html" },
-    });
-    if (!r.ok) return null;
-    const html = await r.text();
-    return extractLyricsFromHtml(html);
-  } catch {
-    return null;
-  }
+async function scrapeLyrics(
+  songUrl: string,
+  deadline: Deadline,
+): Promise<string | null> {
+  const r = await lyricsFetch(songUrl, deadline, {
+    "User-Agent": USER_AGENT,
+    Accept: "text/html",
+  });
+  if (!r.ok) throwForStatus(r.status, "Genius page");
+  const html = await r.text();
+  // A page that scrapes to nothing is a real (if disappointing) answer.
+  return extractLyricsFromHtml(html);
 }
 
 /**

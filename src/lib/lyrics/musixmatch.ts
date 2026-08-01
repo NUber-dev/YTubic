@@ -1,6 +1,13 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
+import {
+  createDeadline,
+  isTransientStatus,
+  lyricsFetch,
+  LyricsRateLimitError,
+  throwForStatus,
+  type Deadline,
+} from "@/lib/lyrics/http";
 
 /**
  * Musixmatch — unofficial reverse-engineered web-desktop client. The
@@ -81,34 +88,68 @@ function invalidateToken(): void {
   }
 }
 
-async function fetchToken(): Promise<string | null> {
+async function fetchToken(deadline: Deadline): Promise<string> {
   const cached = loadStoredToken();
   if (cached && Date.now() - cached.loadedAt < TOKEN_TTL_MS) {
     return cached.token;
   }
   const url = `${API_BASE}/token.get?app_id=${APP_ID}&format=json`;
-  try {
-    const r = await tauriFetch(url, {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    });
-    if (!r.ok) return null;
-    const json = (await r.json()) as MxmEnvelope<{ user_token?: string }>;
-    const token = json?.message?.body?.user_token;
-    // Musixmatch returns a literal "UpgradeOnlyUpgradeOnly..." token when
-    // the IP is flagged or the captcha gate is active — the token shape
-    // looks valid but any subsequent call will 401. Reject up front.
-    if (
-      typeof token !== "string" ||
-      token.length === 0 ||
-      /UpgradeOnly/.test(token)
-    ) {
-      return null;
-    }
-    return saveToken(token).token;
-  } catch {
-    return null;
+  const r = await lyricsFetch(url, deadline, {
+    "User-Agent": USER_AGENT,
+    Accept: "application/json",
+  });
+  if (!r.ok) throwForStatus(r.status, "Musixmatch token.get");
+  const json = (await r.json()) as MxmEnvelope<{ user_token?: string }>;
+  const token = json?.message?.body?.user_token;
+  // Musixmatch returns a literal "UpgradeOnlyUpgradeOnly..." token when
+  // the IP is flagged or the captcha gate is active, and the token shape
+  // looks valid but any subsequent call will 401.
+  //
+  // This throws rather than returning null, and the distinction matters:
+  // being rate-limited says nothing about whether this track has lyrics.
+  // Musixmatch gates aggressively (roughly 20 requests per IP per two
+  // minutes), so returning null here is what turned a burst of track
+  // skipping into a day of cached "No lyrics found." on disk.
+  if (
+    typeof token !== "string" ||
+    token.length === 0 ||
+    /UpgradeOnly/.test(token)
+  ) {
+    throw new LyricsRateLimitError(
+      "Musixmatch declined to issue a token",
+    );
   }
+  return saveToken(token).token;
+}
+
+/** Musixmatch answers 200 OK and puts the real status in the envelope, so
+ *  the HTTP status alone never tells you what happened. */
+function envelopeStatus(json: MxmEnvelope<unknown>): number | undefined {
+  return json?.message?.header?.status_code;
+}
+
+/**
+ * Turn one Musixmatch response into either a parsed envelope, the
+ * auth-failure sentinel, or a throw.
+ *
+ * 401/403 at either layer is the token going stale, which the caller
+ * recovers from by re-issuing one. 5xx and 429 are the provider's problem
+ * and must not be mistaken for "this track has no lyrics". A 404 in the
+ * envelope is a real answer and is left for the caller to read.
+ */
+async function readEnvelope<B>(
+  r: Response,
+  what: string,
+): Promise<MxmEnvelope<B> | "auth-failure"> {
+  if (r.status === 401 || r.status === 403) return "auth-failure";
+  if (!r.ok) throwForStatus(r.status, `Musixmatch ${what}`);
+  const json = (await r.json()) as MxmEnvelope<B>;
+  const status = envelopeStatus(json);
+  if (status === 401 || status === 403) return "auth-failure";
+  if (status !== undefined && (status === 429 || isTransientStatus(status))) {
+    throwForStatus(status, `Musixmatch ${what} envelope`);
+  }
+  return json;
 }
 
 type MxmEnvelope<B> = {
@@ -141,30 +182,47 @@ type MxmLyricsBody = {
 
 export async function fetchMusixmatchLyrics(
   p: MusixmatchParams,
+  signal?: AbortSignal,
 ): Promise<Lyrics | null> {
   if (!p.title) return null;
 
-  // Two-pass to handle token expiry: if any call returns 401, drop the
-  // cached token and retry once with a fresh one.
-  let result = await tryFetch(p);
-  if (result === "auth-failure") {
-    invalidateToken();
-    result = await tryFetch(p);
+  const deadline = createDeadline(signal);
+  try {
+    // Two-pass to handle token expiry: if any call returns 401, drop the
+    // cached token and retry once with a fresh one.
+    let result = await tryFetch(p, deadline);
+    if (result === "auth-failure") {
+      invalidateToken();
+      result = await tryFetch(p, deadline);
+    }
+    // Still refused after a fresh token: the account or IP is gated, which
+    // is a failure to look up, not a track without lyrics. Throw so it is
+    // retried later rather than persisted as an answer.
+    if (result === "auth-failure") {
+      throw new LyricsRateLimitError(
+        "Musixmatch rejected the token twice",
+      );
+    }
+    return result;
+  } finally {
+    deadline.done();
   }
-  return result === "auth-failure" ? null : result;
 }
 
 type TryFetchResult = Lyrics | null | "auth-failure";
 
-async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
-  const token = await fetchToken();
-  if (!token) return null;
+async function tryFetch(
+  p: MusixmatchParams,
+  deadline: Deadline,
+): Promise<TryFetchResult> {
+  const token = await fetchToken(deadline);
 
-  const trackId = await findTrackId(p, token);
+  const trackId = await findTrackId(p, token, deadline);
   if (trackId === "auth-failure") return "auth-failure";
+  // Musixmatch searched and came up empty. A real answer.
   if (!trackId) return null;
 
-  const subtitle = await getSubtitle(trackId, token);
+  const subtitle = await getSubtitle(trackId, token, deadline);
   if (subtitle === "auth-failure") return "auth-failure";
   if (subtitle) {
     const lines = parseLRC(subtitle);
@@ -173,7 +231,7 @@ async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
     }
   }
 
-  const plain = await getPlainLyrics(trackId, token);
+  const plain = await getPlainLyrics(trackId, token, deadline);
   if (plain === "auth-failure") return "auth-failure";
   if (plain) return { kind: "plain", text: plain, source: "Musixmatch" };
 
@@ -183,6 +241,7 @@ async function tryFetch(p: MusixmatchParams): Promise<TryFetchResult> {
 async function findTrackId(
   p: MusixmatchParams,
   token: string,
+  deadline: Deadline,
 ): Promise<number | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.search`);
   url.searchParams.set("q_track", p.title);
@@ -195,35 +254,30 @@ async function findTrackId(
   url.searchParams.set("format", "json");
   url.searchParams.set("usertoken", token);
 
-  try {
-    const r = await tauriFetch(url.toString(), {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    });
-    // A stale/flagged token can be rejected at the HTTP layer (401/403),
-    // not only via the envelope status_code — treat both as auth failures
-    // so the token-invalidate-and-retry path actually fires.
-    if (r.status === 401 || r.status === 403) return "auth-failure";
-    if (!r.ok) return null;
-    const json = (await r.json()) as MxmEnvelope<MxmSearchBody>;
-    if (json?.message?.header?.status_code === 401) return "auth-failure";
-    const list = json?.message?.body?.track_list ?? [];
-    // Prefer a track with synced subtitles; fall back to any track with
-    // lyrics. The result list is already sorted by rating descending, so
-    // the first hit in either pool is the best one.
-    const synced = list.find((t) => t.track?.has_subtitles === 1);
-    if (synced?.track?.track_id) return synced.track.track_id;
-    const plain = list.find((t) => t.track?.has_lyrics === 1);
-    if (plain?.track?.track_id) return plain.track.track_id;
-    return null;
-  } catch {
-    return null;
-  }
+  // A stale/flagged token can be rejected at the HTTP layer (401/403), not
+  // only via the envelope status_code. `readEnvelope` treats both as auth
+  // failures so the token-invalidate-and-retry path actually fires.
+  const r = await lyricsFetch(url.toString(), deadline, {
+    "User-Agent": USER_AGENT,
+    Accept: "application/json",
+  });
+  const json = await readEnvelope<MxmSearchBody>(r, "track.search");
+  if (json === "auth-failure") return "auth-failure";
+  const list = json?.message?.body?.track_list ?? [];
+  // Prefer a track with synced subtitles; fall back to any track with
+  // lyrics. The result list is already sorted by rating descending, so
+  // the first hit in either pool is the best one.
+  const synced = list.find((t) => t.track?.has_subtitles === 1);
+  if (synced?.track?.track_id) return synced.track.track_id;
+  const plain = list.find((t) => t.track?.has_lyrics === 1);
+  if (plain?.track?.track_id) return plain.track.track_id;
+  return null;
 }
 
 async function getSubtitle(
   trackId: number,
   token: string,
+  deadline: Deadline,
 ): Promise<string | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.subtitle.get`);
   url.searchParams.set("track_id", String(trackId));
@@ -232,25 +286,22 @@ async function getSubtitle(
   url.searchParams.set("format", "json");
   url.searchParams.set("usertoken", token);
 
-  try {
-    const r = await tauriFetch(url.toString(), {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    });
-    if (r.status === 401 || r.status === 403) return "auth-failure";
-    if (!r.ok) return null;
-    const json = (await r.json()) as MxmEnvelope<MxmSubtitleBody>;
-    if (json?.message?.header?.status_code === 401) return "auth-failure";
-    const body = json?.message?.body?.subtitle?.subtitle_body;
-    return typeof body === "string" && body.trim() ? body : null;
-  } catch {
-    return null;
-  }
+  const r = await lyricsFetch(url.toString(), deadline, {
+    "User-Agent": USER_AGENT,
+    Accept: "application/json",
+  });
+  const json = await readEnvelope<MxmSubtitleBody>(r, "track.subtitle.get");
+  if (json === "auth-failure") return "auth-failure";
+  // An empty body here means Musixmatch has no synced lyrics for this
+  // track. That is an answer, and the caller falls back to plain text.
+  const body = json?.message?.body?.subtitle?.subtitle_body;
+  return typeof body === "string" && body.trim() ? body : null;
 }
 
 async function getPlainLyrics(
   trackId: number,
   token: string,
+  deadline: Deadline,
 ): Promise<string | null | "auth-failure"> {
   const url = new URL(`${API_BASE}/track.lyrics.get`);
   url.searchParams.set("track_id", String(trackId));
@@ -258,21 +309,15 @@ async function getPlainLyrics(
   url.searchParams.set("format", "json");
   url.searchParams.set("usertoken", token);
 
-  try {
-    const r = await tauriFetch(url.toString(), {
-      method: "GET",
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    });
-    if (r.status === 401 || r.status === 403) return "auth-failure";
-    if (!r.ok) return null;
-    const json = (await r.json()) as MxmEnvelope<MxmLyricsBody>;
-    if (json?.message?.header?.status_code === 401) return "auth-failure";
-    if (json?.message?.body?.lyrics?.instrumental === 1) {
-      return "🎵 Instrumental";
-    }
-    const body = json?.message?.body?.lyrics?.lyrics_body;
-    return typeof body === "string" && body.trim() ? body : null;
-  } catch {
-    return null;
+  const r = await lyricsFetch(url.toString(), deadline, {
+    "User-Agent": USER_AGENT,
+    Accept: "application/json",
+  });
+  const json = await readEnvelope<MxmLyricsBody>(r, "track.lyrics.get");
+  if (json === "auth-failure") return "auth-failure";
+  if (json?.message?.body?.lyrics?.instrumental === 1) {
+    return "🎵 Instrumental";
   }
+  const body = json?.message?.body?.lyrics?.lyrics_body;
+  return typeof body === "string" && body.trim() ? body : null;
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon, MicVocalIcon } from "lucide-react";
+import { CheckIcon, MicVocalIcon, RotateCwIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,7 +28,10 @@ import { cn } from "@/lib/utils";
 const PREF_KEY = "ytm:lyrics-source";
 
 type Pref = LyricsSource | "auto";
-type Availability = "lrc" | "plain" | "loading" | "none";
+/** "none" means the source answered and has nothing. "error" means it never
+ *  answered. Keeping them apart is the whole point of the provider change:
+ *  an unreachable source must stay selectable so the user can retry it. */
+type Availability = "lrc" | "plain" | "loading" | "none" | "error";
 
 function loadPref(): Pref {
   try {
@@ -63,6 +66,11 @@ export type LyricsViewState = {
   setPref: (p: Pref) => void;
   best: LyricsSource | null;
   availability: Record<LyricsSource, Availability>;
+  /** Sources that failed to answer at all. */
+  failed: LyricsSource[];
+  /** A retry is in flight. */
+  isRetrying: boolean;
+  retryFailed: () => void;
 };
 
 /**
@@ -82,7 +90,8 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
     savePref(p);
   };
 
-  const { queries, best, isLoading } = useLyricsSources(track, !!track);
+  const { queries, best, isLoading, failed, isRetrying, retryFailed } =
+    useLyricsSources(track, !!track);
 
   const availability = useMemo(() => {
     const acc = {} as Record<LyricsSource, Availability>;
@@ -94,7 +103,9 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
           : "plain"
         : q.isLoading
           ? "loading"
-          : "none";
+          : q.isError
+            ? "error"
+            : "none";
     }
     return acc;
   }, [queries]);
@@ -110,6 +121,9 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
     setPref,
     best,
     availability,
+    failed,
+    isRetrying,
+    retryFailed,
   };
 }
 
@@ -123,6 +137,28 @@ export function LyricsBody({ state }: { state: LyricsViewState }) {
     );
   }
   if (!state.active) {
+    // A source that never answered is not a track without lyrics. Say which
+    // it was and offer another go, rather than the flat "No lyrics found."
+    // that used to cover both and then sat in the disk cache for 24h.
+    if (state.failed.length > 0) {
+      return (
+        <div className="flex flex-col items-start gap-2 px-4 py-2">
+          <p className="text-sm text-muted-foreground">
+            Couldn&apos;t reach{" "}
+            {state.failed.map((s) => SOURCE_LABELS[s]).join(", ")}.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={state.retryFailed}
+            disabled={state.isRetrying}
+          >
+            <RotateCwIcon className={state.isRetrying ? "animate-spin" : ""} />
+            {state.isRetrying ? "Trying…" : "Try again"}
+          </Button>
+        </div>
+      );
+    }
     return (
       <p className="px-4 py-2 text-sm text-muted-foreground">
         No lyrics found.
@@ -393,11 +429,16 @@ export function LyricsSourceButton({
                 ? "bg-muted-foreground/60"
                 : a === "loading"
                   ? "bg-muted-foreground/30 animate-pulse"
-                  : "bg-transparent";
+                  : a === "error"
+                    ? "bg-destructive"
+                    : "bg-transparent";
           return (
             <DropdownMenuItem
               key={s}
               onSelect={() => setPref(s)}
+              // Only a source that answered and had nothing is unselectable.
+              // A failed one stays pickable: selecting it is how the user
+              // asks for another attempt.
               disabled={a === "none"}
             >
               <span
