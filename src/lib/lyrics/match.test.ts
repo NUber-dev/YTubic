@@ -102,9 +102,27 @@ describe("dice", () => {
     expect(dice("周杰伦", "林俊杰")).toBe(0);
   });
 
-  it("returns 0 across scripts, which is uninformative rather than wrong", () => {
-    // Same recording. Callers must not read this as a mismatch.
-    expect(dice("Группа крови", "Gruppa Krovi")).toBe(0);
+  it("matches a romanized Cyrillic name instead of scoring it 0", () => {
+    // The databases store Cyrillic acts romanized about as often as not,
+    // and for Скриптонит the romanized rows are the ones carrying timings.
+    // A raw comparison reads 0 here, which looks like a different artist.
+    expect(dice("Группа крови", "Gruppa Krovi")).toBeGreaterThan(0.9);
+    expect(dice("Скриптонит", "Skryptonite")).toBeGreaterThan(0.7);
+    expect(dice("Земфира", "Zemfira")).toBe(1);
+  });
+
+  it("does not let romanization introduce false matches", () => {
+    expect(dice("Скриптонит", "Oxxxymiron")).toBeLessThan(0.45);
+    expect(dice("Кино", "Nirvana")).toBe(0);
+    // The uploader channel name for the reported track. Must stay rejected,
+    // or the re-attribution fallback would validate the wrong reading.
+    expect(dice("Скриптонит", "Skrypto gramma")).toBeLessThan(0.45);
+  });
+
+  it("still returns 0 where no romanization applies", () => {
+    // Japanese against an English title shares nothing, and callers must
+    // read that as uninformative rather than as a mismatch.
+    expect(dice("アイドル", "Idol")).toBe(0);
   });
 });
 

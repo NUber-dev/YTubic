@@ -89,7 +89,48 @@ function bigrams(t: string): Map<string, number> {
  * same title with different casing is 1.000; both of the others return
  * 1.000 for each. "Stay" vs "Stay Stay Stay" is 0.375 here and 1.000 there.
  */
+/**
+ * Cyrillic to Latin, the convention the lyrics databases use when they
+ * romanize. Not a standard: matched against what is actually stored.
+ */
+const CYRILLIC_LATIN: Record<string, string> = {
+  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
+  з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
+  п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts",
+  ч: "ch", ш: "sh", щ: "shch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu",
+  я: "ya", і: "i", ї: "yi", є: "ye", ґ: "g",
+};
+
+function transliterate(s: string): string {
+  let out = "";
+  let touched = false;
+  for (const ch of s) {
+    const t = CYRILLIC_LATIN[ch];
+    if (t === undefined) out += ch;
+    else {
+      out += t;
+      touched = true;
+    }
+  }
+  return touched ? out : s;
+}
+
 export function dice(a: string, b: string): number {
+  const raw = diceRaw(a, b);
+  // Databases store Cyrillic acts romanized about as often as not:
+  // "Скриптонит" appears as both "Skryptonite" and "Scriptonite", and the
+  // synced records are the romanized ones. Raw comparison scores those 0,
+  // which reads as "different artist" and throws the timings away.
+  //
+  // Taking the max keeps this from ever lowering a score, and the strangers
+  // stay strangers: "Скриптонит" against "Oxxxymiron" is 0.111 transliterated.
+  const ta = transliterate(a.toLowerCase());
+  const tb = transliterate(b.toLowerCase());
+  if (ta === a.toLowerCase() && tb === b.toLowerCase()) return raw;
+  return Math.max(raw, diceRaw(ta, tb));
+}
+
+function diceRaw(a: string, b: string): number {
   const A = bigrams(normalizeForScore(a));
   const B = bigrams(normalizeForScore(b));
   const sizeA = [...A.values()].reduce((x, y) => x + y, 0);

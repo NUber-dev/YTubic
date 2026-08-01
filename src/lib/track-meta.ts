@@ -56,7 +56,7 @@ const CJK_CLOSE = /[】〕〗」』〉》]/g;
  * are untouched.
  */
 const NOISE_BRACKET =
-  /^(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?|lyrics?\s*video|visuali[sz]er|m\s*\/?\s*v|hd|hq|full\s*hd|4k|8k|1080p|720p|full\s*album|colou?r\s*coded(?:\s*lyrics)?|with\s+lyrics|letra|字幕|中文字幕|歌詞|歌词|歌詞付き|가사|자막)$/i;
+  /^(?:official\s*)?(?:music\s*)?(?:video|audio|lyrics?|lyrics?\s*video|visuali[sz]er|m\s*\/?\s*v|hd|hq|full\s*hd|4k|8k|1080p|720p|full\s*album|colou?r\s*coded(?:\s*lyrics)?|with\s+lyrics|letra|字幕|中文字幕|歌詞|歌词|歌詞付き|가사|자막|flac|wav|mp3|lossless|\d{3,4}\s*kbps|hq\s*audio|audio\s*only)$/i;
 
 /**
  * Featuring credits. The artist field already carries these names, and
@@ -184,6 +184,54 @@ export function artistsFromList(
     .filter(Boolean)
     .join(", ");
   return joined || undefined;
+}
+
+/**
+ * Re-uploads invert the usual arrangement: the real artist is in the title
+ * and the artist field holds the uploader's channel name.
+ *
+ * "Скриптонит - Жить как я живу (flac)" credited to "Skrypto gramma" finds
+ * nothing anywhere, because no lyrics database has heard of the channel.
+ * Split the other way it is an ordinary track with six records.
+ *
+ * Returned as an ALTERNATIVE, never as the primary reading, and only when
+ * the known artist appears nowhere in the title. Guessing this eagerly
+ * would wreck a genuine "A - B" title whose artist simply is not written
+ * in it: "Numb - Encore" by Jay-Z would go looking for "Encore" by "Numb".
+ * As a fallback the downside is bounded, since the alternative is only
+ * tried once the ordinary reading has already come back empty.
+ */
+export function reattributedFromTitle(
+  title: string,
+  knownArtist: string | undefined,
+): { title: string; artist: string } | null {
+  const parts = (title ?? "").split(/\s+[-–—]\s+/);
+  if (parts.length !== 2) return null;
+  const [left, right] = parts.map((p) => p.trim());
+  if (!left || !right) return null;
+
+  if (knownArtist) {
+    const known = normalizeForScore(knownArtist);
+    // If the credited artist is already in the title, the ordinary reading
+    // was right and there is nothing to re-attribute.
+    for (const side of [left, right]) {
+      const n = normalizeForScore(side);
+      if (n.includes(known) || known.includes(n)) return null;
+    }
+  }
+  return { title: cleanTrackTitle(right), artist: left };
+}
+
+/** Shared with the matcher so both sides compare strings the same way. */
+function normalizeForScore(s: string): string {
+  return s
+    .normalize("NFKC")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**

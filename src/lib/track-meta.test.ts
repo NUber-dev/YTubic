@@ -4,6 +4,7 @@ import {
   artistsFromList,
   cleanTrackTitle,
   lyricsArtist,
+  reattributedFromTitle,
   stripTopicSuffix,
 } from "./track-meta";
 
@@ -168,5 +169,38 @@ describe("lyricsArtist", () => {
 
   it("de-Topics the structured list too", () => {
     expect(artistsFromList([{ name: "YOASOBI - Topic" }])).toBe("YOASOBI");
+  });
+});
+
+describe("reattributedFromTitle", () => {
+  it("recovers a re-upload that hid the artist in the title", () => {
+    // Reported case: "Скриптонит - Жить как я живу (flac)" uploaded by a
+    // channel called "Skrypto gramma". As sent, zero results anywhere; as
+    // re-attributed, an ordinary track with six records.
+    expect(
+      reattributedFromTitle("Скриптонит - Жить как я живу", "Skrypto gramma"),
+    ).toEqual({ title: "Жить как я живу", artist: "Скриптонит" });
+  });
+
+  it("declines when the credited artist is already in the title", () => {
+    // Then the ordinary reading was right and there is nothing to recover.
+    expect(
+      reattributedFromTitle("Marshmello - Alone", "Marshmello"),
+    ).toBeNull();
+  });
+
+  it("declines on anything that is not a two-part split", () => {
+    expect(reattributedFromTitle("Blinding Lights", "The Weeknd")).toBeNull();
+    expect(
+      reattributedFromTitle("Levels - Avicii - Levels", "Avicii"),
+    ).toBeNull();
+  });
+});
+
+describe("cleanTrackTitle audio-quality tags", () => {
+  it("drops the format tags re-uploads carry", () => {
+    expect(cleanTrackTitle("Жить как я живу (flac)")).toBe("Жить как я живу");
+    expect(cleanTrackTitle("Song (320kbps)")).toBe("Song");
+    expect(cleanTrackTitle("Song [Lossless]")).toBe("Song");
   });
 });

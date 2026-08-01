@@ -2,6 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
 import { selectBest, type ScoreQuery } from "@/lib/lyrics/score";
+import { reattributedFromTitle } from "@/lib/track-meta";
 import {
   createDeadline,
   lyricsFetch,
@@ -80,7 +81,16 @@ export async function fetchLrclibLyrics(
 
   const deadline = createDeadline(signal);
   try {
-    return await lookup(p, deadline);
+    const first = await lookup(p, deadline);
+    if (first) return first;
+
+    // Nothing under the ordinary reading. If this looks like a re-upload
+    // with the artist in the title and a channel name in the artist field,
+    // try it the other way round. Only ever a second attempt, so a wrong
+    // guess costs a request rather than a wrong answer.
+    const alt = reattributedFromTitle(p.title, p.artist);
+    if (!alt) return null;
+    return await lookup({ ...p, title: alt.title, artist: alt.artist }, deadline);
   } finally {
     deadline.done();
   }
