@@ -1,7 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
-import { normalizeForMatch } from "@/lib/lyrics/match";
+import { selectBest, type ScoreQuery } from "@/lib/lyrics/score";
 import {
   createDeadline,
   lyricsFetch,
@@ -112,62 +112,25 @@ async function lookup(
   ]);
 
   const get = getR.status === "fulfilled" ? getR.value : null;
-  const search = searchR.status === "fulfilled" ? searchR.value : null;
+  const search = searchR.status === "fulfilled" ? (searchR.value ?? []) : [];
 
-  const rec = pickRecord(get, search);
-  if (rec) return mapRecord(rec);
+  // One scored pool rather than a precedence rule between the endpoints.
+  // /get's exact match used to win by default, but its +/-2s window
+  // validates the metadata field, not the body: a live probe for a 248s
+  // track returned a record whose lyrics run 68s past the end.
+  const query: ScoreQuery = {
+    title: p.title,
+    artist: p.artist,
+    durationSec: p.duration,
+  };
+  const best = selectBest(query, [...(get ? [get] : []), ...search]);
+  if (best) return mapRecord(best.record, best.verdict.suppressSynced);
 
-  // No record, so the answer hinges on WHY. A 404 from /get only means the
-  // exact-match query missed; it is /search, the broader one, that decides
-  // whether this track is really absent. If either endpoint failed rather
-  // than answered, we do not know, and must not return the null that gets
-  // cached for a day as "No lyrics found".
+  // Nothing survived scoring. Whether that is an answer depends on whether
+  // both endpoints actually answered.
   if (searchR.status === "rejected") throw searchR.reason;
   if (getR.status === "rejected") throw getR.reason;
   return null;
-}
-
-function hasSynced(r: LrclibRecord | null): boolean {
-  return typeof r?.syncedLyrics === "string" && r.syncedLyrics.trim() !== "";
-}
-
-/**
- * Same recording, different row? LRCLIB holds duplicates for one song
- * credited slightly differently, and only one of them tends to carry the
- * synced lyrics.
- */
-function sameRecording(a: LrclibRecord, b: LrclibRecord): boolean {
-  const title =
-    normalizeForMatch(a.trackName ?? "") === normalizeForMatch(b.trackName ?? "");
-  const artist =
-    normalizeForMatch(a.artistName ?? "") ===
-    normalizeForMatch(b.artistName ?? "");
-  if (!title || !artist) return false;
-  if (a.duration == null || b.duration == null) return true;
-  return Math.abs(a.duration - b.duration) <= 2;
-}
-
-/**
- * Choose between the two endpoints' records.
- *
- * /get wins by default because it matched exactly and /search is fuzzy and,
- * until a real scorer lands, unverified. The one exception is the duplicate
- * row above: if /search found synced lyrics for what is demonstrably the
- * same recording that /get returned as plain text, take the synced one.
- *
- * The `sameRecording` guard is what keeps this from making things worse. A
- * blanket "synced beats plain" would let an unverified /search hit for a
- * different song outrank a verified exact match, which is the bug class
- * this whole effort is trying to close.
- */
-function pickRecord(
-  get: LrclibRecord | null,
-  search: LrclibRecord | null,
-): LrclibRecord | null {
-  if (!get) return search;
-  if (!search) return get;
-  if (hasSynced(get) || !hasSynced(search)) return get;
-  return sameRecording(get, search) ? search : get;
 }
 
 async function lrclibGet(
@@ -193,34 +156,37 @@ async function lrclibGet(
 async function lrclibSearch(
   p: LrclibParams,
   deadline: Deadline,
-): Promise<LrclibRecord | null> {
+): Promise<LrclibRecord[]> {
   const url = new URL("https://lrclib.net/api/search");
   url.searchParams.set("track_name", p.title);
   if (p.artist) url.searchParams.set("artist_name", p.artist);
-  // As in lrclibGet: propagate transient failures for retry; only an empty
-  // result set is a genuine "not found".
+  // Album is deliberately NOT sent. Measured: the right album leaves the
+  // result count unchanged, a wrong one drops it to zero, and YTM and
+  // LRCLIB disagree about albums constantly (compilations, regional
+  // releases, single vs album). /get already uses it, where strictness is
+  // the point and this is the fallback.
   const r = await lyricsFetch(url.toString(), deadline, await headers());
   if (!r.ok) throwForStatus(r.status, "LRCLIB /search");
   const results = (await r.json()) as LrclibRecord[];
-  if (!Array.isArray(results) || results.length === 0) return null;
-  // Prefer results with synced lyrics. Then, if we know the duration,
-  // prefer the closest one — YTM and LRCLIB versions occasionally
-  // differ by a second or two.
-  const synced = results.filter((r) => r.syncedLyrics);
-  const pool = synced.length > 0 ? synced : results;
-  if (!p.duration) return pool[0];
-  return pool.reduce((best, cur) => {
-    const bestDiff = Math.abs((best.duration ?? 0) - (p.duration ?? 0));
-    const curDiff = Math.abs((cur.duration ?? 0) - (p.duration ?? 0));
-    return curDiff < bestDiff ? cur : best;
-  });
+  // Every record goes to the scorer. The old code pre-filtered to records
+  // having synced lyrics, which empties the result set for tracks whose
+  // only correct records are plain, and on a generic title concentrates
+  // the survivors onto strangers.
+  return Array.isArray(results) ? results : [];
 }
 
-function mapRecord(r: LrclibRecord): Lyrics | null {
+function mapRecord(
+  r: LrclibRecord,
+  suppressSynced = false,
+): Lyrics | null {
   if (r.instrumental) {
     return { kind: "plain", text: "🎵 Instrumental", source: "LRCLIB" };
   }
-  if (typeof r.syncedLyrics === "string" && r.syncedLyrics.trim()) {
+  if (
+    !suppressSynced &&
+    typeof r.syncedLyrics === "string" &&
+    r.syncedLyrics.trim()
+  ) {
     const lines = parseLRC(r.syncedLyrics);
     if (lines.length > 0) {
       return { kind: "timed", lines, source: "LRCLIB" };

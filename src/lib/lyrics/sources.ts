@@ -38,7 +38,7 @@ const ONE_HOUR = 60 * 60 * 1000;
  * user keeps yesterday's answer, looked up with yesterday's broken title
  * and artist, for a day after installing the fix.
  */
-const LOOKUP_VERSION = "v2";
+const LOOKUP_VERSION = "v3";
 
 /**
  * Fire both lyric queries in parallel, plus a derived "best" selection.

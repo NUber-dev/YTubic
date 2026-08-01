@@ -316,42 +316,51 @@ describe("429 classification", () => {
 });
 
 describe("LRCLIB record selection", () => {
+  // These fixtures name the track the query asks for. They did not before,
+  // and passed anyway, because nothing verified that the record returned was
+  // the song requested. The scorer rejects a mismatch outright now, which is
+  // the whole point of it.
+  const LRC = "[00:01.00]I have been tryna call";
+
   const plainGet = {
-    trackName: "Bewajah",
-    artistName: "Abdul Hannan",
+    trackName: "Blinding Lights",
+    artistName: "The Weeknd",
     duration: 200,
     plainLyrics: "just the words",
   };
   const syncedTwin = [
     {
-      trackName: "Bewajah",
-      artistName: "Abdul Hannan",
+      trackName: "Blinding Lights",
+      artistName: "The Weeknd",
       duration: 201,
-      syncedLyrics: "[00:01.00]just the words",
+      syncedLyrics: LRC,
     },
   ];
 
   it("uses /search when /get is broken, instead of losing both", async () => {
-    // The old `Promise.all` rejected the pair, discarding a good record.
+    // The old Promise.all rejected the pair, discarding a good record.
     const { lrclib } = await setup((url) =>
       url.includes("/api/get") ? json({}, 500) : json(syncedTwin),
     );
-    await expect(lrclib(TRACK)).resolves.toMatchObject({ kind: "timed" });
+    await expect(lrclib({ ...TRACK, duration: 201 })).resolves.toMatchObject({
+      kind: "timed",
+    });
   });
 
-  it("prefers a synced duplicate row over /get's plain one", async () => {
-    // LRCLIB stores the same song more than once, credited slightly
-    // differently, and often only one row carries the timings.
+  it("prefers a synced record over a plain one for the same recording", async () => {
+    // LRCLIB stores one song under several rows, and often only one of them
+    // carries the timings.
     const { lrclib } = await setup((url) =>
       url.includes("/api/get") ? json(plainGet) : json(syncedTwin),
     );
-    await expect(lrclib(TRACK)).resolves.toMatchObject({ kind: "timed" });
+    await expect(lrclib({ ...TRACK, duration: 200 })).resolves.toMatchObject({
+      kind: "timed",
+    });
   });
 
-  it("keeps /get's exact plain match over a synced hit for another song", async () => {
-    // The guard that stops this optimisation from reintroducing the very
-    // bug the effort exists to fix: /search is fuzzy and unverified, so it
-    // may not outrank an exact match just by having timings.
+  it("keeps the right song's plain text over another song's synced text", async () => {
+    // /get no longer wins by precedence; it wins because the scorer rejects
+    // the stranger. Having timings is never a reason to accept a wrong song.
     const { lrclib } = await setup((url) =>
       url.includes("/api/get")
         ? json(plainGet)
@@ -360,23 +369,21 @@ describe("LRCLIB record selection", () => {
               trackName: "Something Else Entirely",
               artistName: "A Different Band",
               duration: 200,
-              syncedLyrics: "[00:01.00]wrong song",
+              syncedLyrics: LRC,
             },
           ]),
     );
-    await expect(lrclib(TRACK)).resolves.toMatchObject({
+    await expect(lrclib({ ...TRACK, duration: 200 })).resolves.toMatchObject({
       kind: "plain",
       text: "just the words",
     });
   });
 
   it("throws when /get merely missed and /search is the one that broke", async () => {
-    // A 404 from the exact-match endpoint is not evidence of absence when
-    // the broad query never answered.
     const { lrclib } = await setup((url) =>
       url.includes("/api/get") ? json({}, 404) : json({}, 500),
     );
-    await expect(lrclib(TRACK)).rejects.toThrow(/LRCLIB \/search 500/);
+    await expect(lrclib(TRACK)).rejects.toThrow(/LRCLIB .search 500/);
   });
 
   it("still reports a genuine absence as an answer", async () => {

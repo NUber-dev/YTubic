@@ -1,5 +1,5 @@
 import type { Lyrics } from "@/lib/lyrics/types";
-import { hitMatches, normalizeForMatch } from "@/lib/lyrics/match";
+import { selectBest, type ScoreCandidate } from "@/lib/lyrics/score";
 import {
   createDeadline,
   lyricsFetch,
@@ -91,24 +91,37 @@ async function findSongUrl(
   // Hits come back ordered by relevance. Keep only song hits whose
   // lyrics page is actually populated (Genius lists "unreleased"
   // tracks with stub pages that scrape to nothing).
+  // Hits come back ordered by relevance. Keep only song hits whose
+  // lyrics page is actually populated (Genius lists "unreleased"
+  // tracks with stub pages that scrape to nothing).
   const usable = hits.filter(
     (h) =>
       h.type === "song" &&
       h.result?.url &&
       h.result?.lyrics_state !== "unreleased",
   );
-  const reqTitle = normalizeForMatch(p.title);
-  const reqArtist = p.artist ? normalizeForMatch(p.artist) : "";
-  for (const h of usable) {
-    const hitTitle = normalizeForMatch(h.result?.title ?? "");
-    const hitArtist = normalizeForMatch(h.result?.primary_artist?.name ?? "");
-    if (hitMatches(reqTitle, reqArtist, hitTitle, hitArtist)) {
-      return h.result?.url ?? null;
-    }
-  }
-  // No hit passed the title/artist check. That IS an answer: better no
-  // lyrics than a confidently-wrong different song, and it is worth caching.
-  return null;
+
+  // Score every hit and take the best, rather than the first that clears a
+  // boolean. Relevance order is not trustworthy: across the probed cases
+  // the wrong record sat at rank 0 for "Hurt", "Numb", "Lean On", "Prada",
+  // "One Kiss", "Hotel California" and "Die For You".
+  //
+  // Genius has neither duration nor synced lyrics, so the artist carries
+  // the whole decision and the floor is raised to compensate.
+  type Hit = (typeof usable)[number];
+  const candidates: (ScoreCandidate & { hit: Hit })[] = usable.map((h) => ({
+    hit: h,
+    trackName: h.result?.title ?? "",
+    artistName: h.result?.primary_artist?.name ?? "",
+  }));
+
+  const best = selectBest(
+    { title: p.title, artist: p.artist },
+    candidates,
+    { durationBlind: true, bodyUnknown: true },
+  );
+  // Better no lyrics than a confidently-wrong different song.
+  return best?.record.hit.result?.url ?? null;
 }
 
 async function scrapeLyrics(

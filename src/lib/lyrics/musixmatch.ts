@@ -1,5 +1,6 @@
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
+import { selectBest, type ScoreCandidate } from "@/lib/lyrics/score";
 import {
   createDeadline,
   isTransientStatus,
@@ -264,14 +265,29 @@ async function findTrackId(
   const json = await readEnvelope<MxmSearchBody>(r, "track.search");
   if (json === "auth-failure") return "auth-failure";
   const list = json?.message?.body?.track_list ?? [];
-  // Prefer a track with synced subtitles; fall back to any track with
-  // lyrics. The result list is already sorted by rating descending, so
-  // the first hit in either pool is the best one.
-  const synced = list.find((t) => t.track?.has_subtitles === 1);
-  if (synced?.track?.track_id) return synced.track.track_id;
-  const plain = list.find((t) => t.track?.has_lyrics === 1);
-  if (plain?.track?.track_id) return plain.track.track_id;
-  return null;
+
+  // Score the hits instead of taking the first one with subtitles. This was
+  // the least verified provider in the app: it read neither track_name nor
+  // artist_name from a response that contains both, so a title Musixmatch
+  // happens to rank highly was accepted whatever song it belonged to.
+  //
+  // The has_subtitles preference is gone for the same reason the LRCLIB
+  // synced pre-filter went: preferring timings over correctness picks a
+  // confidently wrong song over a right one.
+  type Row = (typeof list)[number];
+  const candidates: (ScoreCandidate & { row: Row })[] = list
+    .filter((t) => t.track?.has_lyrics === 1 || t.track?.has_subtitles === 1)
+    .map((t) => ({
+      row: t,
+      trackName: t.track?.track_name ?? "",
+      artistName: t.track?.artist_name ?? "",
+    }));
+
+  const best = selectBest({ title: p.title, artist: p.artist }, candidates, {
+    durationBlind: true,
+    bodyUnknown: true,
+  });
+  return best?.record.row.track?.track_id ?? null;
 }
 
 async function getSubtitle(
