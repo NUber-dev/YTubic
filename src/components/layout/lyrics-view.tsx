@@ -405,11 +405,13 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
           // width, so nothing reflows at the moment a line lights up.
           // Percentage, not a fixed inset: the player card is resizable.
           "lyrics-no-scrollbar flex h-full flex-col gap-1 overflow-y-auto pl-1 pr-[6%] pt-0 pb-16",
-          // Mask kicks in only after the karaoke has moved past the
-          // first line — that way the first line stays crisp at the
+          // The top fade kicks in only after the karaoke has moved past
+          // the first line — that way the first line stays crisp at the
           // top of the column while the song hasn't started or is on
-          // line 0.
-          activeIdx >= 1 && "lyrics-mask",
+          // line 0. The bottom fade is on throughout: the column runs
+          // past the panel edge from the very first line, and without it
+          // the last row is sliced through mid-glyph.
+          activeIdx >= 1 ? "lyrics-mask" : "lyrics-mask-bottom",
         )}
       >
         {lines.map((line, i) => {

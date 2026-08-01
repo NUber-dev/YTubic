@@ -303,9 +303,32 @@
     display: none;
   }
 
-  /* Top/bottom fade for the lyrics column. Applied only once the
-     karaoke has progressed past the first line — before that we want
-     the first line crisp at the top of the column. */
+  /* Bottom-only fade. What the lyrics column wears while the first line
+     is still the active one: the top has to stay crisp there, but the
+     bottom edge is a hard cut through the middle of a glyph without it.
+     Same four stops as `.lyrics-mask` below, with the opening one opaque
+     instead of transparent, so swapping between the two only changes the
+     top of the column. */
+  .lyrics-mask-bottom {
+    mask-image: linear-gradient(
+      to bottom,
+      black 0%,
+      black 14%,
+      black 86%,
+      transparent 100%
+    );
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      black 0%,
+      black 14%,
+      black 86%,
+      transparent 100%
+    );
+  }
+
+  /* Top/bottom fade for the lyrics column. The top half of it is applied
+     only once the karaoke has progressed past the first line — before
+     that we want the first line crisp at the top of the column. */
   .lyrics-mask {
     mask-image: linear-gradient(
       to bottom,
