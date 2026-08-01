@@ -101,6 +101,23 @@ const CYRILLIC_LATIN: Record<string, string> = {
   я: "ya", і: "i", ї: "yi", є: "ye", ґ: "g",
 };
 
+/**
+ * The romanized spelling of a Cyrillic name, or null if there is nothing to
+ * romanize.
+ *
+ * Providers filter by artist server-side, and they do it by containment:
+ * asking LRCLIB for "Скриптонит" returns six rows, all Cyrillic-credited
+ * and all unsynced, while the synced records are filed under "Skryptonite"
+ * and only surface with no artist filter at all. Scoring cannot fix that,
+ * because those rows never reach the scorer. The query has to ask for both
+ * spellings.
+ */
+export function romanizedArtist(s: string | undefined): string | null {
+  if (!s) return null;
+  const t = transliterate(s.toLowerCase());
+  return t === s.toLowerCase() ? null : t;
+}
+
 function transliterate(s: string): string {
   let out = "";
   let touched = false;
@@ -115,19 +132,56 @@ function transliterate(s: string): string {
   return touched ? out : s;
 }
 
+/**
+ * Collapse the ways two romanization schemes disagree about one name:
+ * i/y, c/k, doubled letters, a decorative trailing "e".
+ *
+ * Aggressive, so it is only ever reached when one side was Cyrillic, and
+ * only trusted on a near-exact result (see `dice`). Pure Latin comparisons
+ * never see it, or "Cindy" and "Kindi" would start matching.
+ */
+function romanizationSkeleton(s: string): string {
+  return normalizeForScore(s)
+    .replace(/kh/g, "h")
+    .replace(/ck/g, "k")
+    .replace(/c/g, "k")
+    .replace(/[yj]/g, "i")
+    .replace(/(.)\1+/g, "$1")
+    .replace(/e\b/g, "")
+    .trim();
+}
+
+/** A skeleton match this close means one name spelled two ways. */
+const SKELETON_PROMOTE = 0.85;
+
 export function dice(a: string, b: string): number {
   const raw = diceRaw(a, b);
+
   // Databases store Cyrillic acts romanized about as often as not:
-  // "Скриптонит" appears as both "Skryptonite" and "Scriptonite", and the
-  // synced records are the romanized ones. Raw comparison scores those 0,
-  // which reads as "different artist" and throws the timings away.
-  //
-  // Taking the max keeps this from ever lowering a score, and the strangers
-  // stay strangers: "Скриптонит" against "Oxxxymiron" is 0.111 transliterated.
+  // "Скриптонит" is filed as both "Skryptonite" and "Scriptonite", and it
+  // is the romanized rows that carry the timings. Comparing raw scores
+  // those 0, which reads as a different artist and throws the timings away.
   const ta = transliterate(a.toLowerCase());
   const tb = transliterate(b.toLowerCase());
   if (ta === a.toLowerCase() && tb === b.toLowerCase()) return raw;
-  return Math.max(raw, diceRaw(ta, tb));
+
+  const translit = Math.max(raw, diceRaw(ta, tb));
+
+  // Transliteration alone leaves "Скриптонит" against "Skryptonite" at
+  // 0.737, which is not a doubt about who the artist is: it is the i/y and
+  // trailing-e noise between two romanization conventions. Scoring it as
+  // doubt costs the synced lyrics, since the plain rows spell the name
+  // exactly and win at 1.000.
+  //
+  // Promoting only on a near-exact skeleton is what keeps this honest.
+  // "Каста" against "Kasta Nova" skeletons to 0.615 and "Скриптонит"
+  // against the uploader "Skrypto gramma" to 0.571; both stay on their
+  // lower transliterated score. Genuine spelling variants land at 1.000.
+  const skeleton = diceRaw(
+    romanizationSkeleton(ta),
+    romanizationSkeleton(tb),
+  );
+  return skeleton >= SKELETON_PROMOTE ? Math.max(translit, skeleton) : translit;
 }
 
 function diceRaw(a: string, b: string): number {

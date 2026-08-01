@@ -1,6 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { parseLRC } from "@/lib/lyrics/parse-lrc";
+import { romanizedArtist } from "@/lib/lyrics/match";
 import { selectBest, type ScoreQuery } from "@/lib/lyrics/score";
 import { reattributedFromTitle } from "@/lib/track-meta";
 import {
@@ -116,13 +117,29 @@ async function lookup(
   // `allSettled`, not `all`: with `all`, a 5xx from either endpoint
   // rejected the pair and threw away a perfectly good record from the
   // other. One endpoint answering is enough.
-  const [getR, searchR] = await Promise.allSettled([
+  // A third query when the artist is Cyrillic. The provider filters by
+  // artist server-side and by containment, so "Скриптонит" never returns
+  // the rows filed as "Skryptonite" no matter how well the scorer would
+  // rank them. Both spellings have to be asked for. The scorer still
+  // decides, and dedups by lyric body, so the extra rows cost nothing but
+  // one request.
+  // Title-only, NOT artist-less: p.artist stays set, so the scorer still
+  // verifies every row it brings back. Broadening what is RETRIEVED is a
+  // different thing from dropping the constraint that VERIFIES.
+  const romanized = romanizedArtist(p.artist);
+  const [getR, searchR, romanR] = await Promise.allSettled([
     p.artist ? lrclibGet(p, deadline) : Promise.resolve(null),
     lrclibSearch(p, deadline),
+    romanized
+      ? lrclibSearch({ ...p, artist: undefined }, deadline)
+      : Promise.resolve([]),
   ]);
 
   const get = getR.status === "fulfilled" ? getR.value : null;
-  const search = searchR.status === "fulfilled" ? (searchR.value ?? []) : [];
+  const search = [
+    ...(searchR.status === "fulfilled" ? (searchR.value ?? []) : []),
+    ...(romanR.status === "fulfilled" ? (romanR.value ?? []) : []),
+  ];
 
   // One scored pool rather than a precedence rule between the endpoints.
   // /get's exact match used to win by default, but its +/-2s window

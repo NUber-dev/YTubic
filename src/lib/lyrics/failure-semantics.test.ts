@@ -393,3 +393,73 @@ describe("LRCLIB record selection", () => {
     await expect(lrclib(TRACK)).resolves.toBeNull();
   });
 });
+
+describe("retrieval widening for romanized names", () => {
+  const SYNC = "[00:01.00]М, м";
+
+  it("asks by title alone as well when the artist is Cyrillic", async () => {
+    // Providers filter by artist server-side, by containment. Asking for
+    // "Скриптонит" returns only the Cyrillic-credited rows, which for this
+    // track are all unsynced; the synced ones are filed as "Skryptonite"
+    // and surface only without an artist filter. No amount of scoring fixes
+    // that, because those rows never reach the scorer.
+    const calls: string[] = [];
+    vi.resetModules();
+    const http = await import("@tauri-apps/plugin-http");
+    vi.mocked(http.fetch).mockReset();
+    vi.mocked(http.fetch).mockImplementation((input: unknown) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.includes("/api/get")) return Promise.resolve(json({}, 404));
+      const hasArtist = url.includes("artist_name=");
+      return Promise.resolve(
+        json(
+          hasArtist
+            ? [{ trackName: "Жить как я живу", artistName: "Скриптонит", duration: 218, plainLyrics: "М, м" }]
+            : [
+                { trackName: "Жить как я живу", artistName: "Скриптонит", duration: 218, plainLyrics: "М, м" },
+                { trackName: "Жить как я живу", artistName: "Skryptonite", duration: 218, syncedLyrics: SYNC },
+              ],
+        ),
+      );
+    });
+    const { fetchLrclibLyrics } = await import("./lrclib");
+
+    const res = await fetchLrclibLyrics({
+      title: "Жить как я живу",
+      artist: "Скриптонит",
+      duration: 218,
+    });
+    // The romanized row wins, so the user gets timings instead of prose.
+    expect(res).toMatchObject({ kind: "timed" });
+    expect(calls.some((u) => u.includes("/api/search") && !u.includes("artist_name="))).toBe(true);
+  });
+
+  it("does not widen for a Latin artist, so most tracks cost nothing extra", async () => {
+    const calls: string[] = [];
+    vi.resetModules();
+    const http = await import("@tauri-apps/plugin-http");
+    vi.mocked(http.fetch).mockReset();
+    vi.mocked(http.fetch).mockImplementation((input: unknown) => {
+      calls.push(String(input));
+      return Promise.resolve(json([]));
+    });
+    const { fetchLrclibLyrics } = await import("./lrclib");
+    await fetchLrclibLyrics({ title: "Blinding Lights", artist: "The Weeknd", duration: 200 });
+    expect(calls.filter((u) => u.includes("/api/search"))).toHaveLength(1);
+  });
+
+  it("still refuses the strangers a title-only search drags in", async () => {
+    // The reason widening looked forbidden. It is safe because the artist
+    // is still verified: only the retrieval broadened, not the check.
+    const { selectBest } = await import("./score");
+    const best = selectBest(
+      { title: "Alone", artist: "Marshmello", durationSec: 264 },
+      [
+        { trackName: "Alone", artistName: "Parkway Drive", duration: 271, syncedLyrics: SYNC },
+        { trackName: "Alone", artistName: "Heart", duration: 263, syncedLyrics: SYNC },
+      ],
+    );
+    expect(best).toBeNull();
+  });
+});

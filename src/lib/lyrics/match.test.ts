@@ -270,3 +270,31 @@ describe("lastTimestamp", () => {
     expect(lastTimestamp(null)).toBeNull();
   });
 });
+
+describe("romanization skeleton", () => {
+  it("scores a spelling variant of one name as the same name", () => {
+    // Reported track: the synced records are filed under "Skryptonite" and
+    // "Scriptonite" while the plain ones spell it exactly. At 0.737 the
+    // exact plain rows win and the timings are lost, which is not a doubt
+    // about who the artist is, only about how it is transcribed.
+    expect(dice("Скриптонит", "Skryptonite")).toBe(1);
+    expect(dice("Скриптонит", "Scriptonite")).toBe(1);
+    expect(dice("Океан Ельзи", "Okean Elzy")).toBe(1);
+    expect(dice("Пошлая Молли", "Poshlaya Molly")).toBe(1);
+  });
+
+  it("promotes only on a near-exact skeleton, so near-misses stay near-misses", () => {
+    // Both of these skeleton above 0.5 and would pass the artist gate if
+    // the skeleton were trusted outright. They keep their lower score.
+    expect(dice("Скриптонит", "Skrypto gramma")).toBeLessThan(0.45);
+    expect(dice("Каста", "Kasta Nova")).toBeLessThan(0.7);
+  });
+
+  it("leaves pure Latin comparisons untouched", () => {
+    // The skeleton folds c/k and y/i, so "Cindy" and "Kindi" would come out
+    // identical if it ran here. Neither side is Cyrillic, so it does not:
+    // these keep their ordinary bigram score well below a match.
+    expect(dice("Cindy", "Kindi")).toBeLessThan(0.6);
+    expect(dice("Nicky", "Nikki")).toBeLessThan(0.6);
+  });
+});
