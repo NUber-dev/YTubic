@@ -3,16 +3,28 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchLrclibLyrics } from "@/lib/lyrics/lrclib";
 import { fetchMusixmatchLyrics } from "@/lib/lyrics/musixmatch";
 import { fetchGeniusLyrics } from "@/lib/lyrics/genius";
+import { fetchYtMusicLyrics } from "@/lib/lyrics/ytmusic";
 import { shouldRetryLyricsQuery } from "@/lib/lyrics/http";
 import { cleanTrackTitle, lyricsArtist } from "@/lib/track-meta";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 
-export type LyricsSource = "lrclib" | "musixmatch" | "genius";
+export type LyricsSource = "ytmusic" | "lrclib" | "musixmatch" | "genius";
 
-export const SOURCE_ORDER: LyricsSource[] = ["lrclib", "musixmatch", "genius"];
+/**
+ * Preference order. YouTube Music leads because it is the only source
+ * matched by videoId rather than by text, so it cannot return a different
+ * song. The rest follow as fallbacks for the tracks it has nothing for.
+ */
+export const SOURCE_ORDER: LyricsSource[] = [
+  "ytmusic",
+  "lrclib",
+  "musixmatch",
+  "genius",
+];
 
 export const SOURCE_LABELS: Record<LyricsSource, string> = {
+  ytmusic: "YouTube Music",
   lrclib: "LRCLIB",
   musixmatch: "Musixmatch",
   genius: "Genius",
@@ -72,6 +84,16 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   // the pressure on the one provider that is already saying stop, and would
   // turn a brief gate into a lasting one. Those get the Try again button
   // instead, which is a human deciding enough time has passed.
+  // Keyed on the videoId alone: no title, no artist, nothing fuzzy. This
+  // is the query that structurally cannot come back with another song.
+  const ytmusic = useQuery({
+    queryKey: ["lyrics", "ytmusic", LOOKUP_VERSION, track?.videoId],
+    queryFn: ({ signal }) => fetchYtMusicLyrics(track?.videoId, signal),
+    enabled: !!track?.videoId && enabled,
+    staleTime: ONE_HOUR,
+    retry: shouldRetryLyricsQuery,
+  });
+
   const lrclib = useQuery({
     queryKey: [
       "lyrics",
@@ -128,6 +150,7 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   });
 
   const queries: Record<LyricsSource, UseQueryResult<Lyrics | null>> = {
+    ytmusic,
     lrclib,
     musixmatch,
     genius,

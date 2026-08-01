@@ -110,6 +110,7 @@ describe("lyrics provider network access", () => {
       "lrclib.ts": "lrclib.net",
       "musixmatch.ts": "apic-desktop.musixmatch.com",
       "genius.ts": "genius.com",
+      "ytmusic.ts": "music.youtube.com",
     };
     const withRequests = providerFiles().filter(
       (f) => requestedHosts(sourceWithoutComments(f)).size > 0,

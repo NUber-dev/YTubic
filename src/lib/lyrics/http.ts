@@ -129,11 +129,14 @@ export async function lyricsFetch(
   url: string,
   deadline: Deadline,
   headers: Record<string, string>,
+  /** JSON body. Its presence switches the request to POST. */
+  body?: unknown,
 ): Promise<Response> {
   try {
     return await tauriFetch(url, {
-      method: "GET",
+      method: body === undefined ? "GET" : "POST",
       headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
       signal: deadline.signal,
     });
   } catch (e) {
