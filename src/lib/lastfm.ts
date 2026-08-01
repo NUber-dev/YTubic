@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "@/lib/store/settings";
+import {
+  artistFromSubtitle,
+  artistsFromList,
+  stripTopicSuffix,
+} from "@/lib/track-meta";
 
 /**
  * Shared Last.fm helpers used by both the scrobbler (`lastfm-scrobbler.ts`)
@@ -17,17 +22,27 @@ export type LastfmTrackMeta = {
 };
 
 /**
- * The artist string Last.fm should see. Joins the structured artist names (or
- * falls back to the subtitle) and strips YouTube Music's " - Topic" channel
- * suffix, which auto-generated artist channels carry and which would otherwise
- * pollute the scrobble / loved track.
+ * The artist string Last.fm should see: the structured artist names, or the
+ * subtitle breadcrumb parsed down to a name, with YouTube Music's " - Topic"
+ * channel suffix stripped either way.
+ *
+ * The " - Topic" rule used to live here as its own regex while the lyrics
+ * path had no equivalent; both now share `track-meta.ts`, which additionally
+ * knows how to read a breadcrumb. That upgrade lands here too: this used to
+ * fall back to the raw subtitle, so tracks without structured artists were
+ * scrobbled to an "artist" called "Video • The Weeknd • 1B views".
+ *
+ * The raw fallback is kept as a last resort, so a breadcrumb shape the
+ * parser does not recognise still scrobbles exactly as it did before rather
+ * than not at all.
  */
 export function lastfmArtist(track: LastfmTrackMeta | undefined): string {
   if (!track) return "";
-  const raw = track.artists?.length
-    ? track.artists.map((a) => a.name).join(", ")
-    : (track.subtitle ?? "");
-  return raw.replace(/\s*-\s*Topic$/i, "").trim();
+  return (
+    artistsFromList(track.artists) ??
+    artistFromSubtitle(track.subtitle) ??
+    stripTopicSuffix(track.subtitle ?? "")
+  );
 }
 
 /**
