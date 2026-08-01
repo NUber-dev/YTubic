@@ -9,7 +9,6 @@ import {
   Loader2Icon,
   MicVocalIcon,
 } from "lucide-react";
-import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   Popover,
@@ -43,6 +42,7 @@ import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
+import { useScrubStore } from "@/lib/store/scrub";
 
 /**
  * Compact horizontal player bar pinned to the bottom of the content
@@ -76,7 +76,10 @@ export function PlayerBarBottom() {
   const setShuffle = usePlaybackStore((s) => s.setShuffle);
   const cycleRepeat = usePlaybackStore((s) => s.cycleRepeat);
 
-  const [scrub, setScrub] = useState<number | null>(null);
+  // Shared rather than local: the lyrics panel reads the live drag
+  // target so its text follows the thumb instead of waiting for release.
+  const scrub = useScrubStore((s) => s.scrub);
+  const setScrub = useScrubStore((s) => s.setScrub);
   const iTunesCover = useITunesCover(track);
   const lyricsState = useLyricsView(track);
   const { onPointerDown: onCoverPointerDown } = usePlayerCoverDrag();

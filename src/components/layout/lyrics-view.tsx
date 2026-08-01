@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CheckIcon, MicVocalIcon, RotateCwIcon } from "lucide-react";
 import {
   DropdownMenu,
@@ -23,6 +23,7 @@ import {
 } from "@/lib/lyrics/sources";
 import { usePlaybackStore } from "@/lib/store/playback";
 import type { QueueTrack } from "@/lib/store/playback";
+import { useScrubStore } from "@/lib/store/scrub";
 import { cn } from "@/lib/utils";
 
 const PREF_KEY = "ytm:lyrics-source";
@@ -210,14 +211,62 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+/** Sampler for a CSS-style `cubic-bezier(x1, y1, x2, y2)`, so a scroll we
+ *  drive from rAF can share a curve with the CSS transitions running
+ *  beside it. Bisection on the x axis: 20 steps resolve the parameter far
+ *  finer than a pixel of scroll, and the whole thing runs a few hundred
+ *  times per seek, which is nothing. */
+function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
+  const axis = (a: number, b: number, s: number) =>
+    3 * (1 - s) * (1 - s) * s * a + 3 * (1 - s) * s * s * b + s * s * s;
+  return (t: number) => {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    let lo = 0;
+    let hi = 1;
+    let s = t;
+    for (let i = 0; i < 20; i++) {
+      s = (lo + hi) / 2;
+      if (axis(x1, x2, s) < t) lo = s;
+      else hi = s;
+    }
+    return axis(y1, y2, s);
+  };
+}
+
+/** Seek curve: hard start, long decelerating tail (the one iOS uses for
+ *  sheet transitions). Keep in sync with the `[data-lyrics-seek]` rule in
+ *  index.css so the scroll and the line highlight decelerate together. */
+const easeOutSeek = cubicBezier(0.32, 0.72, 0, 1);
+
+/** A position change bigger than this is a seek, not playback. The audio
+ *  engine pushes the playhead a few times a second, so anything past a
+ *  second means it was moved: the progress slider, a click on a line,
+ *  media keys, the floating player. */
+const SEEK_JUMP_S = 1.2;
+
+/** Auto-scroll duration for a seek. Short enough that dragging the slider
+ *  feels like the text is attached to the thumb, long enough to read as
+ *  motion rather than a cut. Each new drag step interrupts the previous
+ *  animation from wherever it got to, the same way a re-triggered CSS
+ *  transition would. */
+const SEEK_SCROLL_DURATION_MS = 350;
+
 function TimedLyrics({ lines }: { lines: TimedLine[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
-  const position = usePlaybackStore((s) => s.position);
+  const seekHoldRef = useRef<number | null>(null);
+  const playbackPosition = usePlaybackStore((s) => s.position);
   const seek = usePlaybackStore((s) => s.seek);
+  // While the slider is being dragged the store's position still follows
+  // the audio element, since the seek lands on release. Preview the drag
+  // target so the text tracks the thumb the whole way.
+  const scrub = useScrubStore((s) => s.scrub);
+  const position = scrub ?? playbackPosition;
 
   const activeIdx = findActiveIdx(lines, position);
   const prevActiveRef = useRef(activeIdx);
+  const prevPositionRef = useRef(position);
 
   // On mount and whenever the lyric set changes (new track), snap the
   // active line into view without animation. Without this the animated
@@ -227,7 +276,10 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const idx = findActiveIdx(lines, usePlaybackStore.getState().position);
+    const idx = findActiveIdx(
+      lines,
+      useScrubStore.getState().scrub ?? usePlaybackStore.getState().position,
+    );
     prevActiveRef.current = idx;
     if (idx < 0) {
       container.scrollTop = 0;
@@ -251,7 +303,17 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
     container.scrollTop = Math.max(0, elTopWithinContent - target);
   }, [lines]);
 
-  useEffect(() => {
+  // A layout effect, not a passive one: on a seek the container has to be
+  // repositioned and the line cross-fade suppressed *before* the browser
+  // paints the frame that already carries the new active line.
+  useLayoutEffect(() => {
+    const previous = prevPositionRef.current;
+    prevPositionRef.current = position;
+    // Dragging the slider is a continuous seek, so every step of it
+    // counts however small: the thumb can crawl a line at a time.
+    const isSeek =
+      scrub !== null || Math.abs(position - previous) > SEEK_JUMP_S;
+
     if (activeIdx === prevActiveRef.current) return;
     prevActiveRef.current = activeIdx;
     if (activeIdx < 0) return;
@@ -278,14 +340,36 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
     const targetTop = Math.max(0, elTopWithinContent - target);
 
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+
+    if (isSeek) {
+      // `data-lyrics-seek` shortens the per-line color/scale transition to
+      // match the scroll (see index.css). Set from a layout effect, so it
+      // is in place before the browser styles the frame that already
+      // carries the new active line — the slow 1.26s cross-fade never gets
+      // a chance to start. Held for the length of the scroll rather than
+      // cleared next frame: a running transition keeps its original
+      // timing, but the next drag step must find the attribute still on.
+      container.dataset.lyricsSeek = "true";
+      if (seekHoldRef.current !== null) clearTimeout(seekHoldRef.current);
+      seekHoldRef.current = window.setTimeout(() => {
+        seekHoldRef.current = null;
+        delete container.dataset.lyricsSeek;
+      }, SEEK_SCROLL_DURATION_MS);
+    }
+
     const startTop = container.scrollTop;
     const delta = targetTop - startTop;
     if (Math.abs(delta) < 1) return;
 
+    // Seeking gets the short decelerating curve; playback keeps the long
+    // symmetric glide.
+    const duration = isSeek ? SEEK_SCROLL_DURATION_MS : SCROLL_DURATION_MS;
+    const ease = isSeek ? easeOutSeek : easeInOutCubic;
     const startTs = performance.now();
     const step = (now: number) => {
-      const t = Math.min(1, (now - startTs) / SCROLL_DURATION_MS);
-      container.scrollTop = startTop + delta * easeInOutCubic(t);
+      const t = Math.min(1, (now - startTs) / duration);
+      container.scrollTop = startTop + delta * ease(t);
       if (t < 1) {
         rafRef.current = requestAnimationFrame(step);
       } else {
@@ -293,11 +377,16 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
       }
     };
     rafRef.current = requestAnimationFrame(step);
-  }, [activeIdx]);
+    // `position` is a dependency even though only `activeIdx` moves the
+    // scroll: the seek check has to see every tick, otherwise a jump that
+    // lands inside the current line would sit in the ref and snap the
+    // *next*, perfectly ordinary line change.
+  }, [activeIdx, position, scrub]);
 
   useEffect(() => {
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (seekHoldRef.current !== null) clearTimeout(seekHoldRef.current);
     };
   }, []);
 

@@ -343,6 +343,21 @@
     backface-visibility: hidden;
   }
 
+  /* Seeking. The 1.26s cross-fade is tuned for the slow handoff between
+     two lines during playback; when the playhead is dragged it lags the
+     text far behind the thumb. While a seek is in flight the same
+     properties hand over in 250ms on the seek curve (hard start, long
+     decelerating tail) so the highlight settles alongside the scroll
+     rather than after it. Only duration and easing are overridden, so
+     the transitioned properties stay whatever the line declares. The
+     attribute is set on the scroll container from a layout effect in
+     lyrics-view.tsx; the two class-level parts beat Tailwind's
+     single-class `duration-*` on specificity. */
+  [data-lyrics-seek="true"] .lyrics-line {
+    transition-duration: 250ms;
+    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
   /* Fine SVG noise overlaid on the heavily-blurred `BackgroundCover` art.
      Without it, `blur-3xl` produces gradients smooth enough to lose
      precision through 8-bit channel quantization — especially in the

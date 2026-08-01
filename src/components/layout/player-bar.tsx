@@ -39,6 +39,7 @@ import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
+import { useScrubStore } from "@/lib/store/scrub";
 import {
   useTrackSourceStore,
   type SourceKind,
@@ -434,7 +435,10 @@ export function PlayerBar({
   const setShuffle = usePlaybackStore((s) => s.setShuffle);
   const cycleRepeat = usePlaybackStore((s) => s.cycleRepeat);
 
-  const [scrub, setScrub] = useState<number | null>(null);
+  // Shared rather than local: the lyrics panel reads the live drag
+  // target so its text follows the thumb instead of waiting for release.
+  const scrub = useScrubStore((s) => s.scrub);
+  const setScrub = useScrubStore((s) => s.setScrub);
   const [queueOpen, setQueueOpen] = useState(false);
   const [compactControls, setCompactControls] = useState(false);
   const playerRef = useRef<HTMLElement>(null);
