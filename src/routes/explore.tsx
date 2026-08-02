@@ -6,6 +6,7 @@ import {
   SmileIcon,
   type LucideIcon,
 } from "lucide-react";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { FeedView } from "@/components/shared/feed-view";
 import { fetchExploreFeedPage } from "@/lib/innertube/explore";
 
@@ -86,16 +87,10 @@ function ExplorePage() {
                   <div className="flex size-full items-center justify-center rounded-full bg-white/10 transition-colors group-hover:bg-white/15">
                     <Icon className="size-6 text-white" />
                   </div>
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 rounded-full border border-white opacity-10 mix-blend-difference"
-                  />
+                  <ArtworkOutline className="rounded-full" />
                 </div>
               </div>
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 rounded-xl border border-white opacity-10 mix-blend-difference"
-              />
+              <ArtworkOutline className="rounded-xl" />
             </Link>
           ))}
           </div>

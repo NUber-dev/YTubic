@@ -43,6 +43,7 @@ import {
 } from "@/lib/store/settings";
 import type { ShelfItem } from "@/lib/innertube/types";
 import { authLoggedInQuery } from "@/lib/store/auth-queries";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { cn } from "@/lib/utils";
 
 export function StorageTab() {
@@ -707,13 +708,7 @@ function CacheRow({
             (e.target as HTMLImageElement).style.visibility = "hidden";
           }}
         />
-        {/* Hairline outline, same treatment as the main track lists —
-            a white border knocked back to 10% via mix-blend-difference
-            so it reads on both light and dark covers. */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 rounded-sm border border-white opacity-10 mix-blend-difference"
-        />
+        <ArtworkOutline className="rounded-sm" />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-5 items-center gap-2">

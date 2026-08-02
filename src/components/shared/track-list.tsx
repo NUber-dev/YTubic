@@ -2,6 +2,7 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { PlayIcon, PauseIcon, Volume2Icon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import {
   TrackContextMenu,
@@ -365,10 +366,7 @@ const TrackRow = memo(function TrackRow({
                 className="size-full rounded-sm"
                 targetSize={80}
               />
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 rounded-sm border border-white opacity-10 mix-blend-difference"
-              />
+              <ArtworkOutline className="rounded-sm" />
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-sm bg-black/55 opacity-0 transition-opacity duration-150 group-hover:opacity-100"

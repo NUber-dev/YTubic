@@ -39,6 +39,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import { TrackContextMenu } from "@/components/shared/track-context-menu";
 import { usePlaybackStore } from "@/lib/store/playback";
@@ -259,10 +260,7 @@ export function ShelfCard({ item, className }: Props) {
           {item.title}
         </span>
         <ChevronRightIcon className="relative z-10 size-4 shrink-0 text-white/40" />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 rounded-lg border border-white opacity-10 mix-blend-difference"
-        />
+        <ArtworkOutline className="rounded-lg" />
       </Link>
     );
   }

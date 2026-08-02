@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/tooltip";
 import { AnimatedTabs } from "@/components/ui/animated-tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { cn } from "@/lib/utils";
@@ -504,13 +505,10 @@ function QueueRow({
             overlayIcon
           )}
         </span>
-        {/* Adaptive hairline — last in DOM so it stays on top of the
-            hover overlay; the difference blend keeps it readable
-            against both the cover and the bg-black/50 hover wash. */}
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 rounded-md border border-white opacity-10 mix-blend-difference"
-        />
+        {/* Last in DOM so the hairline stays on top of the hover overlay;
+            the difference blend keeps it readable against both the cover
+            and the bg-black/50 hover wash. */}
+        <ArtworkOutline className="rounded-md" />
       </div>
 
       <div className="flex min-w-0 flex-col text-left">
