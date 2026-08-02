@@ -29,6 +29,7 @@ import { TrackList } from "@/components/shared/track-list";
 import { JumpToCurrentButton } from "@/components/shared/jump-to-current-button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -532,12 +533,15 @@ function SearchInput({
   return (
     <div className="relative flex-1">
       <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-      <input
+      {/* The shared Input carries the translucent fill and hairline that
+          the sort button and the Search tab's field already use — only
+          the compact height and the icon padding are local. */}
+      <Input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search in playlist"
-        className="h-8 w-full rounded-md border border-input bg-transparent pl-8 pr-7 text-sm outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="h-8 pl-8 pr-7 text-sm"
       />
       {value ? (
         <button
