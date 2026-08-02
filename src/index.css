@@ -223,6 +223,23 @@
   .app-scroll::-webkit-scrollbar-thumb:hover {
     background: var(--muted-foreground);
   }
+
+  /* The one main content scroller. `scrollbar-gutter: stable` keeps the
+     reserved track present whether or not the route overflows, so nothing
+     shifts sideways when a page starts or stops scrolling. The negative
+     margin then pulls the content box back out over that track, so the
+     left and right insets stay equal and the scrollbar floats inside the
+     route's own right-hand padding instead of adding to it. Only empty
+     padding sits under the track, so nothing is covered.
+
+     The reserved width is whatever the platform's scrollbar takes, so it
+     is measured at runtime — see EntityScroller in app-shell.tsx. */
+  main.app-scroll {
+    scrollbar-gutter: stable;
+  }
+  main.app-scroll > .app-scroll-content {
+    margin-right: calc(-1 * var(--scroller-gutter, 0px));
+  }
 }
 
 @layer utilities {

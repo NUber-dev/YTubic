@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -288,10 +288,29 @@ function EntityScroller({
   const headerPad = useEntityHeaderStore((s) =>
     s.config ? s.headerHeight : 0,
   );
+
+  // Width of the scrollbar track `scrollbar-gutter: stable` reserves (see
+  // index.css). It's whatever the platform draws — 0 on overlay-scrollbar
+  // systems — so it is measured rather than assumed, and published as a
+  // custom property for the content's compensating negative margin.
+  const [gutter, setGutter] = useState(0);
+  useLayoutEffect(() => {
+    const el = mainRef.current;
+    if (!el) return;
+    // The gutter is constant once reserved; the observer only exists to
+    // catch a zoom or display change swapping the scrollbar metrics.
+    const measure = () => setGutter(el.offsetWidth - el.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [mainRef]);
+
   return (
     <main
       ref={mainRef}
       className="app-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
+      style={{ "--scroller-gutter": `${gutter}px` } as React.CSSProperties}
     >
       <div className="app-scroll-content" style={{ paddingTop: headerPad }}>
         {children}
