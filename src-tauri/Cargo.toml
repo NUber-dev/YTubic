@@ -110,12 +110,10 @@ resvg = { version = "0.48.1", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # Cookie jars are AES-GCM sealed with a file-backed key in app data
-# (mode 0600). Ad-hoc rebuilds get a new code signature; Keychain ACLs
-# then deny the new binary and pop a permission dialog. Keyring is only
-# read once when the file is missing (upgrade migrate) and is never
-# written to, so rebuilds stay silent and keep the session.
+# (mode 0600). No Keychain / Secret Service — ad-hoc macOS rebuilds get
+# a new code signature and Keychain ACLs would deny the binary and pop
+# a permission dialog on every launch.
 aes-gcm = "0.10"
-keyring = "4.1.5"
 rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
