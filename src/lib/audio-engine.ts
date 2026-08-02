@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { fetchLikedSongs } from "@/lib/innertube/library";
+import type { ShelfItem } from "@/lib/innertube/types";
+import { getLikedIdsSet } from "@/components/shared/like-buttons";
+import { toggleLiked } from "@/lib/like-actions";
 import { fetchRadio, fetchWatchQueueContinuation } from "@/lib/innertube/radio";
 import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
@@ -37,6 +43,9 @@ export function useAudioEngine() {
   // without any of its real deps changing — used to re-fetch a fresh
   // stream URL after a transient failure (e.g. a googlevideo 403).
   const [retryNonce, setRetryNonce] = useState(0);
+  // Used for the liked-state of the current track: read for the taskbar
+  // thumbnail toolbar's heart, and written when that heart is clicked.
+  const queryClient = useQueryClient();
 
   // Ensure a single <audio> element exists.
   useEffect(() => {
@@ -395,6 +404,28 @@ export function useAudioEngine() {
           if (typeof e.payload.position === "number")
             store.seek(e.payload.position);
           break;
+        // The three below only exist on the Windows taskbar thumbnail
+        // toolbar (see src-tauri/src/thumbbar.rs); SMTC has no such buttons.
+        case "shuffle":
+          store.setShuffle(!store.shuffle);
+          break;
+        case "repeat":
+          store.cycleRepeat();
+          break;
+        case "like": {
+          const t = store.index >= 0 ? store.queue[store.index] : undefined;
+          if (!t) break;
+          // Read the liked state at click time rather than closing over it,
+          // so this listener stays mounted for the session.
+          const cached = queryClient.getQueryData<ShelfItem[]>(["liked-songs"]);
+          void toggleLiked({
+            queryClient,
+            videoId: t.videoId,
+            wasLiked: getLikedIdsSet(cached).has(t.videoId),
+            track: t,
+          }).catch((err) => toast.error(String(err)));
+          break;
+        }
       }
     }).then((un) => {
       if (cancelled) un();
@@ -404,7 +435,7 @@ export function useAudioEngine() {
       cancelled = true;
       dispose?.();
     };
-  }, []);
+  }, [queryClient]);
 
   // Prefetch the next queued track in the background while the current
   // one plays. First-time plays take ~2s (yt-dlp resolve + first audio
@@ -523,6 +554,20 @@ export function useAudioEngine() {
   // and reflect seeks. Live values are read imperatively so this OS sync never
   // re-triggers the resolve / playback effects above.
   const duration = usePlaybackStore((s) => s.duration);
+  const shuffle = usePlaybackStore((s) => s.shuffle);
+  const repeat = usePlaybackStore((s) => s.repeat);
+  // Subscribed but never fetched here: the liked list is loaded by whichever
+  // heart button is on screen (`enabled: false` just reads the shared cache),
+  // and this only needs to know whether the current track is in it so the
+  // taskbar toolbar's heart can be filled.
+  const likedSongs = useQuery({
+    queryKey: ["liked-songs"],
+    queryFn: () => fetchLikedSongs(),
+    enabled: false,
+    staleTime: 60 * 60 * 1000,
+    retry: false,
+  }).data;
+  const liked = track ? getLikedIdsSet(likedSongs).has(track.videoId) : false;
   useEffect(() => {
     const push = () => {
       const s = usePlaybackStore.getState();
@@ -532,20 +577,25 @@ export function useAudioEngine() {
         return;
       }
       void invoke("media_update", {
-        title: t.title,
-        artist: buildArtistLabel(t),
-        album: t.album ?? "",
-        thumbnail: pickThumbnail(t.thumbnails, 512) ?? "",
-        duration: Number.isFinite(s.duration) ? s.duration : 0,
-        elapsed: s.position,
-        paused: !s.playing,
+        now: {
+          title: t.title,
+          artist: buildArtistLabel(t),
+          album: t.album ?? "",
+          thumbnail: pickThumbnail(t.thumbnails, 512) ?? "",
+          duration: Number.isFinite(s.duration) ? s.duration : 0,
+          elapsed: s.position,
+          paused: !s.playing,
+          shuffle: s.shuffle,
+          repeat: s.repeat,
+          liked,
+        },
       }).catch(() => {});
     };
     push();
     if (!playing) return;
     const id = window.setInterval(push, 2000);
     return () => window.clearInterval(id);
-  }, [track, playing, duration]);
+  }, [track, playing, duration, shuffle, repeat, liked]);
 
   // Discord Rich Presence mirrors the same metadata, but pushed only on
   // track / play-state / duration change — never the 2s position refresh

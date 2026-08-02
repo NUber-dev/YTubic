@@ -29,6 +29,10 @@ mod discord;
 mod lastfm;
 mod media;
 mod power;
+// Taskbar thumbnail toolbar (prev / play-pause / next under the taskbar
+// preview). Windows-only shell surface; see src/thumbbar.rs.
+#[cfg(windows)]
+mod thumbbar;
 mod ytdlp;
 
 /// Write `bytes` to `path` atomically: a sibling temp file, flushed to
@@ -3836,6 +3840,10 @@ pub fn run() {
             // Playing on macOS. setup() runs on the main thread, as required by
             // the Windows and macOS backends.
             media::init(app.handle());
+            // Play / pause / next under the taskbar thumbnail preview. Also
+            // main-thread-only (COM + a subclass on the main window's HWND).
+            #[cfg(windows)]
+            thumbbar::init(app.handle());
             if let Err(e) = build_tray(app.handle()) {
                 eprintln!("[tray] build failed: {e}");
             }
