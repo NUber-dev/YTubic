@@ -22,6 +22,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
@@ -112,7 +113,7 @@ export function PlayerBarBottom() {
     // pop up instantly otherwise).
     <TooltipProvider delayDuration={800} skipDelayDuration={0}>
     <aside
-      className="relative z-10 mr-2 mb-2 flex shrink-0 flex-col gap-2 rounded-[10px] border border-sidebar-border bg-surface px-4 py-3 shadow-sm"
+      className="relative z-10 mr-2 mb-2 flex shrink-0 flex-col gap-2 rounded-[14px] border border-sidebar-border bg-surface px-4 py-3 shadow-sm"
     >
       {status === "error" && error ? (
         <div className="absolute -top-9 left-3 right-3 truncate rounded-md bg-destructive/90 px-3 py-1 text-xs text-destructive-foreground shadow">
@@ -132,14 +133,17 @@ export function PlayerBarBottom() {
               className="shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
             >
               {track ? (
-                <Thumbnail
-                  thumbnails={track.thumbnails}
-                  alt={track.title}
-                  className="size-14 shrink-0 rounded-md border border-hairline pointer-events-none"
-                  targetSize={256}
-                  highRes
-                  overrideHighRes={iTunesCover}
-                />
+                <div className="relative size-14 shrink-0">
+                  <Thumbnail
+                    thumbnails={track.thumbnails}
+                    alt={track.title}
+                    className="size-full rounded-md pointer-events-none"
+                    targetSize={256}
+                    highRes
+                    overrideHighRes={iTunesCover}
+                  />
+                  <ArtworkOutline className="rounded-md" />
+                </div>
               ) : (
                 <div className="size-14 shrink-0 rounded-md border border-hairline bg-muted" />
               )}

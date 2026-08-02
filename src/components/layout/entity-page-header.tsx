@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from "react";
 import { PlayIcon, ShuffleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import { cn } from "@/lib/utils";
 import {
@@ -16,6 +17,11 @@ const COVER_SIZE = 148;
 const COMPACT_COVER_SIZE = 44;
 const COMPACT_ROUND_COVER_SIZE = 48;
 const COVER_TOP = 18;
+// Visual (post-scale) corner radius of the square cover. The single cover
+// element shrinks by transform, which would shrink its radius along with it,
+// so `apply()` divides these by the current scale to keep them literal.
+const COVER_RADIUS = 12;
+const COMPACT_COVER_RADIUS = 8;
 const COMPACT_COVER_TOP = 11;
 const COMPACT_ROUND_COVER_TOP = 9;
 const INFO_LEFT = 206;
@@ -37,6 +43,7 @@ export function EntityPageHeader() {
   const setHeaderHeight = useEntityHeaderStore((s) => s.setHeaderHeight);
   const headerRef = useRef<HTMLDivElement>(null);
   const coverRef = useRef<HTMLDivElement>(null);
+  const coverOutlineRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const detailsRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -120,6 +127,18 @@ export function EntityPageHeader() {
         : infoY + 46 * (titleScale - 1) - 8 * progress;
 
       cover.style.transform = `translate3d(0, ${(compactCoverTop - COVER_TOP) * progress}px, 0) scale(${coverScale})`;
+      if (!useLargeCompactAvatar) {
+        const radius =
+          COVER_RADIUS + (COMPACT_COVER_RADIUS - COVER_RADIUS) * progress;
+        cover.style.borderRadius = `${radius / coverScale}px`;
+      }
+      // Same compensation for the outline: a plain 1px border would be
+      // scaled down to a third of a pixel by the time the header is fully
+      // collapsed, leaving the compact cover with no visible edge.
+      const coverOutline = coverOutlineRef.current;
+      if (coverOutline) {
+        coverOutline.style.borderWidth = `${1 / coverScale}px`;
+      }
       title.style.transform = `translate3d(${infoX}px, ${infoY}px, 0) scale(${titleScale})`;
       details.style.opacity = String(detailOpacity);
       details.style.visibility = detailOpacity <= 0 ? "hidden" : "visible";
@@ -196,18 +215,25 @@ export function EntityPageHeader() {
       <div
         ref={coverRef}
         className="pointer-events-auto absolute left-6 top-[18px] size-[148px] origin-top-left"
-        style={{ willChange: "transform" }}
+        style={{
+          willChange: "transform",
+          borderRadius: config.round ? undefined : COVER_RADIUS,
+        }}
       >
         <Thumbnail
           thumbnails={config.thumbnails}
           alt={config.title}
           round={config.round}
           className={cn(
-            "size-full border border-hairline",
-            !config.round && "shadow-lg",
+            "size-full",
+            !config.round && "rounded-[inherit] shadow-lg",
           )}
           targetSize={512}
           highRes
+        />
+        <ArtworkOutline
+          ref={coverOutlineRef}
+          className={config.round ? "rounded-full" : "rounded-[inherit]"}
         />
       </div>
 

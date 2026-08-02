@@ -32,6 +32,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
+import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
@@ -484,7 +485,7 @@ export function PlayerBar({
   // window's own layout.
   const wrapperClass =
     variant === "right"
-      ? "fixed bottom-2 right-2 top-(--titlebar-h) z-10 flex w-(--player-width) flex-col rounded-[10px] border border-sidebar-border bg-surface"
+      ? "fixed bottom-2 right-2 top-(--titlebar-h) z-10 flex w-(--player-width) flex-col rounded-[14px] border border-sidebar-border bg-surface"
       : "absolute inset-0 flex flex-col bg-surface";
 
   return (
@@ -557,14 +558,19 @@ export function PlayerBar({
             )}
           >
             {track ? (
-              <Thumbnail
-                thumbnails={track.thumbnails}
-                alt={track.title}
-                className="aspect-square w-full rounded-md border border-hairline pointer-events-none"
-                targetSize={1024}
-                highRes
-                overrideHighRes={iTunesCover}
-              />
+              // The wrapper carries the shadow so it is cast by the cover's
+              // rounded box rather than by the Thumbnail's own square edge.
+              <div className="relative aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
+                <Thumbnail
+                  thumbnails={track.thumbnails}
+                  alt={track.title}
+                  className="size-full rounded-md pointer-events-none"
+                  targetSize={1024}
+                  highRes
+                  overrideHighRes={iTunesCover}
+                />
+                <ArtworkOutline className="rounded-md" />
+              </div>
             ) : (
               <div className="aspect-square w-full rounded-md border border-hairline bg-muted" />
             )}
