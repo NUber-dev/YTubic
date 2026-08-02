@@ -220,9 +220,10 @@ mod secure_store {
         Ok(())
     }
 
-    /// Best-effort Keychain / secret-service read. Failures (including the
-    /// macOS "user canceled" ACL prompt after a rebuild) are non-fatal —
-    /// callers fall through to the file-backed key.
+    /// One-time Keychain / secret-service read used only when the app-data
+    /// file is missing (upgrade from a pure-keyring build). On macOS this
+    /// call can show an ACL prompt after an ad-hoc rebuild — so it must
+    /// never run once the file key exists.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn try_read_keyring_key() -> Option<[u8; KEYRING_KEY_LEN]> {
         use keyring::{Entry, Error};
@@ -238,60 +239,38 @@ mod secure_store {
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn try_write_keyring_key(key: &[u8; KEYRING_KEY_LEN]) {
-        use keyring::Entry;
-        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-            if let Err(error) = entry.set_secret(key) {
-                eprintln!("[auth] keyring write skipped: {error}");
-            }
-        }
-    }
-
-    /// Resolve the cookie-encryption key. Order:
-    /// 1. File in app data (stable across ad-hoc rebuilds)
-    /// 2. System keyring (migrate into the file when readable)
-    /// 3. Mint a new key, persist to file (+ best-effort keyring)
+    /// Resolve the cookie-encryption key.
+    ///
+    /// The app-data file is the only steady-state source. Touching the
+    /// system keyring after an ad-hoc macOS rebuild pops a Keychain ACL
+    /// dialog and can return a *different* key than the file (or fail),
+    /// which previously stranded sessions between builds. Keyring is
+    /// consulted only when the file is absent, then immediately migrated.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn keyring_encryption_key() -> Result<[u8; KEYRING_KEY_LEN], String> {
         use rand::RngCore;
 
-        let file = read_file_key();
-        let keyring = try_read_keyring_key();
-
-        match (file, keyring) {
-            // Same key in both places — ideal steady state.
-            (Some(f), Some(k)) if f == k => Ok(f),
-            // Disagreement: prefer Keychain. An older experiment may have
-            // left a stale file that cannot decrypt the jar Keychain sealed.
-            // Re-migrate so the next ad-hoc rebuild survives.
-            (Some(_f), Some(k)) => {
-                if let Err(e) = write_file_key(&k) {
-                    eprintln!("[auth] could not overwrite stale file key from keyring: {e}");
-                } else {
-                    eprintln!(
-                        "[auth] file cookie key disagreed with keyring;                          re-migrated keyring → app data file"
-                    );
-                }
-                Ok(k)
-            }
-            (Some(f), None) => Ok(f),
-            (None, Some(k)) => {
-                if let Err(e) = write_file_key(&k) {
-                    eprintln!("[auth] could not migrate keyring key to file: {e}");
-                } else {
-                    eprintln!("[auth] migrated cookie key from keyring → app data file");
-                }
-                Ok(k)
-            }
-            (None, None) => {
-                let mut key = [0_u8; KEYRING_KEY_LEN];
-                rand::rngs::OsRng.fill_bytes(&mut key);
-                write_file_key(&key)?;
-                try_write_keyring_key(&key);
-                Ok(key)
-            }
+        // File wins. Never open Keychain when it is present.
+        if let Some(file) = read_file_key() {
+            return Ok(file);
         }
+
+        // One-time migrate from an older pure-keyring install.
+        if let Some(key) = try_read_keyring_key() {
+            if let Err(e) = write_file_key(&key) {
+                eprintln!("[auth] could not migrate keyring key to file: {e}");
+            } else {
+                eprintln!("[auth] migrated cookie key from keyring → app data file");
+            }
+            return Ok(key);
+        }
+
+        // Fresh install: mint into the file only. Do not write Keychain —
+        // that creates an ACL-bound item which prompts on every rebuild.
+        let mut key = [0_u8; KEYRING_KEY_LEN];
+        rand::rngs::OsRng.fill_bytes(&mut key);
+        write_file_key(&key)?;
+        Ok(key)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -357,27 +336,28 @@ mod secure_store {
         if !encrypted.starts_with(KEYRING_MAGIC) {
             return Ok(encrypted.to_vec());
         }
-        // Try every key we can reach. File-backed first (rebuild-stable);
-        // Keychain second so jars sealed before this fix still open when
-        // macOS grants access, then we promote that key into the file.
+        // File key only in the steady state. Keyring is only touched when
+        // the file is missing (one-time upgrade migrate) — never as a
+        // fallback after the file already exists, or every rebuild would
+        // re-prompt Keychain ACLs and risk swapping in a different key.
         if let Some(key) = read_file_key() {
-            if let Ok(plain) = keyring_decrypt_with_key(encrypted, &key) {
-                return Ok(plain);
-            }
+            return keyring_decrypt_with_key(encrypted, &key);
         }
         if let Some(key) = try_read_keyring_key() {
-            if let Ok(plain) = keyring_decrypt_with_key(encrypted, &key) {
-                if read_file_key().as_ref() != Some(&key) {
+            match keyring_decrypt_with_key(encrypted, &key) {
+                Ok(plain) => {
                     if let Err(e) = write_file_key(&key) {
                         eprintln!("[auth] could not persist recovered keyring key: {e}");
                     } else {
                         eprintln!("[auth] recovered jar via keyring; key saved to app data");
                     }
+                    Ok(plain)
                 }
-                return Ok(plain);
+                Err(e) => Err(e),
             }
+        } else {
+            Err("failed to decrypt cookie jar".to_string())
         }
-        Err("failed to decrypt cookie jar".to_string())
     }
 
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
