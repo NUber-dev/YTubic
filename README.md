@@ -16,7 +16,7 @@
   <a href="../../releases/latest">
     <img src="https://img.shields.io/badge/%E2%AC%87%20Download%20YTubic-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="Download YTubic" height="60" />
   </a>
-  <a href="https://discord.gg/v7JGAWWWj">
+  <a href="https://discord.gg/4gccUpZyYH">
     <img src="https://img.shields.io/badge/Join%20the%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join the YTubic Discord" height="60" />
   </a>
 </p>

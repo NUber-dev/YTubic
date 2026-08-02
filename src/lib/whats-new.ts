@@ -168,7 +168,7 @@ export const WHATS_NEW: WhatsNewEntry[] = [
         text: "Fixed clicks not landing on the Library button and the Sign in button sitting off-center.",
       },
     ],
-    note: "I need your help with the macOS and Linux versions. I put them together from pull requests by [ameenalasady](https://github.com/NUber-dev/YTubic/pull/1) and [yuvrajangadsingh](https://github.com/NUber-dev/YTubic/pull/33), but I have no way to run and test them myself, so they may not work at all. I've created a Discord server so we have an easier place to discuss future fixes, suggestions, and improvements: https://discord.gg/v7JGAWWWj",
+    note: "I need your help with the macOS and Linux versions. I put them together from pull requests by [ameenalasady](https://github.com/NUber-dev/YTubic/pull/1) and [yuvrajangadsingh](https://github.com/NUber-dev/YTubic/pull/33), but I have no way to run and test them myself, so they may not work at all. I've created a Discord server so we have an easier place to discuss future fixes, suggestions, and improvements: https://discord.gg/4gccUpZyYH",
   },
   {
     version: "0.3.2",
