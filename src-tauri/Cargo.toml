@@ -109,10 +109,11 @@ windows = { version = "0.61", features = [
 resvg = { version = "0.48.1", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-# Cookie jars remain files in app data, but their random AES key lives in the
-# native credential store: Secret Service on Linux and Keychain on macOS.
+# Cookie jars are AES-GCM sealed; the random key lives next to them in app
+# data (mode 0600). We deliberately do not use Keychain / Secret Service:
+# ad-hoc rebuilds change the code signature and Keychain then prompts or
+# denies access on every launch.
 aes-gcm = "0.10"
-keyring = "4.1.5"
 rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
