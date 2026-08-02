@@ -57,12 +57,27 @@ export const WHATS_NEW: WhatsNewEntry[] = [
   {
     version: "0.4.3",
     date: "August 2, 2026",
-    summary: "Interface polish",
+    summary: "Taskbar media controls and interface polish",
     changes: [
       {
+        type: "new",
+        title: "Media controls in the taskbar",
+        text: "Hover the taskbar button to shuffle, skip, play, repeat and like the current track without opening the window.",
+      },
+      {
+        type: "new",
+        title: "Right-click the player cover",
+        text: "It opens the same track menu the list rows have, plus a Download cover item that saves the best artwork it can find.",
+      },
+      {
         type: "improved",
-        title: "Covers and cards",
-        text: "Softer corners, a clearer outline and a light shadow under the player cover.",
+        title: "Lyrics",
+        text: "The text now follows the progress slider while you drag it, and lines are no longer clipped at the edges of the column.",
+      },
+      {
+        type: "improved",
+        title: "Interface",
+        text: "Menus sit on the same frosted glass as the dialogs, and covers, cards and the playlist search field got softer corners and a cleaner outline.",
       },
       {
         type: "fixed",
