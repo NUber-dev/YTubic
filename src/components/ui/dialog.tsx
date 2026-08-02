@@ -6,19 +6,11 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { frostedOverlay, frostedSurface } from "@/components/ui/frosted"
 
-// Frosted surface shared by the app's chrome popups (Settings, What's
-// New, About, Report Issue). The overlay dims less than the default
-// (0.5 → 0.4) so more of the cover art's colour survives into the
-// panel's backdrop-blur. The panel itself is a mostly-opaque (0.9)
-// frosted sheet; in dark mode the fill sits a hair above --background
-// (L 0.145 → 0.19) so it reads as a dark grey surface rather than a
-// pure-black slab, while the remaining 10% lets a faint warm cast of
-// the cover through the blur. The border is a touch brighter than the
-// fill so the frosted edge stays legible against the blurred art.
-const frostedDialogOverlay = "bg-black/40"
-const frostedDialogPanel =
-  "border-black/10 bg-background/90 backdrop-blur-2xl dark:border-white/15 dark:bg-[oklch(0.19_0_0)]/90"
+// Same glass the menus use — see components/ui/frosted.ts.
+const frostedDialogOverlay = frostedOverlay
+const frostedDialogPanel = frostedSurface
 
 function Dialog({
   ...props

@@ -32,6 +32,7 @@ import { Thumbnail } from "@/components/shared/thumbnail";
 import { TrackContextMenu } from "@/components/shared/track-context-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
+import { frostedSurface } from "@/components/ui/frosted";
 import { useSearchHistory } from "@/lib/store/search-history";
 import { usePlaybackStore } from "@/lib/store/playback";
 import { openSettings } from "@/lib/store/settings-dialog";
@@ -851,7 +852,10 @@ function SearchField({
       {showDropdown && (
         <div
           onMouseDown={(e) => e.preventDefault()}
-          className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md"
+          className={cn(
+            frostedSurface,
+            "absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border text-popover-foreground shadow-md",
+          )}
         >
           <ul className="py-1">
             {suggestions.map((h, i) => (
