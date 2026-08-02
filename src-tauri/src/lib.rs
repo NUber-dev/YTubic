@@ -2796,6 +2796,133 @@ fn cover_cache_dir(app: &tauri::AppHandle) -> PathBuf {
     app.state::<ActiveCacheRoot>().0.join("covers")
 }
 
+/// SSRF guard for cover fetches: cover URLs come from remote metadata
+/// (iTunes/mzstatic + YT image hosts). Only https from those known CDNs
+/// is fetchable, so a crafted metadata field can't point the server-side
+/// fetch at an internal service (e.g. 169.254.169.254 or a LAN admin
+/// page). Callers must also disable redirects so a CDN-looking URL can't
+/// 302 into the allowlist.
+fn check_cover_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("bad url: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("blocked scheme: {}", parsed.scheme()));
+    }
+    const ALLOWED_HOST_SUFFIXES: &[&str] = &[
+        "mzstatic.com",
+        "ytimg.com",
+        "ggpht.com",
+        "googleusercontent.com",
+    ];
+    let host = parsed.host_str().unwrap_or("");
+    let host_ok = ALLOWED_HOST_SUFFIXES
+        .iter()
+        .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+    if !host_ok {
+        return Err(format!("blocked cover host: {host}"));
+    }
+    Ok(())
+}
+
+/// Fetch cover bytes from an allowlisted CDN. Shared by the disk cache
+/// and the user-facing "Download cover" action.
+async fn fetch_cover_bytes(url: &str) -> Result<Vec<u8>, String> {
+    check_cover_url(url)?;
+    let resp = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("client: {e}"))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read body: {e}"))
+}
+
+/// Strip everything Windows/macOS/Linux disallow in a file name, plus
+/// leading dots (hidden files) and trailing dots/spaces (Windows trims
+/// those and would land us on a different path than we report back).
+fn sanitize_file_stem(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    // Keep well under MAX_PATH / 255-byte name limits once the extension
+    // and a possible " (2)" suffix are appended. Truncate on a char
+    // boundary so multi-byte titles don't panic.
+    let capped: String = trimmed.chars().take(120).collect();
+    let capped = capped.trim().to_string();
+    if capped.is_empty() {
+        "cover".to_string()
+    } else {
+        capped
+    }
+}
+
+/// Pick a `dir/<stem>.<ext>` path that doesn't exist yet, appending
+/// " (2)", " (3)", … the way a browser's download manager does.
+fn unique_download_path(dir: &std::path::Path, stem: &str, ext: &str) -> PathBuf {
+    let first = dir.join(format!("{stem}.{ext}"));
+    if !first.exists() {
+        return first;
+    }
+    for n in 2..1000 {
+        let candidate = dir.join(format!("{stem} ({n}).{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
+/// Save the now-playing cover art to the user's Downloads folder.
+/// `url` is the remote CDN URL (iTunes studio art when we found one,
+/// otherwise the largest YT thumbnail); `filename` is the desired stem
+/// without an extension ("Artist - Title"), sanitized here.
+///
+/// Returns the full path written, which the UI shows in a toast.
+#[tauri::command]
+async fn download_cover(
+    app: tauri::AppHandle,
+    url: String,
+    filename: String,
+) -> Result<String, String> {
+    let bytes = fetch_cover_bytes(&url).await?;
+
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("no downloads folder: {e}"))?;
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("mkdir: {e}"))?;
+
+    // `url_to_filename` already maps a cover URL to png/webp/jpg.
+    let ext = url_to_filename(&url)
+        .rsplit('.')
+        .next()
+        .unwrap_or("jpg")
+        .to_string();
+    let path = unique_download_path(&dir, &sanitize_file_stem(&filename), &ext);
+
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| format!("write: {e}"))?;
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Download a cover image (typically from iTunes / mzstatic) and stash
 /// it in the local cover cache, returning a localhost URL the webview
 /// can use as `<img src>`. Subsequent calls for the same URL skip the
@@ -2818,30 +2945,7 @@ async fn cache_cover(
             .ok_or_else(|| "stream server not ready".to_string())?
     };
 
-    // SSRF guard: cover URLs come from remote metadata (iTunes/mzstatic +
-    // YT image hosts). Only fetch https from those known CDNs so a crafted
-    // metadata field can't point the server-side fetch at an internal
-    // service (e.g. 169.254.169.254 or a LAN admin page). Redirects are
-    // disabled below so a CDN-looking URL can't 302 into the allowlist.
-    {
-        let parsed = reqwest::Url::parse(&url).map_err(|e| format!("bad url: {e}"))?;
-        if parsed.scheme() != "https" {
-            return Err(format!("blocked scheme: {}", parsed.scheme()));
-        }
-        const ALLOWED_HOST_SUFFIXES: &[&str] = &[
-            "mzstatic.com",
-            "ytimg.com",
-            "ggpht.com",
-            "googleusercontent.com",
-        ];
-        let host = parsed.host_str().unwrap_or("");
-        let host_ok = ALLOWED_HOST_SUFFIXES
-            .iter()
-            .any(|s| host == *s || host.ends_with(&format!(".{s}")));
-        if !host_ok {
-            return Err(format!("blocked cover host: {host}"));
-        }
-    }
+    check_cover_url(&url)?;
 
     let dir = cover_cache_dir(&app);
     tokio::fs::create_dir_all(&dir)
@@ -2852,19 +2956,7 @@ async fn cache_cover(
     let path = dir.join(&filename);
 
     if !path.exists() {
-        let resp = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| format!("client: {e}"))?
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("fetch: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}", resp.status()));
-        }
-        let bytes = resp.bytes().await.map_err(|e| format!("read body: {e}"))?;
+        let bytes = fetch_cover_bytes(&url).await?;
         // Write to a .part file then atomically rename so a concurrent
         // reader never sees a half-written file.
         let part = path.with_extension(format!(
@@ -3632,6 +3724,7 @@ pub fn run() {
             delete_cache_entries,
             set_cache_meta,
             cache_cover,
+            download_cover,
             cover_cache_stats,
             clear_cover_cache,
             quit_app,

@@ -36,6 +36,7 @@ import { Thumbnail } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
 import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
+import { PlayerCoverMenu } from "@/components/layout/player-cover-menu";
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
@@ -546,27 +547,29 @@ export function PlayerBar({
         {/* The right-card cover follows the resizable card width. Only
             the floating variant stays capped at 320px so making that
             window wider cannot push the controls below the viewport. */}
-        <div
-          onPointerDown={onCoverPointerDown}
-          className={cn(
-            "mx-auto w-full touch-none select-none",
-            variant === "floating" && "max-w-[20rem]",
-            variant !== "floating" && "cursor-grab active:cursor-grabbing",
-          )}
-        >
-          {track ? (
-            <Thumbnail
-              thumbnails={track.thumbnails}
-              alt={track.title}
-              className="aspect-square w-full rounded-md border border-hairline pointer-events-none"
-              targetSize={1024}
-              highRes
-              overrideHighRes={iTunesCover}
-            />
-          ) : (
-            <div className="aspect-square w-full rounded-md border border-hairline bg-muted" />
-          )}
-        </div>
+        <PlayerCoverMenu track={track}>
+          <div
+            onPointerDown={onCoverPointerDown}
+            className={cn(
+              "mx-auto w-full touch-none select-none",
+              variant === "floating" && "max-w-[20rem]",
+              variant !== "floating" && "cursor-grab active:cursor-grabbing",
+            )}
+          >
+            {track ? (
+              <Thumbnail
+                thumbnails={track.thumbnails}
+                alt={track.title}
+                className="aspect-square w-full rounded-md border border-hairline pointer-events-none"
+                targetSize={1024}
+                highRes
+                overrideHighRes={iTunesCover}
+              />
+            ) : (
+              <div className="aspect-square w-full rounded-md border border-hairline bg-muted" />
+            )}
+          </div>
+        </PlayerCoverMenu>
 
         {/* Title + artist with heart on the right */}
         <div className="flex items-start gap-2">

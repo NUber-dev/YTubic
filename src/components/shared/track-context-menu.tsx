@@ -88,7 +88,7 @@ type Primitives = {
   SubContent: ComponentType<any>;
 };
 
-const ctxPrimitives: Primitives = {
+export const ctxPrimitives: Primitives = {
   Item: ContextMenuItem,
   Separator: ContextMenuSeparator,
   Sub: ContextMenuSub,

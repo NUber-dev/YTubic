@@ -222,6 +222,35 @@ export async function lookupITunesCover(
  *   - In-flight map: if a resolve is already in progress, share the
  *     same promise.
  */
+/**
+ * Save a cover image to the user's Downloads folder via the Rust
+ * `download_cover` command (the webview can't write files itself, and
+ * the CDNs aren't in the `connect-src` CSP anyway).
+ *
+ * `candidates` is tried in order — the caller passes the iTunes studio
+ * art first, then the YT high-res upgrade, then the plain YT thumbnail,
+ * because the upgraded YT URL (`maxresdefault.jpg`, `=w1080-h1080`)
+ * doesn't exist for every track and comes back as a 404.
+ *
+ * Returns the full path that was written.
+ */
+export async function downloadCover(
+  candidates: (string | null | undefined)[],
+  filename: string,
+): Promise<string> {
+  const urls = candidates.filter((u): u is string => !!u);
+  if (urls.length === 0) throw new Error("no cover art available");
+  let lastError: unknown = null;
+  for (const url of urls) {
+    try {
+      return await invoke<string>("download_cover", { url, filename });
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw new Error(String(lastError));
+}
+
 const diskCacheMemo = new Map<string, string>();
 const diskCacheInflight = new Map<string, Promise<string>>();
 

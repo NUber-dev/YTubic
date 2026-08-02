@@ -39,6 +39,7 @@ import {
   useITunesCover,
 } from "@/components/layout/player-bar";
 import { PlayerMoreMenu } from "@/components/layout/player-more-menu";
+import { PlayerCoverMenu } from "@/components/layout/player-cover-menu";
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
@@ -125,23 +126,25 @@ export function PlayerBarBottom() {
         {/* LEFT wing: cover + meta. `min-w-0` lets the title truncate
             instead of pushing the transport cluster off-center. */}
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div
-            onPointerDown={onCoverPointerDown}
-            className="shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
-          >
-            {track ? (
-              <Thumbnail
-                thumbnails={track.thumbnails}
-                alt={track.title}
-                className="size-14 shrink-0 rounded-md border border-hairline pointer-events-none"
-                targetSize={256}
-                highRes
-                overrideHighRes={iTunesCover}
-              />
-            ) : (
-              <div className="size-14 shrink-0 rounded-md border border-hairline bg-muted" />
-            )}
-          </div>
+          <PlayerCoverMenu track={track}>
+            <div
+              onPointerDown={onCoverPointerDown}
+              className="shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
+            >
+              {track ? (
+                <Thumbnail
+                  thumbnails={track.thumbnails}
+                  alt={track.title}
+                  className="size-14 shrink-0 rounded-md border border-hairline pointer-events-none"
+                  targetSize={256}
+                  highRes
+                  overrideHighRes={iTunesCover}
+                />
+              ) : (
+                <div className="size-14 shrink-0 rounded-md border border-hairline bg-muted" />
+              )}
+            </div>
+          </PlayerCoverMenu>
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate text-base font-semibold leading-tight">
               {track?.title ?? "Nothing playing"}
