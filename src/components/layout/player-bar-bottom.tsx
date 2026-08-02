@@ -133,7 +133,7 @@ export function PlayerBarBottom() {
               className="shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
             >
               {track ? (
-                <div className="relative size-14 shrink-0">
+                <div className="relative isolate size-14 shrink-0">
                   <Thumbnail
                     thumbnails={track.thumbnails}
                     alt={track.title}

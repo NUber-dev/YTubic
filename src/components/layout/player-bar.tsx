@@ -560,7 +560,14 @@ export function PlayerBar({
             {track ? (
               // The wrapper carries the shadow so it is cast by the cover's
               // rounded box rather than by the Thumbnail's own square edge.
-              <div className="relative aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
+              //
+              // `isolate` is load-bearing: the outline below blends, and a
+              // blending element turns its nearest stacking-context ancestor
+              // into an isolated group, which is also a backdrop root. Without
+              // it that group is the motion.div wrapping cover AND lyrics, so
+              // the lyrics' backdrop-blur strip loses the card and the app
+              // background from its backdrop and paints as a dark band.
+              <div className="relative isolate aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
                 <Thumbnail
                   thumbnails={track.thumbnails}
                   alt={track.title}
