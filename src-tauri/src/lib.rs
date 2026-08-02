@@ -168,15 +168,14 @@ mod secure_store {
     /// (`errSecUserCanceled` / -128) — which made every rebuild look like
     /// a sign-out and left successful Google logins stuck in the popup.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn file_key_path() -> Option<std::path::PathBuf> {
+    fn app_data_dir() -> Option<std::path::PathBuf> {
         #[cfg(target_os = "macos")]
         {
             let home = std::env::var_os("HOME")?;
             Some(
                 std::path::PathBuf::from(home)
                     .join("Library/Application Support")
-                    .join(KEYRING_SERVICE)
-                    .join("cookie-encryption-key-v1"),
+                    .join(KEYRING_SERVICE),
             )
         }
         #[cfg(target_os = "linux")]
@@ -191,7 +190,37 @@ mod secure_store {
                             .join("share")
                     })
                 })?;
-            Some(base.join(KEYRING_SERVICE).join("cookie-encryption-key-v1"))
+            Some(base.join(KEYRING_SERVICE))
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn file_key_path() -> Option<std::path::PathBuf> {
+        Some(app_data_dir()?.join("cookie-encryption-key-v1"))
+    }
+
+    /// Marker written after we have attempted a one-shot Keychain recovery
+    /// for a jar the file key cannot open. Prevents every subsequent
+    /// launch from re-prompting the macOS Keychain ACL dialog.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn keyring_fallback_marker_path() -> Option<std::path::PathBuf> {
+        Some(app_data_dir()?.join("cookie-keyring-fallback-done"))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn keyring_fallback_already_tried() -> bool {
+        keyring_fallback_marker_path()
+            .map(|p| p.exists())
+            .unwrap_or(true)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn mark_keyring_fallback_tried() {
+        if let Some(path) = keyring_fallback_marker_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(path, b"1");
         }
     }
 
@@ -220,10 +249,8 @@ mod secure_store {
         Ok(())
     }
 
-    /// One-time Keychain / secret-service read used only when the app-data
-    /// file is missing (upgrade from a pure-keyring build). On macOS this
-    /// call can show an ACL prompt after an ad-hoc rebuild — so it must
-    /// never run once the file key exists.
+    /// Keychain / secret-service read. On macOS this can show an ACL prompt
+    /// after an ad-hoc rebuild — call only for one-time migration / recovery.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn try_read_keyring_key() -> Option<[u8; KEYRING_KEY_LEN]> {
         use keyring::{Entry, Error};
@@ -239,7 +266,7 @@ mod secure_store {
         }
     }
 
-    /// Resolve the cookie-encryption key.
+    /// Resolve the cookie-encryption key for *new* writes.
     ///
     /// The app-data file is the only steady-state source. Touching the
     /// system keyring after an ad-hoc macOS rebuild pops a Keychain ACL
@@ -262,6 +289,7 @@ mod secure_store {
             } else {
                 eprintln!("[auth] migrated cookie key from keyring → app data file");
             }
+            mark_keyring_fallback_tried();
             return Ok(key);
         }
 
@@ -270,6 +298,7 @@ mod secure_store {
         let mut key = [0_u8; KEYRING_KEY_LEN];
         rand::rngs::OsRng.fill_bytes(&mut key);
         write_file_key(&key)?;
+        mark_keyring_fallback_tried();
         Ok(key)
     }
 
@@ -336,14 +365,41 @@ mod secure_store {
         if !encrypted.starts_with(KEYRING_MAGIC) {
             return Ok(encrypted.to_vec());
         }
-        // File key only in the steady state. Keyring is only touched when
-        // the file is missing (one-time upgrade migrate) — never as a
-        // fallback after the file already exists, or every rebuild would
-        // re-prompt Keychain ACLs and risk swapping in a different key.
+
+        // Steady state: file key only. Never open Keychain when it works.
         if let Some(key) = read_file_key() {
-            return keyring_decrypt_with_key(encrypted, &key);
+            match keyring_decrypt_with_key(encrypted, &key) {
+                Ok(plain) => return Ok(plain),
+                Err(file_err) => {
+                    // Stale file from an earlier experiment while the jar was
+                    // still sealed by a pure-Keychain build. Try Keychain
+                    // *once* (may ACL-prompt after an ad-hoc rebuild); on
+                    // success replace the file so every later launch is silent.
+                    if !keyring_fallback_already_tried() {
+                        mark_keyring_fallback_tried();
+                        if let Some(k) = try_read_keyring_key() {
+                            if let Ok(plain) = keyring_decrypt_with_key(encrypted, &k) {
+                                if let Err(e) = write_file_key(&k) {
+                                    eprintln!(
+                                        "[auth] recovered jar via keyring but could not save file key: {e}"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "[auth] recovered jar via keyring; replaced stale file key"
+                                    );
+                                }
+                                return Ok(plain);
+                            }
+                        }
+                    }
+                    return Err(file_err);
+                }
+            }
         }
+
+        // No file yet: one-time upgrade migrate from Keychain.
         if let Some(key) = try_read_keyring_key() {
+            mark_keyring_fallback_tried();
             match keyring_decrypt_with_key(encrypted, &key) {
                 Ok(plain) => {
                     if let Err(e) = write_file_key(&key) {
@@ -356,6 +412,7 @@ mod secure_store {
                 Err(e) => Err(e),
             }
         } else {
+            mark_keyring_fallback_tried();
             Err("failed to decrypt cookie jar".to_string())
         }
     }
