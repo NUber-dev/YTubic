@@ -154,22 +154,21 @@ mod secure_store {
         }
     }
 
+    // Cookie jars on Linux/macOS are AES-256-GCM sealed with a key stored
+    // only in app data (mode 0600). We deliberately do NOT use Keychain /
+    // Secret Service: ad-hoc macOS rebuilds get a new code signature, and
+    // Keychain ACLs then deny access and pop a permission dialog on every
+    // launch — which looked like a sign-out. Wire format magic `YTBC1` is
+    // kept so jars written by earlier builds still parse.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    const KEYRING_MAGIC: &[u8; 5] = b"YTBC1";
+    const COOKIE_MAGIC: &[u8; 5] = b"YTBC1";
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    const KEYRING_NONCE_LEN: usize = 12;
+    const COOKIE_NONCE_LEN: usize = 12;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    const KEYRING_KEY_LEN: usize = 32;
+    const COOKIE_KEY_LEN: usize = 32;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    const KEYRING_SERVICE: &str = "com.github.ivasy.ytubic";
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    const KEYRING_USER: &str = "cookie-encryption-key-v1";
+    const APP_DATA_DIR_NAME: &str = "com.github.ivasy.ytubic";
 
-    /// Local file that holds the 32-byte AES key. Preferred over the
-    /// system keyring on macOS because ad-hoc / rebuilt app binaries get a
-    /// new code signature each time, and Keychain ACLs then deny access
-    /// (`errSecUserCanceled` / -128) — which made every rebuild look like
-    /// a sign-out and left successful Google logins stuck in the popup.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn app_data_dir() -> Option<std::path::PathBuf> {
         #[cfg(target_os = "macos")]
@@ -178,7 +177,7 @@ mod secure_store {
             Some(
                 std::path::PathBuf::from(home)
                     .join("Library/Application Support")
-                    .join(KEYRING_SERVICE),
+                    .join(APP_DATA_DIR_NAME),
             )
         }
         #[cfg(target_os = "linux")]
@@ -193,7 +192,7 @@ mod secure_store {
                             .join("share")
                     })
                 })?;
-            Some(base.join(KEYRING_SERVICE))
+            Some(base.join(APP_DATA_DIR_NAME))
         }
     }
 
@@ -202,40 +201,15 @@ mod secure_store {
         Some(app_data_dir()?.join("cookie-encryption-key-v1"))
     }
 
-    /// Marker written after we have attempted a one-shot Keychain recovery
-    /// for a jar the file key cannot open. Prevents every subsequent
-    /// launch from re-prompting the macOS Keychain ACL dialog.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn keyring_fallback_marker_path() -> Option<std::path::PathBuf> {
-        Some(app_data_dir()?.join("cookie-keyring-fallback-done"))
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn keyring_fallback_already_tried() -> bool {
-        keyring_fallback_marker_path()
-            .map(|p| p.exists())
-            .unwrap_or(true)
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn mark_keyring_fallback_tried() {
-        if let Some(path) = keyring_fallback_marker_path() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(path, b"1");
-        }
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn read_file_key() -> Option<[u8; KEYRING_KEY_LEN]> {
+    fn read_file_key() -> Option<[u8; COOKIE_KEY_LEN]> {
         let path = file_key_path()?;
         let bytes = std::fs::read(&path).ok()?;
-        <[u8; KEYRING_KEY_LEN]>::try_from(bytes.as_slice()).ok()
+        <[u8; COOKIE_KEY_LEN]>::try_from(bytes.as_slice()).ok()
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn write_file_key(key: &[u8; KEYRING_KEY_LEN]) -> Result<(), String> {
+    fn write_file_key(key: &[u8; COOKIE_KEY_LEN]) -> Result<(), String> {
         let path = file_key_path()
             .ok_or_else(|| "cannot resolve app data dir for cookie key".to_string())?;
         if let Some(parent) = path.parent() {
@@ -252,64 +226,26 @@ mod secure_store {
         Ok(())
     }
 
-    /// Keychain / secret-service read. On macOS this can show an ACL prompt
-    /// after an ad-hoc rebuild — call only for one-time migration / recovery.
+    /// Load or mint the AES key from app data only. Never touches Keychain.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn try_read_keyring_key() -> Option<[u8; KEYRING_KEY_LEN]> {
-        use keyring::{Entry, Error};
-
-        let entry = Entry::new(KEYRING_SERVICE, KEYRING_USER).ok()?;
-        match entry.get_secret() {
-            Ok(secret) => <[u8; KEYRING_KEY_LEN]>::try_from(secret).ok(),
-            Err(Error::NoEntry) => None,
-            Err(error) => {
-                eprintln!("[auth] keyring read skipped: {error}");
-                None
-            }
-        }
-    }
-
-    /// Resolve the cookie-encryption key for *new* writes.
-    ///
-    /// The app-data file is the only steady-state source. Touching the
-    /// system keyring after an ad-hoc macOS rebuild pops a Keychain ACL
-    /// dialog and can return a *different* key than the file (or fail),
-    /// which previously stranded sessions between builds. Keyring is
-    /// consulted only when the file is absent, then immediately migrated.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn keyring_encryption_key() -> Result<[u8; KEYRING_KEY_LEN], String> {
+    fn file_encryption_key() -> Result<[u8; COOKIE_KEY_LEN], String> {
         use rand::RngCore;
 
-        // File wins. Never open Keychain when it is present.
         if let Some(file) = read_file_key() {
             return Ok(file);
         }
 
-        // One-time migrate from an older pure-keyring install.
-        if let Some(key) = try_read_keyring_key() {
-            if let Err(e) = write_file_key(&key) {
-                eprintln!("[auth] could not migrate keyring key to file: {e}");
-            } else {
-                eprintln!("[auth] migrated cookie key from keyring → app data file");
-            }
-            mark_keyring_fallback_tried();
-            return Ok(key);
-        }
-
-        // Fresh install: mint into the file only. Do not write Keychain —
-        // that creates an ACL-bound item which prompts on every rebuild.
-        let mut key = [0_u8; KEYRING_KEY_LEN];
+        let mut key = [0_u8; COOKIE_KEY_LEN];
         rand::rngs::OsRng.fill_bytes(&mut key);
         write_file_key(&key)?;
-        mark_keyring_fallback_tried();
         Ok(key)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn keyring_encrypt_with_key(
+    fn cookie_encrypt_with_key(
         plain: &[u8],
-        key: &[u8; KEYRING_KEY_LEN],
-        nonce: &[u8; KEYRING_NONCE_LEN],
+        key: &[u8; COOKIE_KEY_LEN],
+        nonce: &[u8; COOKIE_NONCE_LEN],
     ) -> Result<Vec<u8>, String> {
         use aes_gcm::aead::{Aead, KeyInit};
         use aes_gcm::{Aes256Gcm, Nonce};
@@ -320,32 +256,32 @@ mod secure_store {
             .encrypt(Nonce::from_slice(nonce), plain)
             .map_err(|_| "failed to encrypt cookie jar".to_string())?;
 
-        let mut framed = Vec::with_capacity(KEYRING_MAGIC.len() + nonce.len() + ciphertext.len());
-        framed.extend_from_slice(KEYRING_MAGIC);
+        let mut framed = Vec::with_capacity(COOKIE_MAGIC.len() + nonce.len() + ciphertext.len());
+        framed.extend_from_slice(COOKIE_MAGIC);
         framed.extend_from_slice(nonce);
         framed.extend_from_slice(&ciphertext);
         Ok(framed)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn keyring_decrypt_with_key(
+    fn cookie_decrypt_with_key(
         encrypted: &[u8],
-        key: &[u8; KEYRING_KEY_LEN],
+        key: &[u8; COOKIE_KEY_LEN],
     ) -> Result<Vec<u8>, String> {
         use aes_gcm::aead::{Aead, KeyInit};
         use aes_gcm::{Aes256Gcm, Nonce};
 
-        if !encrypted.starts_with(KEYRING_MAGIC) {
+        if !encrypted.starts_with(COOKIE_MAGIC) {
             // Earlier builds on this platform wrote plaintext jars. Accept
             // one so the next successful persistence pass can migrate it.
             return Ok(encrypted.to_vec());
         }
 
-        let payload = &encrypted[KEYRING_MAGIC.len()..];
-        if payload.len() <= KEYRING_NONCE_LEN {
+        let payload = &encrypted[COOKIE_MAGIC.len()..];
+        if payload.len() <= COOKIE_NONCE_LEN {
             return Err("encrypted cookie jar is truncated".to_string());
         }
-        let (nonce, ciphertext) = payload.split_at(KEYRING_NONCE_LEN);
+        let (nonce, ciphertext) = payload.split_at(COOKIE_NONCE_LEN);
         let cipher = Aes256Gcm::new_from_slice(key)
             .map_err(|_| "failed to initialize cookie decryption".to_string())?;
         cipher
@@ -357,67 +293,19 @@ mod secure_store {
     pub fn encrypt(plain: &[u8]) -> Result<Vec<u8>, String> {
         use rand::RngCore;
 
-        let key = keyring_encryption_key()?;
-        let mut nonce = [0_u8; KEYRING_NONCE_LEN];
+        let key = file_encryption_key()?;
+        let mut nonce = [0_u8; COOKIE_NONCE_LEN];
         rand::rngs::OsRng.fill_bytes(&mut nonce);
-        keyring_encrypt_with_key(plain, &key, &nonce)
+        cookie_encrypt_with_key(plain, &key, &nonce)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn decrypt(encrypted: &[u8]) -> Result<Vec<u8>, String> {
-        if !encrypted.starts_with(KEYRING_MAGIC) {
+        if !encrypted.starts_with(COOKIE_MAGIC) {
             return Ok(encrypted.to_vec());
         }
-
-        // Steady state: file key only. Never open Keychain when it works.
-        if let Some(key) = read_file_key() {
-            match keyring_decrypt_with_key(encrypted, &key) {
-                Ok(plain) => return Ok(plain),
-                Err(file_err) => {
-                    // Stale file from an earlier experiment while the jar was
-                    // still sealed by a pure-Keychain build. Try Keychain
-                    // *once* (may ACL-prompt after an ad-hoc rebuild); on
-                    // success replace the file so every later launch is silent.
-                    if !keyring_fallback_already_tried() {
-                        mark_keyring_fallback_tried();
-                        if let Some(k) = try_read_keyring_key() {
-                            if let Ok(plain) = keyring_decrypt_with_key(encrypted, &k) {
-                                if let Err(e) = write_file_key(&k) {
-                                    eprintln!(
-                                        "[auth] recovered jar via keyring but could not save file key: {e}"
-                                    );
-                                } else {
-                                    eprintln!(
-                                        "[auth] recovered jar via keyring; replaced stale file key"
-                                    );
-                                }
-                                return Ok(plain);
-                            }
-                        }
-                    }
-                    return Err(file_err);
-                }
-            }
-        }
-
-        // No file yet: one-time upgrade migrate from Keychain.
-        if let Some(key) = try_read_keyring_key() {
-            mark_keyring_fallback_tried();
-            match keyring_decrypt_with_key(encrypted, &key) {
-                Ok(plain) => {
-                    if let Err(e) = write_file_key(&key) {
-                        eprintln!("[auth] could not persist recovered keyring key: {e}");
-                    } else {
-                        eprintln!("[auth] recovered jar via keyring; key saved to app data");
-                    }
-                    Ok(plain)
-                }
-                Err(e) => Err(e),
-            }
-        } else {
-            mark_keyring_fallback_tried();
-            Err("failed to decrypt cookie jar".to_string())
-        }
+        let key = file_encryption_key()?;
+        cookie_decrypt_with_key(encrypted, &key)
     }
 
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -431,33 +319,33 @@ mod secure_store {
     }
 
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-    mod keyring_tests {
+    mod cookie_crypto_tests {
         use super::*;
 
-        const KEY: [u8; KEYRING_KEY_LEN] = [7; KEYRING_KEY_LEN];
-        const NONCE: [u8; KEYRING_NONCE_LEN] = [3; KEYRING_NONCE_LEN];
+        const KEY: [u8; COOKIE_KEY_LEN] = [7; COOKIE_KEY_LEN];
+        const NONCE: [u8; COOKIE_NONCE_LEN] = [3; COOKIE_NONCE_LEN];
 
         #[test]
         fn encrypted_cookie_jar_round_trips() {
-            let encrypted = keyring_encrypt_with_key(b"SID=secret", &KEY, &NONCE).unwrap();
-            assert!(encrypted.starts_with(KEYRING_MAGIC));
+            let encrypted = cookie_encrypt_with_key(b"SID=secret", &KEY, &NONCE).unwrap();
+            assert!(encrypted.starts_with(COOKIE_MAGIC));
             assert_eq!(
-                keyring_decrypt_with_key(&encrypted, &KEY).unwrap(),
+                cookie_decrypt_with_key(&encrypted, &KEY).unwrap(),
                 b"SID=secret"
             );
         }
 
         #[test]
         fn tampered_cookie_jar_is_rejected() {
-            let mut encrypted = keyring_encrypt_with_key(b"SID=secret", &KEY, &NONCE).unwrap();
+            let mut encrypted = cookie_encrypt_with_key(b"SID=secret", &KEY, &NONCE).unwrap();
             *encrypted.last_mut().unwrap() ^= 1;
-            assert!(keyring_decrypt_with_key(&encrypted, &KEY).is_err());
+            assert!(cookie_decrypt_with_key(&encrypted, &KEY).is_err());
         }
 
         #[test]
         fn plaintext_cookie_jar_is_accepted_for_migration() {
             assert_eq!(
-                keyring_decrypt_with_key(b"SID=legacy", &KEY).unwrap(),
+                cookie_decrypt_with_key(b"SID=legacy", &KEY).unwrap(),
                 b"SID=legacy"
             );
         }
