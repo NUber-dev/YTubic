@@ -55,6 +55,23 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.3",
+    date: "August 2, 2026",
+    summary: "Interface polish",
+    changes: [
+      {
+        type: "improved",
+        title: "Covers and cards",
+        text: "Softer corners, a clearer outline and a light shadow under the player cover.",
+      },
+      {
+        type: "fixed",
+        title: "Page edges shifted",
+        text: "Content sat off-center when a page had a scrollbar, and moved again when it did not.",
+      },
+    ],
+  },
+  {
     version: "0.4.2",
     date: "August 1, 2026",
     summary: "Lyrics rework and small bug fixes",
