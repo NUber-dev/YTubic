@@ -112,11 +112,12 @@ windows = { version = "0.61", features = [
 resvg = { version = "0.48.1", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-# Cookie jars are AES-GCM sealed; the random key lives next to them in app
-# data (mode 0600). We deliberately do not use Keychain / Secret Service:
-# ad-hoc rebuilds change the code signature and Keychain then prompts or
-# denies access on every launch.
+# Cookie jars are AES-GCM sealed. Prefer a file-backed key in app data
+# (mode 0600) so ad-hoc rebuilds do not strand the session when Keychain
+# ACLs deny the new code signature. Keyring is only used to *migrate*
+# older installs into the file, then left alone.
 aes-gcm = "0.10"
+keyring = "4.1.5"
 rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
