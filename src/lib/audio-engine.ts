@@ -276,10 +276,9 @@ export function useAudioEngine() {
       );
     }
 
-    // Playback goes through our local streaming HTTP server. It spawns
-    // yt-dlp and pipes the audio bytes progressively so playback starts
-    // as soon as the first chunk lands (typically ~200ms after the
-    // yt-dlp subprocess starts emitting bytes).
+    // Playback goes through our local streaming HTTP server. The frontend
+    // resolves a WEB_REMIX googlevideo URL (cookies + decipher), registers
+    // it with Rust, then streams progressively from disk/cache — no yt-dlp.
     streamUrlFor(streamVideoId)
       .then((src) => {
         if (token !== resolveTokenRef.current) return;

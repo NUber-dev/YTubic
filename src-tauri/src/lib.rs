@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::process::Command as TokioCommand;
 use tokio::sync::{Mutex, Notify};
 
 use axum::{
@@ -3381,6 +3379,20 @@ type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 // request as a bot and strips every real audio format, leaving only
 // storyboard thumbnails — so anonymous streaming via the android_vr/
 // ios/mweb clients actually works better than authenticated streaming.
+/// Frontend-resolved googlevideo URL (WEB_REMIX / Music /player +
+/// webview decipher). Consumed once by the next download for that id.
+#[derive(Clone)]
+struct PreResolvedSource {
+    url: String,
+    user_agent: String,
+}
+
+type PreResolvedMap = Arc<Mutex<HashMap<String, PreResolvedSource>>>;
+
+/// Per-video last method emission — suppresses Range-request "cache" spam.
+type MethodLogMap = Arc<Mutex<HashMap<String, (String, std::time::Instant)>>>;
+
+
 #[derive(Clone)]
 struct StreamServer {
     /// Persistent cache. Tracks land here for Premium-authenticated
@@ -3394,12 +3406,135 @@ struct StreamServer {
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
     downloads: DownloadMap,
-    /// Expected location of the managed yt-dlp copy. Resolution to an
-    /// actual program (managed vs PATH fallback) happens per-spawn via
-    /// `ytdlp::program` so a mid-session download takes effect
-    /// immediately.
+    /// One-shot URLs registered by the frontend after WEB_REMIX resolve.
+    pre_resolved: PreResolvedMap,
+    /// Managed yt-dlp path — kept for a possible re-enable of the
+    /// subprocess fallback (currently unused; playback is WEB_REMIX-only).
+    #[allow(dead_code)]
     ytdlp_bin: PathBuf,
+    /// For `stream-method` events so the UI can show which resolver
+    /// actually fed the current play (cache / web_remix).
+    app: tauri::AppHandle,
+    /// Suppresses "cache" re-labels after a live download of the same id.
+    method_log: MethodLogMap,
 }
+
+/// Tell the frontend which stream backend is serving `video_id`.
+///
+/// Surfaces three ways (GUI `.app` launches have nowhere for stderr):
+///   1. `eprintln!` — visible when launched from a terminal
+///   2. append-only log file under app data: `logs/stream.log`
+///   3. Tauri event `stream-method` → player UI label + webview console
+fn emit_stream_method(
+    app: &tauri::AppHandle,
+    method_log: &MethodLogMap,
+    video_id: &str,
+    method: &str,
+    detail: &str,
+    elapsed_ms: u128,
+) {
+    // After a real fetch (web_remix), WebKit hammers
+    // Range requests on the just-written file. Those are not "cache hits"
+    // from the user's POV — suppress them for a few minutes so the UI
+    // keeps showing the resolver that actually fetched the track.
+    let kind = if detail.starts_with("ok") {
+        format!("{method}:ok")
+    } else if detail.starts_with("streaming") {
+        format!("{method}:streaming")
+    } else {
+        method.to_string()
+    };
+
+    if method == "cache" {
+        if let Ok(map) = method_log.try_lock() {
+            if let Some((prev, at)) = map.get(video_id) {
+                if prev != "cache" && at.elapsed() < Duration::from_secs(5 * 60) {
+                    return;
+                }
+            }
+        } else {
+            // Contended: prefer skipping a cache label over clobbering.
+            return;
+        }
+    }
+
+    let line = format!(
+        "[stream] {video_id}: method={method} ({detail}, {elapsed_ms}ms)"
+    );
+    eprintln!("{line}");
+    append_stream_log(app, &line);
+    if let Ok(mut map) = method_log.try_lock() {
+        // Record non-cache methods so later Range "cache" probes suppress.
+        if method != "cache" {
+            map.insert(video_id.to_string(), (kind, std::time::Instant::now()));
+        } else if !map.contains_key(video_id) {
+            map.insert(
+                video_id.to_string(),
+                ("cache".into(), std::time::Instant::now()),
+            );
+        }
+    }
+    let _ = app.emit(
+        "stream-method",
+        serde_json::json!({
+            "videoId": video_id,
+            "method": method,
+            "detail": detail,
+            "elapsedMs": elapsed_ms,
+        }),
+    );
+}
+
+/// Cap for `logs/stream.log`. When exceeded, the current file is rotated
+/// to `stream.log.1` (overwriting any previous backup) and a fresh log
+/// starts — keeps disk use bounded without losing the most recent session.
+const STREAM_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024; // 2 MiB
+
+/// Append one line to `<app-data>/logs/stream.log` (best-effort).
+/// This is the durable place to inspect stream resolver choices when the
+/// app is opened from Finder / Dock (stderr is discarded).
+fn append_stream_log(app: &tauri::AppHandle, line: &str) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let log_dir = dir.join("logs");
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    let path = log_dir.join("stream.log");
+    // Rotate when the active log grows past the size cap.
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() >= STREAM_LOG_MAX_BYTES {
+            let backup = log_dir.join("stream.log.1");
+            let _ = std::fs::remove_file(&backup);
+            let _ = std::fs::rename(&path, &backup);
+        }
+    }
+    // Timestamp so multi-play sessions are readable.
+    let ts = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Simple UTC-ish epoch; good enough for debugging.
+        secs
+    };
+    let entry = format!("{ts} {line}\n");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(entry.as_bytes());
+    }
+}
+
+/// Read the `ephemeral` query flag from a stream request.
+/// True when `?ephemeral=1` (or `=true`) appears — used to route the
+/// download to `ephemeral_dir` instead of the persistent cache.
+
 
 /// Read the `ephemeral` query flag from a stream request.
 /// True when `?ephemeral=1` (or `=true`) appears — used to route the
@@ -3683,10 +3818,15 @@ struct StreamServerState {
     /// guesses the random port still can't form a valid URL — this closes
     /// the CSRF-spawn and DNS-rebinding-read vectors.
     token: Arc<Mutex<Option<String>>>,
+    /// Shared with the axum stream server so the frontend can hand it a
+    /// WEB_REMIX-deciphered googlevideo URL before `GET /stream/:id`.
+    pre_resolved: PreResolvedMap,
 }
 
 #[tauri::command]
-async fn get_stream_base_url(state: tauri::State<'_, StreamServerState>) -> Result<String, String> {
+async fn get_stream_base_url(
+    state: tauri::State<'_, StreamServerState>,
+) -> Result<String, String> {
     let port = *state.port.lock().await;
     let token = state.token.lock().await.clone();
     match (port, token) {
@@ -3695,160 +3835,294 @@ async fn get_stream_base_url(state: tauri::State<'_, StreamServerState>) -> Resu
     }
 }
 
-/// ANDROID_VR client identity for the native player resolve + download
-/// path. Must match between the /player POST and the googlevideo GET so
-/// client-locked stream URLs accept the request.
-const ANDROID_VR_CLIENT_VERSION: &str = "1.62.27";
-const ANDROID_VR_UA: &str =
-    "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12; XR) gzip";
+/// True when `url` points at a YouTube media host we are willing to
+/// proxy. Blocks open-proxy abuse of `register_stream_source`.
+fn is_allowed_media_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    host == "googlevideo.com"
+        || host.ends_with(".googlevideo.com")
+        || host == "youtube.com"
+        || host.ends_with(".youtube.com")
+        || host == "googleusercontent.com"
+        || host.ends_with(".googleusercontent.com")
+}
+
+/// Register a frontend-resolved stream URL for the next `/stream/:id`
+/// download of this video. One-shot: consumed when the downloader starts.
+/// Hosts are restricted to googlevideo/youtube so this cannot be used as
+/// a generic open proxy.
+#[tauri::command]
+async fn register_stream_source(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, StreamServerState>,
+    video_id: String,
+    url: String,
+    // Prefer snake_case; also accept camelCase from the webview.
+    #[allow(non_snake_case)]
+    user_agent: Option<String>,
+    #[allow(non_snake_case)]
+    userAgent: Option<String>,
+) -> Result<(), String> {
+    if !sanitize_video_id(&video_id) {
+        return Err(format!("invalid videoId: {video_id}"));
+    }
+    if !is_allowed_media_url(&url) {
+        return Err("url host not allowed".into());
+    }
+    if url.len() > 16 * 1024 {
+        return Err("url too long".into());
+    }
+    let ua = user_agent
+        .or(userAgent)
+        .filter(|s| !s.is_empty() && s.len() < 512)
+        .unwrap_or_else(|| {
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                .into()
+        });
+    let c_param = gv_query_param(&url, "c");
+    state.pre_resolved.lock().await.insert(
+        video_id.clone(),
+        PreResolvedSource {
+            url,
+            user_agent: ua.clone(),
+        },
+    );
+    eprintln!("[stream] registered pre-resolved source for {video_id}");
+    append_stream_log(
+        &app,
+        &format!(
+            "[stream] {video_id}: web_remix source registered (c={c_param} ua={}…)",
+            ua.chars().take(36).collect::<String>()
+        ),
+    );
+    Ok(())
+}
+
+/// Append a free-form line to `logs/stream.log` (frontend WEB_REMIX
+/// diagnostics, etc.). Keeps stream debugging possible when the app is
+/// launched from Finder and stderr is discarded.
+#[tauri::command]
+fn log_stream_line(app: tauri::AppHandle, line: String) {
+    // Bound length so this cannot be used as an accidental disk-fill.
+    let trimmed = if line.len() > 2000 {
+        format!("{}…", &line[..2000])
+    } else {
+        line
+    };
+    append_stream_log(&app, &trimmed);
+}
 
 /// Minimum bytes before a completed download is considered real audio
 /// (storyboard-only stubs are smaller and must not be cached).
 const MIN_AUDIO_BYTES: u64 = 32 * 1024;
 
-struct ResolvedAudio {
-    url: String,
-    /// `true` when mime is webm/opus — progressive first-byte play is safe.
-    is_webm: bool,
+struct GvHeaderStrategy {
+    name: &'static str,
+    /// `None` = omit Origin/Referer (some mobile clients reject them).
+    origin: Option<&'static str>,
+    send_cookies: bool,
 }
 
-/// Resolve a direct audio URL via YouTube's ANDROID_VR player API.
-///
-/// ~0.2–0.4s when it works. Avoids spawning yt-dlp entirely (the managed
-/// PyInstaller binary alone costs ~12s of process start per track).
-/// Returns `Err` on bot-check / LOGIN_REQUIRED / missing direct URLs —
-/// caller falls back to yt-dlp, which still knows the JS/poToken dance.
-async fn resolve_android_vr_audio(video_id: &str) -> Result<ResolvedAudio, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .user_agent(ANDROID_VR_UA)
-        .build()
-        .map_err(|e| format!("http client: {e}"))?;
+const GV_STRATEGIES: &[GvHeaderStrategy] = &[
+    // Desktop Music session — most WEB_REMIX / Music /player URLs.
+    GvHeaderStrategy {
+        name: "music+cookie",
+        origin: Some("https://music.youtube.com"),
+        send_cookies: true,
+    },
+    GvHeaderStrategy {
+        name: "www+cookie",
+        origin: Some("https://www.youtube.com"),
+        send_cookies: true,
+    },
+    GvHeaderStrategy {
+        name: "music",
+        origin: Some("https://music.youtube.com"),
+        send_cookies: false,
+    },
+    GvHeaderStrategy {
+        name: "www",
+        origin: Some("https://www.youtube.com"),
+        send_cookies: false,
+    },
+    // Mobile / IOS / ANDROID plain URLs often 403 if Origin is present.
+    GvHeaderStrategy {
+        name: "ua-only",
+        origin: None,
+        send_cookies: false,
+    },
+    GvHeaderStrategy {
+        name: "ua+cookie",
+        origin: None,
+        send_cookies: true,
+    },
+];
 
-    let body = serde_json::json!({
-        "context": {
-            "client": {
-                "clientName": "ANDROID_VR",
-                "clientVersion": ANDROID_VR_CLIENT_VERSION,
-                "androidSdkVersion": 32,
-                "hl": "en",
-                "gl": "US",
-                "userAgent": ANDROID_VR_UA,
-            }
-        },
-        "videoId": video_id,
-        "contentCheckOk": true,
-        "racyCheckOk": true,
-    });
-
-    let resp = client
-        .post("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
-        .header("Content-Type", "application/json")
-        .header("X-YouTube-Client-Name", "28")
-        .header("X-YouTube-Client-Version", ANDROID_VR_CLIENT_VERSION)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("player request: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("player http {}", resp.status()));
-    }
-
-    let data: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("player json: {e}"))?;
-
-    let status = data
-        .pointer("/playabilityStatus/status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("?");
-    if status != "OK" {
-        let reason = data
-            .pointer("/playabilityStatus/reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        return Err(format!("playability {status}: {reason}"));
-    }
-
-    let mut candidates: Vec<(&serde_json::Value, bool, i64)> = Vec::new();
-    for key in ["adaptiveFormats", "formats"] {
-        let Some(arr) = data
-            .pointer(&format!("/streamingData/{key}"))
-            .and_then(|v| v.as_array())
-        else {
-            continue;
-        };
-        for f in arr {
-            let mime = f.get("mimeType").and_then(|v| v.as_str()).unwrap_or("");
-            if !mime.starts_with("audio/") {
-                continue;
-            }
-            let url = f.get("url").and_then(|v| v.as_str()).unwrap_or("");
-            if url.is_empty() {
-                continue; // ciphered / sabr-only — need yt-dlp
-            }
-            let is_webm = mime.contains("webm");
-            let br = f.get("bitrate").and_then(|v| v.as_i64()).unwrap_or(0);
-            candidates.push((f, is_webm, br));
-        }
-    }
-    // Prefer webm (progressive-safe), then higher bitrate.
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)));
-    let (f, is_webm, _) = candidates
-        .into_iter()
-        .next()
-        .ok_or_else(|| "no direct audio url in player response".to_string())?;
-    let url = f
-        .get("url")
-        .and_then(|v| v.as_str())
-        .unwrap()
-        .to_string();
-    Ok(ResolvedAudio { url, is_webm })
+fn gv_query_param(url: &str, key: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.query_pairs()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.into_owned())
+        })
+        .unwrap_or_default()
 }
 
 /// Stream a googlevideo URL into `part_path`, notifying waiters on every
 /// chunk so the progressive HTTP handler can start early.
+///
+/// `user_agent` must match the client that issued the signed URL
+/// (desktop Chrome for WEB_REMIX).
+///
+/// When `app` is provided, 403s are retried with Music/WWW Origin + the
+/// account cookie jar — WEB_REMIX Music streams often require both.
 async fn download_url_to_part(
     url: &str,
     part_path: &std::path::Path,
     state: &DownloadState,
+    user_agent: &str,
+    app: Option<&tauri::AppHandle>,
 ) -> Result<u64, String> {
+    // Cookie jar for authenticated Music streams (optional).
+    let cookie = if let Some(app) = app {
+        let c = read_cookie_header(app, "music.youtube.com").await;
+        if c.is_empty() {
+            read_cookie_header(app, "www.youtube.com").await
+        } else {
+            c
+        }
+    } else {
+        String::new()
+    };
+
+    // HTTP/1.1 only — some googlevideo edges 403 HTTP/2 clients that
+    // don't match a real browser fingerprint.
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
         .connect_timeout(Duration::from_secs(15))
-        .user_agent(ANDROID_VR_UA)
+        .http1_only()
+        .user_agent(user_agent)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
 
-    let mut resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("download: {e}"))?;
+    let mut last_err = String::from("download failed");
+    for strat in GV_STRATEGIES {
+        if strat.send_cookies && cookie.is_empty() {
+            continue;
+        }
+        // Skip cookie strategies for non-browser UAs that never send them.
+        let is_browser_ua = user_agent.starts_with("Mozilla/");
+        if strat.send_cookies && !is_browser_ua {
+            continue;
+        }
+        // Mobile app UAs: Origin often causes 403; skip origin strategies.
+        if !is_browser_ua && strat.origin.is_some() {
+            continue;
+        }
 
-    if !resp.status().is_success() {
-        return Err(format!("download http {}", resp.status()));
-    }
+        let mut req = client
+            .get(url)
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US,en;q=0.9");
+        if let Some(origin) = strat.origin {
+            req = req
+                .header("Origin", origin)
+                .header("Referer", format!("{origin}/"));
+        }
+        if strat.send_cookies && !cookie.is_empty() {
+            req = req.header("Cookie", &cookie);
+        }
 
-    let mut file = tokio::fs::File::create(part_path)
-        .await
-        .map_err(|e| format!("create part: {e}"))?;
-    let mut total = 0u64;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("read chunk: {e}"))?
-    {
-        file.write_all(&chunk)
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("download: {e}");
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            last_err = format!("download http {} ({})", resp.status(), strat.name);
+            // Only retry on 403; other codes won't improve with headers.
+            if resp.status() != reqwest::StatusCode::FORBIDDEN {
+                return Err(last_err);
+            }
+            continue;
+        }
+
+        // Success path — stream body to disk.
+        if let Some(app) = app {
+            append_stream_log(
+                app,
+                &format!(
+                    "[stream] gv download via {} (c={} n={}…)",
+                    strat.name,
+                    gv_query_param(url, "c"),
+                    {
+                        let n = gv_query_param(url, "n");
+                        if n.len() > 12 {
+                            format!("{}…", &n[..12])
+                        } else {
+                            n
+                        }
+                    }
+                ),
+            );
+        }
+
+        let mut file = tokio::fs::File::create(part_path)
             .await
-            .map_err(|e| format!("write part: {e}"))?;
-        total += chunk.len() as u64;
-        state.notify.notify_waiters();
+            .map_err(|e| format!("create part: {e}"))?;
+        let mut total = 0u64;
+        // Per-chunk idle timeout — slow but steady long downloads stay alive.
+        const CHUNK_IDLE: Duration = Duration::from_secs(90);
+        let mut resp = resp;
+        loop {
+            let next = tokio::time::timeout(CHUNK_IDLE, resp.chunk()).await;
+            match next {
+                Err(_) => {
+                    return Err(format!(
+                        "download stalled after {total} bytes ({CHUNK_IDLE:?} idle)"
+                    ));
+                }
+                Ok(Err(e)) => return Err(format!("read chunk: {e}")),
+                Ok(Ok(None)) => break,
+                Ok(Ok(Some(chunk))) => {
+                    file.write_all(&chunk)
+                        .await
+                        .map_err(|e| format!("write part: {e}"))?;
+                    total += chunk.len() as u64;
+                    state.notify.notify_waiters();
+                }
+            }
+        }
+        let _ = file.flush().await;
+        return Ok(total);
     }
-    let _ = file.flush().await;
-    Ok(total)
+
+    // All strategies exhausted.
+    let c = gv_query_param(url, "c");
+    let n = gv_query_param(url, "n");
+    let n_hint = if n.starts_with("enhanced_except_") {
+        "nsig_failed"
+    } else if n.is_empty() {
+        "no_n"
+    } else {
+        "n_ok"
+    };
+    Err(format!(
+        "{last_err} (c={c} {n_hint} ua={}…)",
+        user_agent.chars().take(48).collect::<String>()
+    ))
 }
 
 /// Finalize a successful `.part` → `.webm` rename (or clean up on failure).
@@ -3887,9 +4161,10 @@ async fn finalize_part(
 /// On success, renames .part → .webm. Updates `state.complete` + pings
 /// `notify` on every new chunk so progressive HTTP can start early.
 ///
-/// Fast path: ANDROID_VR player API + direct googlevideo download (~1s to
-/// first playable bytes). Fallback: yt-dlp (handles bot-check / ciphered
-/// URLs; expensive when the managed PyInstaller binary is used).
+/// **WEB_REMIX only** — frontend registers a Music/WEB googlevideo URL;
+/// we poll briefly for that register, then download with Music Origin +
+/// cookies. ANDROID_VR and yt-dlp are disabled (see commented blocks
+/// below / git history to restore).
 ///
 /// `target_dir` selects which on-disk pool to write to (persistent or
 /// ephemeral). `map_key` is the prefixed key in `srv.downloads` so a
@@ -3902,6 +4177,9 @@ fn spawn_downloader(
     state: Arc<DownloadState>,
 ) {
     let downloads = srv.downloads.clone();
+    let pre_resolved = srv.pre_resolved.clone();
+    let app = srv.app.clone();
+    let method_log = srv.method_log.clone();
     tokio::spawn(async move {
         let part_path = target_dir.join(format!("{video_id}.part"));
         let final_path = target_dir.join(format!("{video_id}.webm"));
@@ -3909,125 +4187,125 @@ fn spawn_downloader(
         let _ = tokio::fs::remove_file(&part_path).await; // clean stale
 
         let t0 = std::time::Instant::now();
-        let mut success = false;
 
-        // --- Fast path: no subprocess ---
-        match resolve_android_vr_audio(&video_id).await {
-            Ok(resolved) => {
-                eprintln!(
-                    "[stream] {video_id}: native resolve ok in {:.2}s (webm={})",
-                    t0.elapsed().as_secs_f32(),
-                    resolved.is_webm
-                );
-                match download_url_to_part(&resolved.url, &part_path, &state).await {
-                    Ok(n) => {
-                        eprintln!(
-                            "[stream] {video_id}: native download {n} bytes in {:.2}s",
-                            t0.elapsed().as_secs_f32()
+        // Try a one-shot WEB_REMIX URL if the frontend registered one.
+        // Returns: None = not registered yet, Some(ok) = attempted download.
+        async fn try_web_remix(
+            video_id: &str,
+            pre_resolved: &PreResolvedMap,
+            part_path: &std::path::Path,
+            final_path: &std::path::Path,
+            state: &Arc<DownloadState>,
+            app: &tauri::AppHandle,
+            method_log: &MethodLogMap,
+            t0: std::time::Instant,
+        ) -> Option<bool> {
+            let src = pre_resolved.lock().await.remove(video_id)?;
+            emit_stream_method(
+                app,
+                method_log,
+                video_id,
+                "web_remix",
+                "downloading",
+                t0.elapsed().as_millis(),
+            );
+            append_stream_log(
+                app,
+                &format!(
+                    "[stream] {video_id}: web_remix GET c={} ua={}…",
+                    gv_query_param(&src.url, "c"),
+                    src.user_agent.chars().take(40).collect::<String>()
+                ),
+            );
+            match download_url_to_part(
+                &src.url,
+                part_path,
+                state,
+                &src.user_agent,
+                Some(app),
+            )
+            .await
+            {
+                Ok(n) => {
+                    let ok = finalize_part(video_id, part_path, final_path, true).await;
+                    if ok {
+                        emit_stream_method(
+                            app,
+                            method_log,
+                            video_id,
+                            "web_remix",
+                            &format!("ok {n} bytes"),
+                            t0.elapsed().as_millis(),
                         );
-                        success = finalize_part(&video_id, &part_path, &final_path, true).await;
                     }
-                    Err(e) => {
-                        eprintln!("[stream] {video_id}: native download failed: {e}");
-                        let _ = tokio::fs::remove_file(&part_path).await;
-                    }
+                    Some(ok)
                 }
-            }
-            Err(e) => {
-                eprintln!(
-                    "[stream] {video_id}: native resolve failed ({e}); falling back to yt-dlp"
-                );
+                Err(e) => {
+                    eprintln!("[stream] {video_id}: WEB_REMIX download failed: {e}");
+                    append_stream_log(
+                        app,
+                        &format!("[stream] {video_id}: WEB_REMIX download failed: {e}"),
+                    );
+                    let _ = tokio::fs::remove_file(part_path).await;
+                    Some(false)
+                }
             }
         }
 
-        // --- Fallback: yt-dlp ---
-        if !success {
-            let url = format!("https://www.youtube.com/watch?v={video_id}");
-            let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
-            cmd.args([
-                "-f",
-                // Prefer webm/opus so progressive first-byte play works (m4a
-                // often has moov at the end and cannot decode until complete).
-                "bestaudio[ext=webm]/bestaudio",
-                "--no-playlist",
-                "--no-warnings",
-                "--no-part",
-                "-q",
-                // YouTube regularly hands out a signed media URL that then 403s
-                // on the very first byte-range request (token/pot desync or
-                // per-URL throttling). Retrying inside a single spawn clears
-                // most of these before we return 502 to the audio element.
-                "--retries",
-                "3",
-                "--extractor-retries",
-                "2",
-                "--socket-timeout",
-                "15",
-                "--extractor-args",
-                "youtube:player_client=android_vr",
-                "-o",
-                "-",
-            ]);
-            cmd.arg(&url);
-            // Windows: suppress the console window for the child yt-dlp.exe
-            // (see resolve_stream_ytdlp for rationale).
-            #[cfg(windows)]
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-            match cmd
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
+        // Poll for a frontend-registered WEB_REMIX URL. Frontend head-start
+        // is ~6s; cold youtubei can take longer, so wait up to ~20s total.
+        const WEB_POLL_MS: u64 = 200;
+        const WEB_POLL_MAX: u32 = 100; // 20s
+        let mut success = false;
+        for i in 0..WEB_POLL_MAX {
+            match try_web_remix(
+                &video_id,
+                &pre_resolved,
+                &part_path,
+                &final_path,
+                &state,
+                &app,
+                &method_log,
+                t0,
+            )
+            .await
             {
-                Ok(mut child) => {
-                    let mut stdout = child.stdout.take().unwrap();
-                    let mut file = tokio::fs::File::create(&part_path).await.ok();
-                    let mut buf = vec![0u8; 64 * 1024];
-                    let mut ok = true;
-                    // Per-read timeout so a wedged yt-dlp can't pin this
-                    // task forever with `complete` stuck false.
-                    const READ_TIMEOUT: Duration = Duration::from_secs(60);
-                    loop {
-                        match tokio::time::timeout(READ_TIMEOUT, stdout.read(&mut buf)).await {
-                            Err(_) => {
-                                eprintln!(
-                                    "[stream] read timeout for {video_id}; killing yt-dlp"
-                                );
-                                let _ = child.start_kill();
-                                ok = false;
-                                break;
-                            }
-                            Ok(Ok(0)) => break,
-                            Ok(Ok(n)) => {
-                                let chunk = &buf[..n];
-                                if let Some(ref mut f) = file {
-                                    if let Err(e) = f.write_all(chunk).await {
-                                        eprintln!("[stream] write .part: {e}");
-                                        file = None;
-                                        ok = false;
-                                    }
-                                }
-                                state.notify.notify_waiters();
-                            }
-                            Ok(Err(e)) => {
-                                eprintln!("[stream] read stdout: {e}");
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(mut f) = file.take() {
-                        let _ = f.flush().await;
-                        drop(f);
-                    }
-                    let status = child.wait().await;
-                    let ytdlp_ok = ok && status.map(|s| s.success()).unwrap_or(false);
-                    success =
-                        finalize_part(&video_id, &part_path, &final_path, ytdlp_ok).await;
+                Some(ok) => {
+                    success = ok;
+                    break; // attempted — stop either way
                 }
-                Err(e) => {
-                    eprintln!("[stream] spawn {video_id}: {e}");
+                None => {
+                    if i + 1 < WEB_POLL_MAX {
+                        tokio::time::sleep(Duration::from_millis(WEB_POLL_MS)).await;
+                    }
                 }
             }
+        }
+
+        // --- DISABLED: ANDROID_VR ---
+        // Always LOGIN_REQUIRED without poToken; left out to cut noise.
+        // See git history / resolve_android_vr_audio for restore.
+
+        // --- DISABLED: yt-dlp ---
+        // Managed binary was slow (~3–12s) and is no longer invoked for
+        // playback. To restore: re-enable ensure_ytdlp + the spawn block
+        // from git history (player_client=android_vr,web_music).
+
+        if !success {
+            emit_stream_method(
+                &app,
+                &method_log,
+                &video_id,
+                "failed",
+                "web_remix unavailable",
+                t0.elapsed().as_millis(),
+            );
+            append_stream_log(
+                &app,
+                &format!(
+                    "[stream] {video_id}: failed (WEB_REMIX only, no source after poll)"
+                ),
+            );
         }
 
         // Finish all file ops BEFORE signalling completion so handlers
@@ -4167,12 +4445,12 @@ async fn stream_handler(
     let final_path = target_dir.join(format!("{video_id}.webm"));
     let part_path = target_dir.join(format!("{video_id}.part"));
 
-    // Cold-play strategy:
-    //   1. Start download (native player API first, yt-dlp fallback).
+    // Cold-play strategy (WEB_REMIX only — no ANDROID_VR / yt-dlp):
+    //   1. Frontend registers a Music/WEB googlevideo URL; we download
+    //      with matching Origin + cookies.
     //   2. If the partial file is WebM and has ≥ START_BYTES, begin
     //      progressive HTTP streaming immediately — don't wait for the
-    //      full file. Native resolve+first-bytes is typically <1s;
-    //      managed yt-dlp alone used to burn ~12s just starting.
+    //      full file (typically ~1–3s to first playable bytes).
     //   3. m4a/mp4 still waits for the complete file (moov often at end →
     //      MEDIA_ERR_SRC_NOT_SUPPORTED if streamed early).
     //   4. Mid-file Range seeks wait for the complete file. Range probes
@@ -4180,8 +4458,7 @@ async fn stream_handler(
     //      treated as progressive so we don't silently fall back to
     //      full-download wait on every play.
     //
-    // Only the currently playing track is buffered this way — no
-    // next-track prefetch.
+    // Disk cache hits skip the download path entirely (ServeFile).
     const START_BYTES: u64 = 32 * 1024;
     let t0 = std::time::Instant::now();
 
@@ -4200,10 +4477,25 @@ async fn stream_handler(
                 start.is_empty() || start == "0"
             })
             .unwrap_or(false);
+    let cached_hit = final_path.exists();
     eprintln!(
-        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral}",
-        final_path.exists()
+        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={cached_hit} ephemeral={ephemeral}"
     );
+    // Label "cache" only for a *real* prior-session hit: file already on
+    // disk and not written in the last few seconds. Right after yt-dlp /
+    // WEB_REMIX finishes, WebKit fires Range probes that would otherwise
+    // spam "cache" and overwrite the UI with the wrong method.
+    if cached_hit {
+        let freshly_written = std::fs::metadata(&final_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() < 8)
+            .unwrap_or(false);
+        if !freshly_written {
+            emit_stream_method(&srv.app, &srv.method_log, &video_id, "cache", "disk hit", 0);
+        }
+    }
 
     if !final_path.exists() {
         let state = {
@@ -4228,15 +4520,16 @@ async fn stream_handler(
             }
         };
 
-        // Bounded wait — 120 s is generous for any single track; if
-        // the downloader is wedged past that, fail fast rather than hang
-        // the audio element forever.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        // Bounded wait for *first* playable bytes. Progressive WebM
+        // usually starts well under a minute; full-file m4a for a long
+        // mix can take longer — 10 min ceiling, not 2.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
         let mut progressive_ok = false;
         while !state.complete.load(Ordering::Acquire) {
             if tokio::time::Instant::now() >= deadline {
-                eprintln!("[stream] {video_id}: TIMEOUT after 120s");
-                return (StatusCode::GATEWAY_TIMEOUT, "download timeout").into_response();
+                eprintln!("[stream] {video_id}: TIMEOUT after 600s");
+                return (StatusCode::GATEWAY_TIMEOUT, "download timeout")
+                    .into_response();
             }
             if progressive_range_ok {
                 if let Ok(meta) = tokio::fs::metadata(&part_path).await {
@@ -4259,6 +4552,32 @@ async fn stream_handler(
                 "[stream] {video_id}: progressive start after {:.2}s (≥{START_BYTES} webm bytes)",
                 t0.elapsed().as_secs_f32()
             );
+            // Keep the method chip on the live resolver (not "cache") while
+            // bytes are still landing — detail "streaming" is treated as
+            // definitive by the frontend guard.
+            let progressive_method = srv
+                .method_log
+                .try_lock()
+                .ok()
+                .and_then(|map| {
+                    map.get(&video_id).map(|(prev, _)| {
+                        prev.split(':')
+                            .next()
+                            .filter(|m| *m != "cache" && *m != "failed")
+                            .unwrap_or("web_remix")
+                            .to_string()
+                    })
+                });
+            if let Some(method) = progressive_method {
+                emit_stream_method(
+                    &srv.app,
+                    &srv.method_log,
+                    &video_id,
+                    &method,
+                    "streaming",
+                    t0.elapsed().as_millis(),
+                );
+            }
             let mut resp = Response::new(progressive_part_body(
                 part_path,
                 final_path.clone(),
@@ -4307,7 +4626,8 @@ async fn stream_handler(
         .await
         .map(|r| r.into_response())
         .unwrap_or_else(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("serve: {e}")).into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("serve: {e}"))
+                .into_response()
         });
     if resp.status().is_success() || resp.status() == StatusCode::PARTIAL_CONTENT {
         resp.headers_mut().insert(
@@ -4387,8 +4707,10 @@ fn generate_stream_token() -> String {
 }
 
 async fn start_stream_server(
+    app_handle: tauri::AppHandle,
     port_state: Arc<Mutex<Option<u16>>>,
     token_state: Arc<Mutex<Option<String>>>,
+    pre_resolved: PreResolvedMap,
     cache_dir: PathBuf,
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
@@ -4428,7 +4750,10 @@ async fn start_stream_server(
         ephemeral_dir,
         cover_dir,
         downloads: Arc::new(Mutex::new(HashMap::new())),
+        pre_resolved,
         ytdlp_bin,
+        app: app_handle,
+        method_log: Arc::new(Mutex::new(HashMap::new())),
     };
 
     // Per-launch token as an unguessable path prefix. Baked into the base
@@ -4567,6 +4892,7 @@ pub fn run() {
     let state = StreamServerState::default();
     let port_handle = state.port.clone();
     let token_handle = state.token.clone();
+    let pre_resolved_handle = state.pre_resolved.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -4612,6 +4938,8 @@ pub fn run() {
             ensure_ytdlp,
             resolve_stream_ytdlp,
             get_stream_base_url,
+            register_stream_source,
+            log_stream_line,
             start_login,
             get_cookie_header,
             get_auth_context,
@@ -4696,6 +5024,7 @@ pub fn run() {
             );
             let port = port_handle.clone();
             let token = token_handle.clone();
+            let pre_resolved = pre_resolved_handle.clone();
             // User-chosen cache root (Settings → Storage) or the OS
             // default. Captured once and exposed as managed state so
             // every cache-path computation matches the directories the
@@ -4725,7 +5054,7 @@ pub fn run() {
                 // Drop zombie jars / dangling active after a partial sign-out.
                 heal_accounts_state(&handle).await;
                 cleanup_login_artifacts(&handle).await;
-                start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
+                start_stream_server(handle.clone(), port, token, pre_resolved, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
                     .await;
             });
             // Subscribe to resume-from-sleep before the loop starts, so a
