@@ -9,10 +9,11 @@
 
 ## Плеер
 
+- **Локально (0.4.3):** playback = **WEB_REMIX only** (cookies + SAPISIDHASH / youtubei decipher → `register_stream_source`). ANDROID_VR и yt-dlp **не** вызываются на hot path (см. `spawn_downloader` + `src/lib/innertube/stream-resolve.ts`). Диск-кэш (`*.webm`) отдаётся сразу через ServeFile.
 - Сохранять последний трек и playhead, восстанавливать их после перезапуска (`ameenalasady`, `5510d22`).
 - Восстанавливать последнюю страницу и scroll position (`ameenalasady`, `f41d57f`).
 - Исправить двойную длительность некоторых потоков на macOS и некорректный seek до загрузки metadata.
-- Добавить fallback между yt-dlp clients (`android_vr`, `ios`) при DRM/403 и fallback с video на audio.
+- ~~Добавить fallback между yt-dlp clients~~ — не актуально при WEB_REMIX-only; re-enable yt-dlp только из git history при крайней необходимости.
 - Сделать Song/Video настоящим переключением audio/video stream, включая отдельный video cache.
 - Осторожно пропускать длинные пустые outro в extended uploads.
 - Добавить полноэкранный плеер с крупной обложкой, lyrics, ambient-фоном и accent color.

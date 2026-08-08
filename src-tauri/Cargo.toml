@@ -42,12 +42,15 @@ tauri-plugin-http = { version = "2", default-features = false, features = [
 ] }
 tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
-reqwest = { version = "0.12", default-features = false, features = ["native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
 urlencoding = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "io-util", "process", "sync", "net"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 tower = "0.5"
+# Progressive stream body while yt-dlp is still writing the .part file.
+bytes = "1"
+futures-util = "0.3"
 cookie = "0.18"
 time = "0.3"
 tauri-plugin-updater = "2.10.1"
@@ -109,10 +112,11 @@ windows = { version = "0.61", features = [
 resvg = { version = "0.48.1", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-# Cookie jars remain files in app data, but their random AES key lives in the
-# native credential store: Secret Service on Linux and Keychain on macOS.
+# Cookie jars are AES-GCM sealed with a file-backed key in app data
+# (mode 0600). No Keychain / Secret Service — ad-hoc macOS rebuilds get
+# a new code signature and Keychain ACLs would deny the binary and pop
+# a permission dialog on every launch.
 aes-gcm = "0.10"
-keyring = "4.1.5"
 rand = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -120,6 +124,13 @@ rand = "0.8"
 # does not expose. Keep this pinned to the version already used by wry so
 # `PlatformWebview::inner()` returns the same type.
 webkit2gtk = "=2.0.2"
+
+# macOS: attach extra MPRemoteCommandCenter skip handlers (public MediaPlayer
+# API — no Accessibility). Versions aligned with souvlaki's macOS deps.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+cocoa = "0.24"
+block = "0.1"
 
 [dev-dependencies]
 # ServiceExt::oneshot for the stream-server routing test.

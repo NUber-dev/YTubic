@@ -33,6 +33,29 @@ function setup(partial: Partial<PlaybackState>): void {
   });
 }
 
+describe("playback setPlaybackRate()", () => {
+  beforeEach(() => setup({}));
+
+  it("accepts discrete rates and rejects unknowns", () => {
+    const store = usePlaybackStore.getState();
+    store.setPlaybackRate(0.5);
+    expect(usePlaybackStore.getState().playbackRate).toBe(0.5);
+    store.setPlaybackRate(1.25);
+    expect(usePlaybackStore.getState().playbackRate).toBe(1.25);
+    store.setPlaybackRate(1.5);
+    expect(usePlaybackStore.getState().playbackRate).toBe(1.5);
+    store.setPlaybackRate(2);
+    expect(usePlaybackStore.getState().playbackRate).toBe(2);
+    // Unknown rates are ignored so a stale floater event can't set 1.1×.
+    store.setPlaybackRate(1.1 as never);
+    expect(usePlaybackStore.getState().playbackRate).toBe(2);
+    store.setPlaybackRate(0.1);
+    expect(usePlaybackStore.getState().playbackRate).toBe(0.1);
+    store.setPlaybackRate(1);
+    expect(usePlaybackStore.getState().playbackRate).toBe(1);
+  });
+});
+
 describe("playback next()", () => {
   beforeEach(() => setup({}));
 

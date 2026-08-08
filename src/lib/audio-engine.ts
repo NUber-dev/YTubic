@@ -9,7 +9,7 @@ import type { ShelfItem } from "@/lib/innertube/types";
 import { getLikedIdsSet } from "@/components/shared/like-buttons";
 import { toggleLiked } from "@/lib/like-actions";
 import { fetchRadio, fetchWatchQueueContinuation } from "@/lib/innertube/radio";
-import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
+import { saveTrackMeta, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 import { usePremiumStore } from "@/lib/store/premium";
 import { useSettingsStore } from "@/lib/store/settings";
@@ -18,11 +18,18 @@ import { resolveStreamId, useTrackSourceStore } from "@/lib/store/track-source";
 import { pickThumbnail } from "@/components/shared/thumbnail";
 
 /**
- * AudioEngine binds the playback store to a singleton HTMLAudioElement and
- * drives native media controls from Rust via souvlaki (SMTC, MPRIS, and macOS
- * Now Playing; see src-tauri/src/media.rs). The webview media session stays
- * disabled on Windows because it belongs to WebView2 and appears as an
- * "Unknown app" duplicate.
+ * AudioEngine binds the playback store to a singleton HTMLAudioElement
+ * and drives OS media controls.
+ *
+ * - Windows: SMTC + hardware keys via souvlaki in Rust (see media effects and
+ *   src-tauri/src/media.rs). The webview Media Session is disabled on WebView2
+ *   so we don't get a competing "Unknown app" tile from msedgewebview2.exe.
+ * - Linux: MPRIS via souvlaki.
+ * - macOS: WKWebView claims the hardware media keys once HTML <audio> is
+ *   playing. F8 play/pause reaches the element directly; F7/F9 (previous/next,
+ *   labeled rewind/fast-forward on Mac keyboards) only fire if
+ *   `navigator.mediaSession` has action handlers. souvlaki still updates
+ *   MPNowPlayingInfoCenter for Control Center metadata.
  *
  * Mount this hook once, near the root. It owns the <audio> element's lifecycle.
  */
@@ -39,6 +46,11 @@ export function useAudioEngine() {
   // track that keeps failing falls through to the normal error/skip path
   // instead of looping. Cleared on a successful `playing`.
   const retriedTrackRef = useRef<string | null>(null);
+  // When > 0, ignore element `play`/`pause` → store sync. Used while we
+  // intentionally pause during track switches (store still wants
+  // `playing: true`) so media-key-driven pauses stay the only ones that
+  // flip the UI.
+  const suppressPlayPauseSyncRef = useRef(0);
   // Bumping this re-runs the resolve effect for the *current* track
   // without any of its real deps changing — used to re-fetch a fresh
   // stream URL after a transient failure (e.g. a googlevideo 403).
@@ -145,12 +157,27 @@ export function useAudioEngine() {
       // buffering — keep status as ready; don't flip to loading on every gap.
     };
 
+    // Keep the play/pause button in sync when the OS / WebKit toggles the
+    // <audio> element directly (macOS media keys / F8 often do this instead
+    // of going through our souvlaki `media-control` path). Intentional
+    // pauses during track resolve are suppressed via the ref above.
+    const onPause = () => {
+      if (suppressPlayPauseSyncRef.current > 0) return;
+      if (store().playing) store().setPlaying(false);
+    };
+    const onPlay = () => {
+      if (suppressPlayPauseSyncRef.current > 0) return;
+      if (!store().playing) store().setPlaying(true);
+    };
+
     el.addEventListener("timeupdate", onTimeUpdate);
     el.addEventListener("durationchange", onDurationChange);
     el.addEventListener("ended", onEnded);
     el.addEventListener("error", onError);
     el.addEventListener("playing", onPlaying);
     el.addEventListener("waiting", onWaiting);
+    el.addEventListener("pause", onPause);
+    el.addEventListener("play", onPlay);
     return () => {
       el.removeEventListener("timeupdate", onTimeUpdate);
       el.removeEventListener("durationchange", onDurationChange);
@@ -158,6 +185,8 @@ export function useAudioEngine() {
       el.removeEventListener("error", onError);
       el.removeEventListener("playing", onPlaying);
       el.removeEventListener("waiting", onWaiting);
+      el.removeEventListener("pause", onPause);
+      el.removeEventListener("play", onPlay);
     };
   }, []);
 
@@ -190,7 +219,17 @@ export function useAudioEngine() {
     // Stop the previous track immediately. Without this the old src keeps
     // playing through the streamUrlFor() round-trip (~50–500 ms), so the
     // user hears the tail of track A bleed into the start of track B.
+    // Suppress play/pause→store sync: we still want `playing: true` so the
+    // new track auto-resumes once its src is ready. Hold the suppress for
+    // a short macrotask window — `pause` may fire async after `el.pause()`.
+    suppressPlayPauseSyncRef.current += 1;
     el.pause();
+    window.setTimeout(() => {
+      suppressPlayPauseSyncRef.current = Math.max(
+        0,
+        suppressPlayPauseSyncRef.current - 1,
+      );
+    }, 100);
     if (!streamVideoId) {
       el.removeAttribute("src");
       el.load();
@@ -237,10 +276,9 @@ export function useAudioEngine() {
       );
     }
 
-    // Playback goes through our local streaming HTTP server. It spawns
-    // yt-dlp and pipes the audio bytes progressively so playback starts
-    // as soon as the first chunk lands (typically ~200ms after the
-    // yt-dlp subprocess starts emitting bytes).
+    // Playback goes through our local streaming HTTP server. The frontend
+    // resolves a WEB_REMIX googlevideo URL (cookies + decipher), registers
+    // it with Rust, then streams progressively from disk/cache — no yt-dlp.
     streamUrlFor(streamVideoId)
       .then((src) => {
         if (token !== resolveTokenRef.current) return;
@@ -322,6 +360,16 @@ export function useAudioEngine() {
     el.muted = muted;
   }, [volume, muted]);
 
+  // Playback speed follow store. HTMLAudioElement keeps the last rate
+  // across src swaps, but we still re-apply on every change so a
+  // rehydrated rate (or floating-window action) lands immediately.
+  const playbackRate = usePlaybackStore((s) => s.playbackRate);
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.playbackRate = playbackRate;
+  }, [playbackRate]);
+
   // Handle seek requests.
   const pendingSeek = usePlaybackStore((s) => s.pendingSeek);
   useEffect(() => {
@@ -346,11 +394,113 @@ export function useAudioEngine() {
     }
   }, [pendingSeek]);
 
-  // OS media controls are driven from Rust via souvlaki, not
-  // navigator.mediaSession — the webview's own media session shows up as
-  // "Unknown app" because it belongs to the WebView2 child process. Metadata /
-  // state is pushed by the media_update effect lower down; buttons come back
-  // via the media-control listener. See src-tauri/src/media.rs.
+  // Media-key actions can arrive from Media Session and/or souvlaki at once
+  // on macOS. Debounce prev/next so a single physical keypress can't skip
+  // two tracks. On Windows, OS controls are driven from Rust via souvlaki
+  // (not navigator.mediaSession — that shows up as "Unknown app" on WebView2).
+  const lastSkipAtRef = useRef(0);
+  const runSkip = (dir: "prev" | "next") => {
+    const now = performance.now();
+    if (now - lastSkipAtRef.current < 250) return;
+    lastSkipAtRef.current = now;
+    const store = usePlaybackStore.getState();
+    if (dir === "prev") store.prev();
+    else store.next();
+  };
+
+  // macOS media keys (F7 previous / F9 next): WKWebView routes hardware media
+  // keys through the page Media Session while <audio> is active. Without these
+  // handlers F7/F9 often do nothing (F8 still works by toggling the element).
+  // On Windows MediaSessionService is disabled and souvlaki owns the keys —
+  // registering here is a no-op there and does not recreate the SMTC tile.
+  // Re-bind when the current track changes: WebKit sometimes drops handlers
+  // across source swaps on the <audio> element.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+      return;
+    }
+    const ms = navigator.mediaSession;
+    const store = () => usePlaybackStore.getState();
+
+    const bind = (
+      action: MediaSessionAction,
+      handler: MediaSessionActionHandler,
+    ) => {
+      try {
+        ms.setActionHandler(action, handler);
+      } catch {
+        // Not every action is supported on every engine.
+      }
+    };
+
+    bind("play", () => store().setPlaying(true));
+    bind("pause", () => store().setPlaying(false));
+    bind("previoustrack", () => runSkip("prev"));
+    bind("nexttrack", () => runSkip("next"));
+    bind("seekto", (details) => {
+      if (typeof details.seekTime === "number") {
+        store().seek(details.seekTime);
+      }
+    });
+    // Music-player semantics for keyboard media keys: treat seek± as
+    // prev/next (restart / skip), not ±10s scrub.
+    bind("seekbackward", () => runSkip("prev"));
+    bind("seekforward", () => runSkip("next"));
+
+    return () => {
+      for (const action of [
+        "play",
+        "pause",
+        "previoustrack",
+        "nexttrack",
+        "seekto",
+        "seekbackward",
+        "seekforward",
+      ] as const) {
+        try {
+          ms.setActionHandler(action, null);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rebind on track identity
+  }, [track?.videoId]);
+
+  // Fallback when F7/F9 are delivered as normal function keys (System Settings
+  // → Keyboard → "Use F1, F2, etc. keys as standard function keys") or as the
+  // MediaTrack* key values some engines emit.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === "F7" || e.key === "MediaTrackPrevious") {
+        e.preventDefault();
+        runSkip("prev");
+      } else if (e.key === "F9" || e.key === "MediaTrackNext") {
+        e.preventDefault();
+        runSkip("next");
+      } else if (e.key === "MediaPlayPause" || e.key === "F8") {
+        // F8 usually already toggles <audio>; only handle the explicit media
+        // key name so we don't fight WebKit on F8.
+        if (e.key === "MediaPlayPause") {
+          e.preventDefault();
+          usePlaybackStore.getState().toggle();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Tray menu commands come via a Tauri event. `cancelled` flag
   // protects against StrictMode's mount→unmount→mount race that
@@ -374,10 +524,10 @@ export function useAudioEngine() {
     };
   }, []);
 
-  // System media-control / media-key button presses arrive from Rust as a
-  // `media-control` event. Drive the store the same way the old
-  // navigator.mediaSession action handlers did. `cancelled` guards against
-  // StrictMode's mount→unmount→mount double-listen, like the tray listener.
+  // SMTC / media-key button presses arrive from Rust (souvlaki /
+  // MPRemoteCommandCenter) as a `media-control` event. `cancelled` guards
+  // against StrictMode's mount→unmount→mount double-listen, like the tray
+  // listener.
   useEffect(() => {
     let cancelled = false;
     let dispose: (() => void) | undefined;
@@ -395,10 +545,10 @@ export function useAudioEngine() {
           store.toggle();
           break;
         case "next":
-          store.next();
+          runSkip("next");
           break;
         case "previous":
-          store.prev();
+          runSkip("prev");
           break;
         case "seek":
           if (typeof e.payload.position === "number")
@@ -436,39 +586,6 @@ export function useAudioEngine() {
       dispose?.();
     };
   }, [queryClient]);
-
-  // Prefetch the next queued track in the background while the current
-  // one plays. First-time plays take ~2s (yt-dlp resolve + first audio
-  // chunk); by the time the user hits "next" the file is cached on
-  // disk and playback starts instantly with full seek support.
-  const status = usePlaybackStore((s) => s.status);
-  const { nextVideoId } = usePlaybackStore(
-    useShallow((s) => ({
-      nextVideoId:
-        s.index >= 0 && s.index + 1 < s.queue.length
-          ? s.queue[s.index + 1].videoId
-          : undefined,
-    })),
-  );
-  // Substitute via source-prefs for the prefetch too — otherwise we'd
-  // warm the cache for the wrong stream when the user has switched the
-  // upcoming track to its video version.
-  const nextStreamVideoId = useTrackSourceStore((s) =>
-    nextVideoId ? resolveStreamId(nextVideoId, s.byVideoId) : undefined,
-  );
-  useEffect(() => {
-    if (status !== "ready") return;
-    if (!nextStreamVideoId) return;
-    void prefetchStream(nextStreamVideoId);
-    // Label the prefetched file too — same reasoning as the play path.
-    const st = usePlaybackStore.getState();
-    void saveTrackMeta(
-      nextStreamVideoId,
-      st.index >= 0 && st.index + 1 < st.queue.length
-        ? st.queue[st.index + 1]
-        : undefined,
-    );
-  }, [status, nextStreamVideoId]);
 
   // Auto-extend the queue with radio tracks when we're near the end, so
   // playback continues past the explicit queue.
@@ -547,12 +664,14 @@ export function useAudioEngine() {
       });
   }, [autoRadio, queueContinuation, qIndex, qLen, seedVideoId]);
 
-  // Push metadata + playback state to the OS media controls. Native backends
-  // interpolate the scrubber between pushes while the state is
-  // Playing, so we don't push on every timeupdate — just on track / play-state
-  // / duration change, plus a light 2s refresh while playing to correct drift
-  // and reflect seeks. Live values are read imperatively so this OS sync never
-  // re-triggers the resolve / playback effects above.
+  // Push metadata + playback state to the OS media controls (Windows SMTC /
+  // macOS Now Playing via souvlaki) and keep the page Media Session metadata
+  // in sync so WKWebView keeps advertising previous/next for F7/F9. Windows
+  // interpolates the scrubber between pushes while Playing, so we don't push
+  // on every timeupdate — just on track / play-state / duration change, plus a
+  // light 2s refresh while playing to correct drift and reflect seeks. Live
+  // values are read imperatively so this OS sync never re-triggers the resolve
+  // / playback effects above.
   const duration = usePlaybackStore((s) => s.duration);
   const shuffle = usePlaybackStore((s) => s.shuffle);
   const repeat = usePlaybackStore((s) => s.repeat);
@@ -569,7 +688,7 @@ export function useAudioEngine() {
   }).data;
   const liked = track ? getLikedIdsSet(likedSongs).has(track.videoId) : false;
   useEffect(() => {
-    const push = () => {
+    const pushOs = () => {
       const s = usePlaybackStore.getState();
       const t = s.index >= 0 ? s.queue[s.index] : undefined;
       if (!t) {
@@ -591,11 +710,51 @@ export function useAudioEngine() {
         },
       }).catch(() => {});
     };
-    push();
+
+    // Media Session metadata/state: only on dep change (not the 2s tick).
+    // Action handlers are registered once above; this keeps the session
+    // "live" so macOS keeps routing F7/F9 here while audio is playing.
+    if ("mediaSession" in navigator) {
+      try {
+        const s = usePlaybackStore.getState();
+        const t = s.index >= 0 ? s.queue[s.index] : undefined;
+        if (!t) {
+          navigator.mediaSession.metadata = null;
+          navigator.mediaSession.playbackState = "none";
+        } else {
+          const thumbnail = pickThumbnail(t.thumbnails, 512) ?? "";
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: t.title,
+            artist: buildArtistLabel(t),
+            album: t.album || undefined,
+            artwork: thumbnail
+              ? [{ src: thumbnail, sizes: "512x512", type: "image/jpeg" }]
+              : undefined,
+          });
+          navigator.mediaSession.playbackState = s.playing
+            ? "playing"
+            : "paused";
+          const dur = Number.isFinite(s.duration) ? s.duration : 0;
+          if (dur > 0) {
+            navigator.mediaSession.setPositionState?.({
+              duration: dur,
+              playbackRate: 1,
+              position: Math.min(Math.max(0, s.position), dur),
+            });
+          }
+        }
+      } catch {
+        /* ignore unsupported engines */
+      }
+    }
+
+    pushOs();
     if (!playing) return;
-    const id = window.setInterval(push, 2000);
+    const id = window.setInterval(pushOs, 2000);
     return () => window.clearInterval(id);
-  }, [track, playing, duration, shuffle, repeat, liked]);
+    // playbackRate is included so a speed change re-pushes OS metadata while
+    // playing (souvlaki does not re-read the element rate on its own).
+  }, [track, playing, duration, shuffle, repeat, liked, playbackRate]);
 
   // Discord Rich Presence mirrors the same metadata, but pushed only on
   // track / play-state / duration change — never the 2s position refresh
@@ -616,12 +775,14 @@ export function useAudioEngine() {
     const dur = Number.isFinite(s.duration) ? s.duration : 0;
     // Timestamps (hence the progress bar) only while actually playing: Discord
     // can't freeze a bar, so paused shows none rather than a wrong one. Unix
-    // milliseconds, per Discord's Activity spec.
+    // milliseconds, per Discord's Activity spec. Scale by playbackRate so the
+    // bar tracks wall-clock remaining time at 0.5× / 2× etc.
     let startMs: number | null = null;
     let endMs: number | null = null;
     if (s.playing && dur > 0) {
-      startMs = Math.round(Date.now() - s.position * 1000);
-      endMs = Math.round(startMs + dur * 1000);
+      const rate = Math.max(0.01, s.playbackRate);
+      startMs = Math.round(Date.now() - (s.position / rate) * 1000);
+      endMs = Math.round(startMs + (dur / rate) * 1000);
     }
     void invoke("discord_update", {
       title: t.title,
@@ -631,7 +792,7 @@ export function useAudioEngine() {
       startMs,
       endMs,
     }).catch(() => {});
-  }, [track, playing, duration, discordRp]);
+  }, [track, playing, duration, playbackRate, discordRp]);
 }
 
 function buildArtistLabel(track: QueueTrack): string {
