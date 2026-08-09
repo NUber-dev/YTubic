@@ -110,6 +110,8 @@ describe("issue 62", () => {
     });
     expect(heart(container).getAttribute("aria-pressed")).toBe("true");
 
+    // Complete the snapshot that started before runLike. Its stale result
+    // must not overwrite the successful mutation's cache update.
     await act(async () => {
       pendingLikedSongs.resolve([]);
       await pendingLikedSongs.promise;
