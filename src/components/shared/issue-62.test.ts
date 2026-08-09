@@ -10,11 +10,27 @@ const pendingLikedSongs = vi.hoisted(() => {
   const promise = new Promise<unknown[]>((resolve) => {
     resolvePromise = resolve;
   });
-  return { promise, resolve: resolvePromise };
+  return { calls: 0, promise, resolve: resolvePromise };
 });
 
 vi.mock("@/lib/innertube/library", () => ({
-  fetchLikedSongs: vi.fn(() => pendingLikedSongs.promise),
+  fetchLikedSongs: vi.fn(() => {
+    if (pendingLikedSongs.calls++ === 0) return pendingLikedSongs.promise;
+    return Promise.resolve([
+      {
+        id: "issue-62-track",
+        kind: "song",
+        title: "Issue 62",
+        thumbnails: [],
+      },
+      {
+        id: "existing-liked-track",
+        kind: "song",
+        title: "Already liked",
+        thumbnails: [],
+      },
+    ]);
+  }),
 }));
 
 vi.mock("@/lib/innertube/mutations", () => ({
@@ -41,6 +57,7 @@ vi.mock("sonner", () => ({
 
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { useTrackMenuController } from "@/components/shared/track-context-menu";
+import { fetchLikedSongs } from "@/lib/innertube/library";
 import type { ShelfItem } from "@/lib/innertube/types";
 
 const item: ShelfItem = {
@@ -119,5 +136,11 @@ describe("issue 62", () => {
     });
 
     expect(heart(container).getAttribute("aria-pressed")).toBe("true");
+    expect(fetchLikedSongs).toHaveBeenCalledTimes(2);
+    expect(
+      queryClient
+        .getQueryData<ShelfItem[]>(["liked-songs"])
+        ?.map((track) => track.id),
+    ).toEqual(["issue-62-track", "existing-liked-track"]);
   });
 });
