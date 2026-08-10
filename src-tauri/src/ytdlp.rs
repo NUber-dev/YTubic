@@ -138,7 +138,10 @@ pub async fn ensure(app: tauri::AppHandle) {
         // Before the update check, not after: the check can spend minutes
         // re-downloading, and warming is what the next play actually waits on.
         #[cfg(target_os = "macos")]
-        prewarm(&managed);
+        {
+            prewarm(&managed);
+            sweep_legacy_onefile(&managed).await;
+        }
         maybe_self_update(&managed).await;
         return;
     }
@@ -158,7 +161,10 @@ pub async fn ensure(app: tauri::AppHandle) {
             eprintln!("[ytdlp] downloaded managed binary to {managed:?}");
             touch_update_stamp(&managed);
             #[cfg(target_os = "macos")]
-            prewarm(&managed);
+            {
+                prewarm(&managed);
+                sweep_legacy_onefile(&managed).await;
+            }
             emit_state(&app, "ready", None);
         }
         Err(e) => {
@@ -328,6 +334,27 @@ async fn extract_bundle(zip: &Path, dest: &Path) -> Result<(), String> {
 /// the background at launch moves it to a moment nobody is waiting on.
 /// When the cache is already warm this returns in a fraction of a second,
 /// so it is cheap enough to do on every launch.
+/// Delete the single-file copy that earlier versions installed.
+///
+/// An install predating the directory bundle leaves a ~36 MB `bin/yt-dlp`
+/// that nothing reads any more. Swept only once the bundle is actually in
+/// place, so an install that hasn't migrated yet keeps something runnable.
+#[cfg(target_os = "macos")]
+async fn sweep_legacy_onefile(managed: &Path) {
+    if !managed.exists() {
+        return;
+    }
+    // Can't collide with the bundle: that directory is `yt-dlp_macos`.
+    let legacy = install_root(managed).join("yt-dlp");
+    if tokio::fs::metadata(&legacy).await.is_err() {
+        return;
+    }
+    match tokio::fs::remove_file(&legacy).await {
+        Ok(()) => eprintln!("[ytdlp] removed the superseded single-file copy"),
+        Err(e) => eprintln!("[ytdlp] could not remove {legacy:?}: {e}"),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn prewarm(managed: &Path) {
     let managed = managed.to_path_buf();
