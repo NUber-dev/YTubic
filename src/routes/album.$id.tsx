@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertCircleIcon } from "lucide-react";
 import { fetchAlbum } from "@/lib/innertube/album";
 import { EntityHeader } from "@/components/shared/entity-header";
+import { AlbumMoreMenu } from "@/components/shared/album-menu";
 import { TrackList } from "@/components/shared/track-list";
 import { JumpToCurrentButton } from "@/components/shared/jump-to-current-button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -92,6 +93,7 @@ function AlbumPageView() {
             usePlaybackStore.getState().setShuffle(true);
           }
         }}
+        actions={<AlbumMoreMenu album={data} />}
       />
       {subtitleParts.length > 0 ? (
         <p className="-mt-4 flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
