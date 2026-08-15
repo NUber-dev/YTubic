@@ -143,6 +143,84 @@ struct State {
     dpi: u32,
     /// The `TaskbarButtonCreated` registered message id.
     button_created_msg: u32,
+    /// A COM call is in flight: `list` / `icons` are on loan and the message
+    /// queue is being pumped. See the re-entrancy note below.
+    busy: bool,
+    /// What re-entrant messages asked for while `busy`; replayed by `leave`.
+    pending: Pending,
+}
+
+impl State {
+    fn flags(&self) -> Flags {
+        Flags {
+            playing: self.playing,
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+            liked: self.liked,
+        }
+    }
+}
+
+/// The button states, snapshotted so the toolbar can be built without keeping
+/// `STATE` borrowed.
+#[derive(Clone, Copy)]
+struct Flags {
+    playing: bool,
+    shuffle: bool,
+    repeat: Repeat,
+    liked: bool,
+}
+
+#[derive(Default)]
+struct Pending {
+    attach: bool,
+    refresh: bool,
+    sync: bool,
+}
+
+// ── Re-entrancy ───────────────────────────────────────────────────────────────
+//
+// `ITaskbarList3` lives in Explorer's apartment, so every call on it is a
+// cross-apartment COM call — and those pump the message queue while they wait.
+// Our own window proc therefore runs *inside* `ThumbBarAddButtons`, which is
+// how an earlier version of this file managed to re-enter a `RefCell` it was
+// already holding mutably and abort the process on startup. The rules:
+//   * `STATE` is borrowed only for as long as it takes to read or write
+//     fields, never across a COM call. Whatever the call needs (`list`,
+//     `icons`) is taken out first and put back after.
+//   * `busy` marks that window. Work arriving inside it is recorded in
+//     `pending` and replayed by `leave` rather than run against loaned state.
+//   * Every borrow is a `try_borrow_mut`, so a path this note missed degrades
+//     into a dropped toolbar update instead of a crash.
+
+/// Borrow the state for a moment. `None` if it is not initialised, or if we
+/// somehow re-entered a borrow that is already open.
+fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    STATE.with(|s| {
+        s.try_borrow_mut()
+            .ok()
+            .and_then(|mut slot| slot.as_mut().map(f))
+    })
+}
+
+/// Put the loaned state back, release the guard, and replay whatever arrived
+/// while the COM call was pumping messages.
+fn leave(f: impl FnOnce(&mut State)) {
+    let pending = with_state(|st| {
+        f(st);
+        st.busy = false;
+        std::mem::take(&mut st.pending)
+    })
+    .unwrap_or_default();
+    if pending.refresh {
+        refresh_icons(None);
+    }
+    if pending.attach {
+        attach();
+    }
+    if pending.sync {
+        sync();
+    }
 }
 
 /// Create the thumbnail toolbar for the main window. Main-thread only (called
@@ -175,6 +253,8 @@ pub fn init(app: &AppHandle) {
             light,
             dpi,
             button_created_msg,
+            busy: false,
+            pending: Pending::default(),
         })
     });
 
@@ -192,118 +272,169 @@ pub fn init(app: &AppHandle) {
 /// Mirror the player's state onto the toolbar. Main-thread only; called from
 /// media.rs, which already marshals onto the main thread.
 pub fn set_state(playing: bool, shuffle: bool, repeat: Repeat, liked: bool) {
-    STATE.with(|s| {
-        let mut state = s.borrow_mut();
-        let Some(state) = state.as_mut() else { return };
-        if state.playing == playing
-            && state.shuffle == shuffle
-            && state.repeat == repeat
-            && state.liked == liked
+    let changed = with_state(|st| {
+        if st.playing == playing
+            && st.shuffle == shuffle
+            && st.repeat == repeat
+            && st.liked == liked
         {
-            return;
+            return false;
         }
-        state.playing = playing;
-        state.shuffle = shuffle;
-        state.repeat = repeat;
-        state.liked = liked;
-        update(state);
-    });
+        st.playing = playing;
+        st.shuffle = shuffle;
+        st.repeat = repeat;
+        st.liked = liked;
+        true
+    })
+    .unwrap_or(false);
+    if changed {
+        sync();
+    }
 }
 
 /// Create (or recreate) the taskbar list object and attach the buttons.
 fn attach() {
-    STATE.with(|s| {
-        let mut state = s.borrow_mut();
-        let Some(state) = state.as_mut() else { return };
-        if state.attached {
-            return;
+    let taken = with_state(|st| {
+        if st.busy {
+            st.pending.attach = true;
+            return None;
         }
-        // A fresh instance per attach: after an Explorer restart the previous
-        // one is bound to a taskbar that no longer exists.
-        let list: ITaskbarList3 = match unsafe {
-            CoCreateInstance(&TaskbarList as *const GUID, None, CLSCTX_INPROC_SERVER)
-        } {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("[thumbbar] CoCreateInstance(TaskbarList) failed: {e}");
-                return;
+        if st.attached {
+            return None;
+        }
+        st.busy = true;
+        Some((st.hwnd, st.light, st.dpi, st.flags(), st.icons.take()))
+    })
+    .flatten();
+    let Some((hwnd, light, dpi, flags, icons)) = taken else {
+        return;
+    };
+
+    let icons = icons.or_else(|| build_icons(light, dpi));
+    let list = icons.as_ref().and_then(|i| add_buttons(hwnd, i, flags));
+    if list.is_some() {
+        eprintln!("[thumbbar] toolbar attached ({}px icons)", 16 * dpi / 96);
+    }
+
+    leave(|st| {
+        st.icons = icons;
+        // A `TaskbarButtonCreated` that landed mid-call means this toolbar is
+        // already stale; drop it and let the replayed attach build another.
+        if !st.pending.attach {
+            if let Some(list) = list {
+                st.list = Some(list);
+                st.attached = true;
             }
-        };
-        if let Err(e) = unsafe { list.HrInit() } {
-            eprintln!("[thumbbar] HrInit failed: {e}");
-            return;
-        }
-        if state.icons.is_none() {
-            state.icons = build_icons(state.light, state.dpi);
-        }
-        let Some(icons) = state.icons.as_ref() else {
-            return;
-        };
-        let buttons = buttons(icons, state);
-        // ThumbBarAddButtons is one-shot per window per taskbar-list instance;
-        // everything after this goes through ThumbBarUpdateButtons.
-        match unsafe { list.ThumbBarAddButtons(state.hwnd, &buttons) } {
-            Ok(()) => {
-                state.list = Some(list);
-                state.attached = true;
-                eprintln!(
-                    "[thumbbar] toolbar attached ({}px icons)",
-                    16 * state.dpi / 96
-                );
-            }
-            Err(e) => eprintln!("[thumbbar] ThumbBarAddButtons failed: {e}"),
         }
     });
 }
 
-/// Push the current icons / flags to an already-attached toolbar.
-fn update(state: &mut State) {
-    if !state.attached {
-        return;
+/// The COM half of `attach`, kept free of any `STATE` borrow.
+fn add_buttons(hwnd: HWND, icons: &Icons, flags: Flags) -> Option<ITaskbarList3> {
+    // A fresh instance per attach: after an Explorer restart the previous one
+    // is bound to a taskbar that no longer exists.
+    let list: ITaskbarList3 =
+        match unsafe { CoCreateInstance(&TaskbarList as *const GUID, None, CLSCTX_INPROC_SERVER) } {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[thumbbar] CoCreateInstance(TaskbarList) failed: {e}");
+                return None;
+            }
+        };
+    if let Err(e) = unsafe { list.HrInit() } {
+        eprintln!("[thumbbar] HrInit failed: {e}");
+        return None;
     }
-    let (Some(list), Some(icons)) = (state.list.as_ref(), state.icons.as_ref()) else {
+    let buttons = buttons(icons, flags);
+    // ThumbBarAddButtons is one-shot per window per taskbar-list instance;
+    // everything after this goes through ThumbBarUpdateButtons.
+    if let Err(e) = unsafe { list.ThumbBarAddButtons(hwnd, &buttons) } {
+        eprintln!("[thumbbar] ThumbBarAddButtons failed: {e}");
+        return None;
+    }
+    Some(list)
+}
+
+/// Push the current icons / flags to an already-attached toolbar.
+fn sync() {
+    let taken = with_state(|st| {
+        if st.busy {
+            st.pending.sync = true;
+            return None;
+        }
+        if !st.attached {
+            return None;
+        }
+        let list = st.list.clone()?;
+        let icons = st.icons.take()?;
+        st.busy = true;
+        Some((st.hwnd, list, icons, st.flags()))
+    })
+    .flatten();
+    let Some((hwnd, list, icons, flags)) = taken else {
         return;
     };
-    let buttons = buttons(icons, state);
-    if let Err(e) = unsafe { list.ThumbBarUpdateButtons(state.hwnd, &buttons) } {
+
+    let buttons = buttons(&icons, flags);
+    if let Err(e) = unsafe { list.ThumbBarUpdateButtons(hwnd, &buttons) } {
         eprintln!("[thumbbar] ThumbBarUpdateButtons failed: {e}");
     }
+
+    leave(|st| st.icons = Some(icons));
 }
 
 /// Redraw the glyphs when the taskbar theme or the window DPI changed. The old
 /// icons stay alive until the toolbar has been pointed at the new ones.
-fn refresh_icons(state: &mut State, dpi_override: Option<u32>) {
+fn refresh_icons(dpi_override: Option<u32>) {
     let light = taskbar_is_light();
-    // During WM_DPICHANGED the window still reports the old DPI, so the new one
-    // comes from the message's wParam instead.
-    let dpi = dpi_override
-        .unwrap_or_else(|| unsafe { GetDpiForWindow(state.hwnd) })
-        .max(96);
-    if light == state.light && dpi == state.dpi && state.icons.is_some() {
+    let wanted = with_state(|st| {
+        if st.busy {
+            st.pending.refresh = true;
+            return None;
+        }
+        // During WM_DPICHANGED the window still reports the old DPI, so the new
+        // one comes from the message's wParam instead.
+        let dpi = dpi_override
+            .unwrap_or_else(|| unsafe { GetDpiForWindow(st.hwnd) })
+            .max(96);
+        if light == st.light && dpi == st.dpi && st.icons.is_some() {
+            return None;
+        }
+        st.light = light;
+        st.dpi = dpi;
+        Some(dpi)
+    })
+    .flatten();
+    let Some(dpi) = wanted else {
         return;
-    }
-    state.light = light;
-    state.dpi = dpi;
+    };
     let Some(fresh) = build_icons(light, dpi) else {
         return;
     };
-    let stale = state.icons.replace(fresh);
-    update(state);
+
+    let mut fresh = Some(fresh);
+    let stale = with_state(|st| st.icons.replace(fresh.take()?)).flatten();
+    if let Some(fresh) = fresh {
+        // The window went away between the two borrows; don't leak the icons.
+        fresh.destroy();
+        return;
+    }
+    sync();
     if let Some(stale) = stale {
         stale.destroy();
     }
 }
 
-fn buttons(icons: &Icons, state: &State) -> [THUMBBUTTON; 6] {
+fn buttons(icons: &Icons, flags: Flags) -> [THUMBBUTTON; 6] {
     [
         button(
             ID_SHUFFLE,
-            if state.shuffle {
+            if flags.shuffle {
                 icons.shuffle_on
             } else {
                 icons.shuffle_off
             },
-            if state.shuffle {
+            if flags.shuffle {
                 "Shuffle: on"
             } else {
                 "Shuffle: off"
@@ -312,22 +443,22 @@ fn buttons(icons: &Icons, state: &State) -> [THUMBBUTTON; 6] {
         button(ID_PREV, icons.prev, "Previous"),
         button(
             ID_PLAY,
-            if state.playing {
+            if flags.playing {
                 icons.pause
             } else {
                 icons.play
             },
-            if state.playing { "Pause" } else { "Play" },
+            if flags.playing { "Pause" } else { "Play" },
         ),
         button(ID_NEXT, icons.next, "Next"),
         button(
             ID_REPEAT,
-            match state.repeat {
+            match flags.repeat {
                 Repeat::Off => icons.repeat_off,
                 Repeat::All => icons.repeat_all,
                 Repeat::One => icons.repeat_one,
             },
-            match state.repeat {
+            match flags.repeat {
                 Repeat::Off => "Repeat: off",
                 Repeat::All => "Repeat: all",
                 Repeat::One => "Repeat: one",
@@ -335,12 +466,12 @@ fn buttons(icons: &Icons, state: &State) -> [THUMBBUTTON; 6] {
         ),
         button(
             ID_LIKE,
-            if state.liked {
+            if flags.liked {
                 icons.like_on
             } else {
                 icons.like_off
             },
-            if state.liked {
+            if flags.liked {
                 "Remove from liked"
             } else {
                 "Add to liked"
@@ -374,16 +505,18 @@ unsafe extern "system" fn subclass_proc(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
-    let created_msg = STATE.with(|s| s.borrow().as_ref().map(|st| st.button_created_msg));
+    // This runs re-entrantly inside our own COM calls (see the re-entrancy
+    // note above), and a panic cannot unwind out of a window proc — it aborts
+    // the process. So every borrow here is fallible and every handler steps
+    // aside when a call is already in flight.
+    let created_msg = with_state(|st| st.button_created_msg);
 
     if Some(msg) == created_msg {
         // Sent when the taskbar button appears, and again after an Explorer
         // restart — in which case the previous toolbar is gone with it.
-        STATE.with(|s| {
-            if let Some(st) = s.borrow_mut().as_mut() {
-                st.attached = false;
-                st.list = None;
-            }
+        with_state(|st| {
+            st.attached = false;
+            st.list = None;
         });
         attach();
     } else if msg == WM_COMMAND && (wparam.0 >> 16) as u32 & 0xffff == THBN_CLICKED {
@@ -397,33 +530,29 @@ unsafe extern "system" fn subclass_proc(
             _ => None,
         };
         if let Some(action) = action {
-            STATE.with(|s| {
-                if let Some(st) = s.borrow().as_ref() {
-                    let _ = st
-                        .app
-                        .emit("media-control", serde_json::json!({ "action": action }));
-                }
+            with_state(|st| {
+                let _ = st
+                    .app
+                    .emit("media-control", serde_json::json!({ "action": action }));
             });
             return LRESULT(0);
         }
     } else if msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED || msg == WM_DPICHANGED {
         let dpi = (msg == WM_DPICHANGED).then(|| (wparam.0 as u32) & 0xffff);
-        STATE.with(|s| {
-            if let Some(st) = s.borrow_mut().as_mut() {
-                refresh_icons(st, dpi);
-            }
-        });
+        refresh_icons(dpi);
     } else if msg == WM_NCDESTROY {
         unsafe {
             let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
         }
-        STATE.with(|s| {
-            if let Some(st) = s.borrow_mut().take() {
-                if let Some(icons) = st.icons {
-                    icons.destroy();
-                }
-            }
+        let icons = STATE.with(|s| {
+            s.try_borrow_mut()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .and_then(|st| st.icons)
         });
+        if let Some(icons) = icons {
+            icons.destroy();
+        }
     }
 
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
