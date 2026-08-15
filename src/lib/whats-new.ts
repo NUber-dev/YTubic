@@ -55,6 +55,18 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.4",
+    date: "August 15, 2026",
+    summary: "Fix for a rare startup crash on Windows",
+    changes: [
+      {
+        type: "fixed",
+        title: "Startup crash on Windows",
+        text: "In rare cases the app failed to start and closed immediately after launch.",
+      },
+    ],
+  },
+  {
     version: "0.4.3",
     date: "August 2, 2026",
     summary: "Taskbar media controls and interface polish",
