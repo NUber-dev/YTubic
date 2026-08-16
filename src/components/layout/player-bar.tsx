@@ -16,10 +16,10 @@ import {
 } from "lucide-react";
 import { QueueBody, QueueToggleButton } from "@/components/layout/queue-panel";
 import {
-  LyricsBody,
   LyricsSourceButton,
   useLyricsView,
 } from "@/components/layout/lyrics-view";
+import { PlayerMediaPanel } from "@/components/layout/player-media-panel";
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
@@ -686,11 +686,11 @@ export function PlayerBar({
         </div>
       </div>
 
-            {/* Lyrics flow — fills the rest of the cover-branch flex
+            {/* Lyrics — fills the rest of the cover-branch flex
                 column. Lives inside the same motion.div as the cover
                 so the whole non-queue body crossfades as one unit. */}
             <div className="flex min-h-0 flex-1 flex-col px-3">
-              <LyricsBody state={lyricsState} />
+              <PlayerMediaPanel lyricsState={lyricsState} />
             </div>
           </motion.div>
         )}
