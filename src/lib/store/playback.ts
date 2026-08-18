@@ -36,6 +36,7 @@ export type PlaybackState = {
   error?: string;
   /** Resolved stream URL for the current track (set by AudioEngine). */
   streamUrl?: string;
+  streamResolveNonce: number;
 
   // Transport
   playing: boolean;
@@ -83,6 +84,7 @@ export type PlaybackState = {
   // Actions — status (used by AudioEngine)
   setStatus: (status: LoadStatus, error?: string) => void;
   setStreamUrl: (url?: string) => void;
+  reresolveStream: () => void;
   setPosition: (position: number) => void;
   setDuration: (duration: number) => void;
   seek: (seconds: number) => void;
@@ -175,6 +177,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   status: "idle",
   error: undefined,
   streamUrl: undefined,
+  streamResolveNonce: 0,
 
   playing: false,
   volume: 0.8,
@@ -432,6 +435,8 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
 
   setStatus: (status, error) => set({ status, error }),
   setStreamUrl: (streamUrl) => set({ streamUrl }),
+  reresolveStream: () =>
+    set((s) => ({ streamResolveNonce: s.streamResolveNonce + 1 })),
   setPosition: (position) => set({ position }),
   setDuration: (duration) => set({ duration }),
   seek: (seconds) =>

@@ -2684,8 +2684,9 @@ async fn set_cache_meta(
 /// state event fires; also serves as the retry path after a failed
 /// download. Idempotent — see `ytdlp::ensure`.
 #[tauri::command]
-async fn ensure_ytdlp(app: tauri::AppHandle) {
-    ytdlp::ensure(app).await;
+async fn ensure_ytdlp(app: tauri::AppHandle, channel: Option<String>) {
+    let nightly = channel.as_deref() == Some("nightly");
+    ytdlp::ensure(app, nightly).await;
 }
 
 /// Run yt-dlp to resolve a videoId into metadata JSON.
@@ -2703,7 +2704,7 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
         "--no-playlist",
         "--no-warnings",
         "--extractor-args",
-        "youtube:player_client=tv,android_vr",
+        "youtube:player_client=default",
         &url,
     ]);
     // Windows: a console-less GUI process spawning the console-subsystem
@@ -2741,8 +2742,8 @@ type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 // search, liked songs). We deliberately do NOT forward cookies to
 // yt-dlp: YouTube's bot-detection treats any authenticated yt-dlp
 // request as a bot and strips every real audio format, leaving only
-// storyboard thumbnails — so anonymous streaming via the android_vr/
-// ios/mweb clients actually works better than authenticated streaming.
+// storyboard thumbnails — so anonymous streaming via the default
+// client actually works better than authenticated streaming.
 #[derive(Clone)]
 struct StreamServer {
     /// Persistent cache. Tracks land here for Premium-authenticated
@@ -3102,7 +3103,7 @@ fn spawn_downloader(
             "--socket-timeout",
             "15",
             "--extractor-args",
-            "youtube:player_client=tv,android_vr",
+            "youtube:player_client=default",
             "-o",
             "-",
         ]);

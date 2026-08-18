@@ -1,11 +1,11 @@
 //! Managed yt-dlp binary lifecycle.
 //!
-//! End users don't have yt-dlp on PATH, so the app owns its copy: the
-//! official single-file release is downloaded into
-//! `<app-data>/bin/yt-dlp.exe` on first run and self-updated via
-//! `yt-dlp -U` on a 72-hour cadence. The managed copy is canonical —
-//! PATH is only a fallback for dev machines while the download hasn't
-//! happened (or failed).
+//! End users don't have yt-dlp on PATH, so the app owns its copy: each
+//! release channel's build is downloaded under `<app-data>/bin/` on first
+//! use and refreshed on a 72-hour cadence, and the selected channel is
+//! copied over `yt-dlp` — the binary the stream server spawns. PATH is
+//! only a fallback for dev machines while the download hasn't happened
+//! (or failed).
 //!
 //! Streaming resilience depends on this: YouTube regularly breaks
 //! extractors and yt-dlp ships fixes within days, so the binary must
@@ -26,20 +26,32 @@ const BINARY_NAME: &str = "yt-dlp";
 /// the newest release asset, so no GitHub API call (and no rate limit)
 /// is involved.
 #[cfg(windows)]
-const DOWNLOAD_URL: &str =
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+const ASSET: &str = "yt-dlp.exe";
 #[cfg(target_os = "macos")]
-const DOWNLOAD_URL: &str =
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+const ASSET: &str = "yt-dlp_macos";
 #[cfg(all(unix, not(target_os = "macos")))]
-const DOWNLOAD_URL: &str =
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
+const ASSET: &str = "yt-dlp";
 
-/// How often to let the managed binary check for its own update.
+fn channel_str(nightly: bool) -> &'static str {
+    if nightly {
+        "nightly"
+    } else {
+        "stable"
+    }
+}
+
+fn download_url(nightly: bool) -> String {
+    let repo = if nightly {
+        "yt-dlp/yt-dlp-nightly-builds"
+    } else {
+        "yt-dlp/yt-dlp"
+    };
+    format!("https://github.com/{repo}/releases/latest/download/{ASSET}")
+}
+
+/// How often to re-download a channel's build to keep it fresh.
 const UPDATE_INTERVAL: Duration = Duration::from_secs(72 * 60 * 60);
-/// Hard cap on the `-U` self-update run.
-const UPDATE_TIMEOUT: Duration = Duration::from_secs(180);
-/// Hard cap on the first-run download (the exe is ~12 MB).
+/// Hard cap on the download (the exe is ~12 MB).
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[cfg(windows)]
@@ -52,6 +64,14 @@ pub fn managed_path(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir())
         .join("bin")
         .join(BINARY_NAME)
+}
+
+fn channel_path(app: &tauri::AppHandle, nightly: bool) -> PathBuf {
+    #[cfg(windows)]
+    let name = format!("yt-dlp-{}.exe", channel_str(nightly));
+    #[cfg(not(windows))]
+    let name = format!("yt-dlp-{}", channel_str(nightly));
+    managed_path(app).with_file_name(name)
 }
 
 /// Program to spawn: the managed copy when present, otherwise bare
@@ -79,38 +99,44 @@ fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<String>) {
 /// re-invoke as a retry after a failed download.
 ///
 /// Emits `ytdlp-state` events: `downloading` → `ready` | `error`.
-pub async fn ensure(app: tauri::AppHandle) {
+pub async fn ensure(app: tauri::AppHandle, nightly: bool) {
     // Serialize concurrent calls (StrictMode double-mount, retry spam).
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = LOCK.lock().await;
 
-    let managed = managed_path(&app);
+    let active = managed_path(&app);
+    let cached = channel_path(&app, nightly);
 
-    if managed.exists() {
+    if cached.exists() && stamp_age(&cached).is_some_and(|age| age < UPDATE_INTERVAL) {
+        let _ = activate(&cached, &active).await;
         emit_state(&app, "ready", None);
-        maybe_self_update(&managed).await;
         return;
     }
 
     // Dev fallback: a working PATH install means we can play right now.
-    // Still fetch the managed copy in the background so this install
-    // stops depending on the machine's PATH from the next launch on.
-    let path_works = probe_path_install().await;
+    // Still fetch the managed copy so this install stops depending on the
+    // machine's PATH from the next launch on.
+    let path_works = !cached.exists() && !active.exists() && probe_path_install().await;
     if path_works {
         emit_state(&app, "ready", None);
     } else {
         emit_state(&app, "downloading", None);
     }
 
-    match download(&managed).await {
+    match download(&cached, nightly).await {
         Ok(()) => {
-            eprintln!("[ytdlp] downloaded managed binary to {managed:?}");
-            touch_update_stamp(&managed);
+            touch_stamp(&cached);
+            let _ = activate(&cached, &active).await;
             emit_state(&app, "ready", None);
         }
         Err(e) => {
             eprintln!("[ytdlp] download failed: {e}");
-            if !path_works {
+            if cached.exists() {
+                let _ = activate(&cached, &active).await;
+            }
+            if active.exists() || path_works {
+                emit_state(&app, "ready", None);
+            } else {
                 emit_state(&app, "error", Some(e));
             }
         }
@@ -131,20 +157,20 @@ async fn probe_path_install() -> bool {
     }
 }
 
-/// Fetch the official binary into `<managed>.part`, then rename. The
-/// .part indirection means a torn download never masquerades as a
-/// working binary.
-async fn download(managed: &Path) -> Result<(), String> {
-    if let Some(dir) = managed.parent() {
+/// Fetch the binary into `<dest>.part`, then rename. The .part
+/// indirection means a torn download never masquerades as a working
+/// binary.
+async fn download(dest: &Path, nightly: bool) -> Result<(), String> {
+    if let Some(dir) = dest.parent() {
         tokio::fs::create_dir_all(dir)
             .await
             .map_err(|e| format!("mkdir {dir:?}: {e}"))?;
     }
-    let part = managed.with_extension("part");
+    let part = dest.with_extension("part");
     let _ = tokio::fs::remove_file(&part).await;
 
     let fetch = async {
-        let resp = reqwest::get(DOWNLOAD_URL)
+        let resp = reqwest::get(download_url(nightly))
             .await
             .map_err(|e| format!("request: {e}"))?
             .error_for_status()
@@ -200,25 +226,25 @@ async fn download(managed: &Path) -> Result<(), String> {
         .await;
     }
 
-    tokio::fs::rename(&part, managed)
+    tokio::fs::rename(&part, dest)
         .await
         .map_err(|e| format!("rename: {e}"))
 }
 
-fn update_stamp_path(managed: &Path) -> PathBuf {
-    managed.with_file_name("last-update-check")
+fn stamp_path(bin: &Path) -> PathBuf {
+    bin.with_extension("stamp")
 }
 
-fn touch_update_stamp(managed: &Path) {
+fn touch_stamp(bin: &Path) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let _ = std::fs::write(update_stamp_path(managed), now.to_string());
+    let _ = std::fs::write(stamp_path(bin), now.to_string());
 }
 
-fn update_stamp_age(managed: &Path) -> Option<Duration> {
-    let raw = std::fs::read_to_string(update_stamp_path(managed)).ok()?;
+fn stamp_age(bin: &Path) -> Option<Duration> {
+    let raw = std::fs::read_to_string(stamp_path(bin)).ok()?;
     let then = raw.trim().parse::<u64>().ok()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -227,42 +253,8 @@ fn update_stamp_age(managed: &Path) -> Option<Duration> {
     Some(Duration::from_secs(now.saturating_sub(then)))
 }
 
-/// Run `yt-dlp -U` on the managed copy when the last check is older
-/// than `UPDATE_INTERVAL`. The official release binary replaces itself
-/// in place. The stamp is refreshed even on failure so a broken update
-/// path can't turn into a retry storm on every launch.
-async fn maybe_self_update(managed: &Path) {
-    match update_stamp_age(managed) {
-        Some(age) if age < UPDATE_INTERVAL => return,
-        _ => {}
-    }
-    touch_update_stamp(managed);
-
-    let mut cmd = tokio::process::Command::new(managed);
-    cmd.arg("-U");
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    // The timeout below drops the output() future — without this the
-    // wedged child would outlive it as an orphan.
-    cmd.kill_on_drop(true);
-
-    let run = async {
-        match cmd.output().await {
-            Ok(out) => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let line = stdout
-                    .lines()
-                    .rev()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("");
-                eprintln!("[ytdlp] self-update ({}): {line}", out.status);
-            }
-            Err(e) => eprintln!("[ytdlp] self-update spawn failed: {e}"),
-        }
-    };
-    if tokio::time::timeout(UPDATE_TIMEOUT, run).await.is_err() {
-        eprintln!("[ytdlp] self-update timed out");
-    }
+async fn activate(cached: &Path, active: &Path) -> std::io::Result<()> {
+    let tmp = active.with_extension("swap");
+    tokio::fs::copy(cached, &tmp).await?;
+    tokio::fs::rename(&tmp, active).await
 }

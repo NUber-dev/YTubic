@@ -2,6 +2,8 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
+import { useSettingsStore } from "@/lib/store/settings";
+import { usePlaybackStore } from "@/lib/store/playback";
 
 type YtdlpState = {
   phase: "downloading" | "ready" | "error";
@@ -24,6 +26,8 @@ const TOAST_ID = "ytdlp-setup";
 export function useYtdlpSetup(): void {
   // True only after a "downloading" event — gates the success toast.
   const sawDownloadRef = useRef(false);
+  const channel = useSettingsStore((s) => s.ytdlpChannel);
+  const firstRunRef = useRef(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +55,7 @@ export function useYtdlpSetup(): void {
           action: {
             label: "Retry",
             onClick: () => {
-              void invoke("ensure_ytdlp");
+              void invoke("ensure_ytdlp", { channel });
             },
           },
         });
@@ -63,14 +67,21 @@ export function useYtdlpSetup(): void {
       }
       dispose = un;
       // Listener is live — safe to start the Rust side now.
-      void invoke("ensure_ytdlp").catch((err) => {
-        console.error("[ytdlp] ensure_ytdlp failed:", err);
-      });
+      void invoke("ensure_ytdlp", { channel })
+        .then(() => {
+          if (!firstRunRef.current) {
+            usePlaybackStore.getState().reresolveStream();
+          }
+          firstRunRef.current = false;
+        })
+        .catch((err) => {
+          console.error("[ytdlp] ensure_ytdlp failed:", err);
+        });
     });
 
     return () => {
       cancelled = true;
       dispose?.();
     };
-  }, []);
+  }, [channel]);
 }

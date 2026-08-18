@@ -8,6 +8,7 @@ import {
   CalendarClockIcon,
   ChevronDownIcon,
   DatabaseIcon,
+  DownloadIcon,
   FolderIcon,
   FolderOpenIcon,
   HardDriveIcon,
@@ -56,6 +57,7 @@ export function StorageTab() {
       <StorageStats />
       <TabPane>
         <CacheFolderGroup />
+        <AudioEngineGroup />
         {/* Auto-clean lives outside the premium-gated tracks group: the
             sweep prunes whatever is already on disk, so it stays useful
             (and visible) even when caching itself is gated off. */}
@@ -67,6 +69,30 @@ export function StorageTab() {
         <CacheGroupGate loggedIn={!!loggedIn.data} />
       </TabPane>
     </>
+  );
+}
+
+function AudioEngineGroup() {
+  const channel = useSettingsStore((s) => s.ytdlpChannel);
+  const setChannel = useSettingsStore((s) => s.setYtdlpChannel);
+  return (
+    <Group>
+      <SettingRow
+        icon={DownloadIcon}
+        title="yt-dlp updates"
+        description="Nightly builds fix YouTube playback breakage sooner. Switch to Nightly only if you're having playback problems."
+        control={
+          <SegmentedControl
+            value={channel}
+            onChange={setChannel}
+            options={[
+              { value: "stable", label: "Stable" },
+              { value: "nightly", label: "Nightly" },
+            ]}
+          />
+        }
+      />
+    </Group>
   );
 }
 

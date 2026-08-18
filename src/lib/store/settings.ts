@@ -6,6 +6,7 @@ import { persist } from "zustand/middleware";
 export type CloseButtonAction = "tray" | "quit";
 export type CacheAutoCleanPeriod = "off" | "daily" | "weekly" | "monthly";
 export type BackgroundMode = "ambient" | "plain";
+export type YtdlpChannel = "stable" | "nightly";
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
@@ -43,6 +44,7 @@ type State = {
    *  scrobbling and off by default: an opt-in, since people often keep their
    *  likes intentionally different per platform. See `lib/lastfm.ts`. */
   lastfmLoveSync: boolean;
+  ytdlpChannel: YtdlpChannel;
   setCloseAction: (v: CloseButtonAction) => void;
   setCacheAutoClean: (v: CacheAutoCleanPeriod) => void;
   markCacheCleaned: () => void;
@@ -51,6 +53,7 @@ type State = {
   setDiscordRichPresence: (v: boolean) => void;
   setLastfmEnabled: (v: boolean) => void;
   setLastfmLoveSync: (v: boolean) => void;
+  setYtdlpChannel: (v: YtdlpChannel) => void;
   setLastfmAvatar: (v: string | null) => void;
   /** Store the account returned by the connect flow and enable scrobbling. */
   setLastfmSession: (username: string, sessionKey: string) => void;
@@ -78,6 +81,7 @@ export const useSettingsStore = create<State>()(
       lastfmUsername: null,
       lastfmAvatar: null,
       lastfmLoveSync: false,
+      ytdlpChannel: "stable",
       setCloseAction: (closeAction) => set({ closeAction }),
       setCacheAutoClean: (cacheAutoClean) => set({ cacheAutoClean }),
       markCacheCleaned: () => set({ lastCacheCleanAt: Date.now() }),
@@ -88,6 +92,7 @@ export const useSettingsStore = create<State>()(
         set({ discordRichPresence }),
       setLastfmEnabled: (lastfmEnabled) => set({ lastfmEnabled }),
       setLastfmLoveSync: (lastfmLoveSync) => set({ lastfmLoveSync }),
+      setYtdlpChannel: (ytdlpChannel) => set({ ytdlpChannel }),
       setLastfmAvatar: (lastfmAvatar) => set({ lastfmAvatar }),
       setLastfmSession: (lastfmUsername, lastfmSessionKey) =>
         set({ lastfmUsername, lastfmSessionKey, lastfmEnabled: true }),

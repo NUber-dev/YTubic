@@ -184,6 +184,8 @@ export function useAudioEngine() {
   // sit silent until the user re-picked it.
   const premiumOk = usePremiumStore((s) => s.status === "premium");
 
+  const streamResolveNonce = usePlaybackStore((s) => s.streamResolveNonce);
+
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -281,7 +283,7 @@ export function useAudioEngine() {
     // (sign-in, status re-check) re-resolves a track the gate parked.
     // `retryNonce` so the error handler can force a fresh stream-URL fetch
     // for the current track after a transient failure without changing id.
-  }, [streamVideoId, videoId, index, premiumOk, retryNonce]);
+  }, [streamVideoId, videoId, index, premiumOk, retryNonce, streamResolveNonce]);
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
