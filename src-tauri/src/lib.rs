@@ -1074,7 +1074,8 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     // on success.
     let account_dir = accounts_dir(&app).join(&account_id);
 
-    let url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F"
+    const SERVICE_LOGIN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
+    let url = SERVICE_LOGIN_URL
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
 
@@ -1168,12 +1169,12 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                                 .unwrap_or(false)
                     });
                     if has_google_auth {
-                        if let Ok(url) = "https://music.youtube.com/".parse::<tauri::Url>() {
+                        if let Ok(url) = SERVICE_LOGIN_URL.parse::<tauri::Url>() {
                             match win.navigate(url) {
                                 Ok(()) => diagnostics::note(
                                     &app_poll,
                                     "login",
-                                    "google-auth detected without YT cookies, redirected webview to music.youtube.com",
+                                    "google-auth detected without YT cookies, replayed ServiceLogin so google can bridge the youtube.com cookies itself",
                                 ),
                                 Err(e) => diagnostics::note(&app_poll, "login", format!("failed to redirect to YT: {e}")),
                             }
