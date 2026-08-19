@@ -22,8 +22,10 @@ import {
   PlusIcon,
   MoreHorizontalIcon,
   Loader2Icon,
+  Share2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { copyToClipboard, trackShareUrl } from "@/lib/clipboard";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -401,6 +403,19 @@ export function TrackMenuItems({
           Go to album
         </Item>
       )}
+
+      <Separator />
+
+      <Item
+        onSelect={async () => {
+          const ok = await copyToClipboard(trackShareUrl(item.id));
+          if (ok) toast.success("Link copied to clipboard");
+          else toast.error("Couldn't copy the link");
+        }}
+      >
+        <Share2Icon />
+        Share
+      </Item>
     </>
   );
 }

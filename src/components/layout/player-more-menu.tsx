@@ -56,8 +56,8 @@ type Props = {
  * Triple-dot overflow menu for the player surfaces. Wraps the same
  * `TrackMenuItems` block used by the right-click context menu on
  * track rows, so the actions (Play next, Add to queue, Start radio,
- * Like / Remove from liked, Add to playlist, Go to artist) stay in
- * sync between every entry point.
+ * Like / Remove from liked, Add to playlist, Go to artist, Share)
+ * stay in sync between every entry point.
  *
  * Splits into a main-window branch (uses `useNavigate` directly) and
  * a floating-window branch (emits a Tauri event so the main window
