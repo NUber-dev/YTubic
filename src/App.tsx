@@ -11,12 +11,19 @@ import {
 import { routeTree } from "@/routeTree.gen";
 import { isFloatingPlayerWindow } from "@/lib/floating-player";
 import FloatingPlayerApp from "@/components/layout/floating-player-app";
+import { isDiagnosticsWindow } from "@/lib/diagnostics";
+import DiagnosticsApp from "@/components/layout/diagnostics-app";
+import { diagLog } from "@/lib/diagnostics";
 
 const router = createRouter({
   routeTree,
   defaultPreload: "intent",
   defaultPreloadStaleTime: 0,
   context: { queryClient },
+});
+
+router.subscribe("onResolved", () => {
+  diagLog("ui", `navigate ${router.state.location.pathname}`);
 });
 
 declare module "@tanstack/react-router" {
@@ -30,6 +37,9 @@ export default function App() {
   // floating player skips routing/shell entirely.
   if (isFloatingPlayerWindow()) {
     return <FloatingPlayerApp />;
+  }
+  if (isDiagnosticsWindow()) {
+    return <DiagnosticsApp />;
   }
   return (
     <ThemeProvider

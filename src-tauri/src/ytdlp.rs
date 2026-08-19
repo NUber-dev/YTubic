@@ -87,8 +87,9 @@ pub async fn ensure(app: tauri::AppHandle) {
     let managed = managed_path(&app);
 
     if managed.exists() {
+        crate::diagnostics::note(&app, "ytdlp", format!("managed binary present at {managed:?}"));
         emit_state(&app, "ready", None);
-        maybe_self_update(&managed).await;
+        maybe_self_update(&managed, &app).await;
         return;
     }
 
@@ -97,19 +98,21 @@ pub async fn ensure(app: tauri::AppHandle) {
     // stops depending on the machine's PATH from the next launch on.
     let path_works = probe_path_install().await;
     if path_works {
+        crate::diagnostics::note(&app, "ytdlp", "no managed binary yet, PATH install works");
         emit_state(&app, "ready", None);
     } else {
+        crate::diagnostics::note(&app, "ytdlp", "no managed binary and no working PATH install, downloading");
         emit_state(&app, "downloading", None);
     }
 
     match download(&managed).await {
         Ok(()) => {
-            eprintln!("[ytdlp] downloaded managed binary to {managed:?}");
+            crate::diagnostics::note(&app, "ytdlp", format!("downloaded managed binary to {managed:?}"));
             touch_update_stamp(&managed);
             emit_state(&app, "ready", None);
         }
         Err(e) => {
-            eprintln!("[ytdlp] download failed: {e}");
+            crate::diagnostics::note(&app, "ytdlp", format!("download failed: {e}"));
             if !path_works {
                 emit_state(&app, "error", Some(e));
             }
@@ -231,7 +234,7 @@ fn update_stamp_age(managed: &Path) -> Option<Duration> {
 /// than `UPDATE_INTERVAL`. The official release binary replaces itself
 /// in place. The stamp is refreshed even on failure so a broken update
 /// path can't turn into a retry storm on every launch.
-async fn maybe_self_update(managed: &Path) {
+async fn maybe_self_update(managed: &Path, app: &tauri::AppHandle) {
     match update_stamp_age(managed) {
         Some(age) if age < UPDATE_INTERVAL => return,
         _ => {}
@@ -257,12 +260,12 @@ async fn maybe_self_update(managed: &Path) {
                     .rev()
                     .find(|l| !l.trim().is_empty())
                     .unwrap_or("");
-                eprintln!("[ytdlp] self-update ({}): {line}", out.status);
+                crate::diagnostics::note(app, "ytdlp", format!("self-update ({}): {line}", out.status));
             }
-            Err(e) => eprintln!("[ytdlp] self-update spawn failed: {e}"),
+            Err(e) => crate::diagnostics::note(app, "ytdlp", format!("self-update spawn failed: {e}")),
         }
     };
     if tokio::time::timeout(UPDATE_TIMEOUT, run).await.is_err() {
-        eprintln!("[ytdlp] self-update timed out");
+        crate::diagnostics::note(app, "ytdlp", "self-update timed out");
     }
 }

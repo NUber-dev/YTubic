@@ -1,4 +1,5 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { diagLog } from "@/lib/diagnostics";
 
 /**
  * Shared request plumbing for the lyrics providers, with one job: keep the
@@ -132,14 +133,25 @@ export async function lyricsFetch(
   /** JSON body. Its presence switches the request to POST. */
   body?: unknown,
 ): Promise<Response> {
+  const method = body === undefined ? "GET" : "POST";
+  const started = performance.now();
   try {
-    return await tauriFetch(url, {
-      method: body === undefined ? "GET" : "POST",
+    const res = await tauriFetch(url, {
+      method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: deadline.signal,
     });
+    diagLog(
+      "network",
+      `${safeHost(url)} ${method} ${res.status} ${Math.round(performance.now() - started)}ms`,
+    );
+    return res;
   } catch (e) {
+    diagLog(
+      "network",
+      `${safeHost(url)} ${method} failed ${Math.round(performance.now() - started)}ms`,
+    );
     if (deadline.timedOut()) throw new LyricsTimeoutError(PROVIDER_TIMEOUT_MS);
     // An upstream abort (track changed, component unmounted) is not a
     // failure worth reporting. Re-throw it as-is so React Query recognises

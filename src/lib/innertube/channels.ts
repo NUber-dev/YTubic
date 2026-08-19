@@ -6,6 +6,7 @@ import {
   DESKTOP_UA,
   type YtNode,
 } from "./shared";
+import { diagLog } from "@/lib/diagnostics";
 
 /**
  * One selectable YouTube identity inside the signed-in Google account:
@@ -43,6 +44,7 @@ export function stripXssiPrefix(text: string): string {
 export async function fetchChannelList(): Promise<ChannelChoice[]> {
   const auth = await authHeaders();
   if (!auth.Cookie) return [];
+  const started = performance.now();
   const res = await tauriFetch(SWITCHER_URL, {
     method: "GET",
     headers: {
@@ -52,6 +54,10 @@ export async function fetchChannelList(): Promise<ChannelChoice[]> {
       "Accept-Language": "en-US,en;q=0.9",
     },
   });
+  diagLog(
+    "network",
+    `account switcher GET ${res.status} ${Math.round(performance.now() - started)}ms`,
+  );
   // This page-level endpoint is the one that mints the post-login
   // LOGIN_INFO / SIDCC burst; echoing it into the jar is what keeps
   // the fresh session alive (see captureSetCookies).
