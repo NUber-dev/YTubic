@@ -55,6 +55,34 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.5",
+    date: "August 19, 2026",
+    summary: "Share links, album menus and macOS fixes",
+    changes: [
+      {
+        type: "new",
+        title: "Share",
+        text: "The track menu can now copy a YouTube Music link to the song.",
+      },
+      {
+        type: "new",
+        title: "Album menus",
+        text: "Right-click an album cover to play it, queue it, shuffle it or start album radio.",
+      },
+      {
+        type: "fixed",
+        title: "Liked heart going out of sync",
+        text: "Liking a song from the right-click menu shortly after launch could leave the heart unfilled even though the like was saved.",
+      },
+      {
+        type: "improved",
+        title: "macOS",
+        text: "Playback now starts in well under a second instead of up to half a minute, and the next and previous media keys finally work.",
+      },
+    ],
+    note: "Everything in this release came from community pull requests. Thanks to mihaimetal, wakamex and script8888!",
+  },
+  {
     version: "0.4.4",
     date: "August 15, 2026",
     summary: "Fix for a rare startup crash on Windows",
