@@ -8,6 +8,7 @@ import {
   Repeat1Icon,
   Loader2Icon,
   MicVocalIcon,
+  Maximize2Icon,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -45,6 +46,7 @@ import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useScrubStore } from "@/lib/store/scrub";
+import { useNowPlayingStore } from "@/lib/store/now-playing";
 
 /**
  * Compact horizontal player bar pinned to the bottom of the content
@@ -133,7 +135,7 @@ export function PlayerBarBottom() {
               className="shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
             >
               {track ? (
-                <div className="relative isolate size-14 shrink-0">
+                <div className="group relative isolate size-14 shrink-0">
                   <Thumbnail
                     thumbnails={track.thumbnails}
                     alt={track.title}
@@ -143,6 +145,16 @@ export function PlayerBarBottom() {
                     overrideHighRes={iTunesCover}
                   />
                   <ArtworkOutline className="rounded-md" />
+                  {/* Too small for a corner button — full-cover scrim on hover. */}
+                  <button
+                    type="button"
+                    aria-label="Open now playing"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => useNowPlayingStore.getState().setOpen(true)}
+                    className="pointer-events-auto absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45 text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    <Maximize2Icon className="size-5" />
+                  </button>
                 </div>
               ) : (
                 <div className="size-14 shrink-0 rounded-md border border-hairline bg-muted" />

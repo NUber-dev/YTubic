@@ -13,6 +13,7 @@ import {
   Loader2Icon,
   MusicIcon,
   VideoIcon,
+  Maximize2Icon,
 } from "lucide-react";
 import { QueueBody, QueueToggleButton } from "@/components/layout/queue-panel";
 import {
@@ -42,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useScrubStore } from "@/lib/store/scrub";
+import { useNowPlayingStore } from "@/lib/store/now-playing";
 import {
   useTrackSourceStore,
   type SourceKind,
@@ -567,7 +569,7 @@ export function PlayerBar({
               // it that group is the motion.div wrapping cover AND lyrics, so
               // the lyrics' backdrop-blur strip loses the card and the app
               // background from its backdrop and paints as a dark band.
-              <div className="relative isolate aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
+              <div className="group relative isolate aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
                 <Thumbnail
                   thumbnails={track.thumbnails}
                   alt={track.title}
@@ -577,6 +579,22 @@ export function PlayerBar({
                   overrideHighRes={iTunesCover}
                 />
                 <ArtworkOutline className="rounded-md" />
+                {/* Expand into the Now-Playing overlay (not in the floating
+                    window — no app shell there). `stopPropagation` keeps the
+                    click from starting the cover's drag. */}
+                {variant !== "floating" && (
+                  <button
+                    type="button"
+                    aria-label="Open now playing"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() =>
+                      useNowPlayingStore.getState().setOpen(true)
+                    }
+                    className="pointer-events-auto absolute right-2 top-2 flex size-8 items-center justify-center rounded-full bg-black/50 text-white opacity-0 transition-opacity hover:bg-black/70 group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    <Maximize2Icon className="size-4" />
+                  </button>
+                )}
               </div>
             ) : (
               <div className="aspect-square w-full rounded-md border border-hairline bg-muted" />
