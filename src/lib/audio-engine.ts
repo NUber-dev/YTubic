@@ -322,6 +322,16 @@ export function useAudioEngine() {
     el.muted = muted;
   }, [volume, muted]);
 
+  // Playback speed follow store. HTMLAudioElement keeps the last rate
+  // across src swaps, but we still re-apply on every change so a
+  // rehydrated rate (or floating-window action) lands immediately.
+  const playbackRate = usePlaybackStore((s) => s.playbackRate);
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.playbackRate = playbackRate;
+  }, [playbackRate]);
+
   // Handle seek requests.
   const pendingSeek = usePlaybackStore((s) => s.pendingSeek);
   useEffect(() => {
@@ -595,7 +605,9 @@ export function useAudioEngine() {
     if (!playing) return;
     const id = window.setInterval(push, 2000);
     return () => window.clearInterval(id);
-  }, [track, playing, duration, shuffle, repeat, liked]);
+    // playbackRate is included so a speed change re-pushes OS metadata while
+    // playing (souvlaki does not re-read the element rate on its own).
+  }, [track, playing, duration, shuffle, repeat, liked, playbackRate]);
 
   // Discord Rich Presence mirrors the same metadata, but pushed only on
   // track / play-state / duration change — never the 2s position refresh
@@ -616,12 +628,14 @@ export function useAudioEngine() {
     const dur = Number.isFinite(s.duration) ? s.duration : 0;
     // Timestamps (hence the progress bar) only while actually playing: Discord
     // can't freeze a bar, so paused shows none rather than a wrong one. Unix
-    // milliseconds, per Discord's Activity spec.
+    // milliseconds, per Discord's Activity spec. Scale by playbackRate so the
+    // bar tracks wall-clock remaining time at 0.5× / 2× etc.
     let startMs: number | null = null;
     let endMs: number | null = null;
     if (s.playing && dur > 0) {
-      startMs = Math.round(Date.now() - s.position * 1000);
-      endMs = Math.round(startMs + dur * 1000);
+      const rate = Math.max(0.01, s.playbackRate);
+      startMs = Math.round(Date.now() - (s.position / rate) * 1000);
+      endMs = Math.round(startMs + (dur / rate) * 1000);
     }
     void invoke("discord_update", {
       title: t.title,
@@ -631,7 +645,7 @@ export function useAudioEngine() {
       startMs,
       endMs,
     }).catch(() => {});
-  }, [track, playing, duration, discordRp]);
+  }, [track, playing, duration, playbackRate, discordRp]);
 }
 
 function buildArtistLabel(track: QueueTrack): string {
