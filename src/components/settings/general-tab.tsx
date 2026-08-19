@@ -8,6 +8,7 @@ import {
   LogInIcon,
   RocketIcon,
   UserRoundIcon,
+  Volume2Icon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -114,6 +115,8 @@ function BehaviorGroup() {
   const setPlaybackNotifications = useSettingsStore(
     (s) => s.setPlaybackNotifications,
   );
+  const playbackEngine = useSettingsStore((s) => s.playbackEngine);
+  const setPlaybackEngine = useSettingsStore((s) => s.setPlaybackEngine);
 
   const qc = useQueryClient();
   const autostart = useQuery({
@@ -158,6 +161,18 @@ function BehaviorGroup() {
             checked={playbackNotifications}
             onCheckedChange={setPlaybackNotifications}
             aria-label="Playback notifications"
+          />
+        }
+      />
+      <SettingRow
+        icon={Volume2Icon}
+        title="Try yt-dlp before embedded playback"
+        description="When enabled, tries yt-dlp as a source first, then falls back to background player."
+        control={
+          <Switch
+            checked={playbackEngine === "auto"}
+            onCheckedChange={(v) => setPlaybackEngine(v ? "auto" : "embed")}
+            aria-label="Try yt-dlp before embedded playback"
           />
         }
       />

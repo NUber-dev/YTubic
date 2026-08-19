@@ -13,6 +13,8 @@ import { isFloatingPlayerWindow } from "@/lib/floating-player";
 import FloatingPlayerApp from "@/components/layout/floating-player-app";
 import { isDiagnosticsWindow } from "@/lib/diagnostics";
 import DiagnosticsApp from "@/components/layout/diagnostics-app";
+import { isPlayerEngineWindow } from "@/lib/player-engine";
+import PlayerEngineApp from "@/components/layout/player-engine-app";
 import { diagLog } from "@/lib/diagnostics";
 
 const router = createRouter({
@@ -40,6 +42,9 @@ export default function App() {
   }
   if (isDiagnosticsWindow()) {
     return <DiagnosticsApp />;
+  }
+  if (isPlayerEngineWindow()) {
+    return <PlayerEngineApp />;
   }
   return (
     <ThemeProvider

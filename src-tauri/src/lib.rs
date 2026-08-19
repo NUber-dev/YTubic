@@ -29,6 +29,7 @@ mod diagnostics;
 mod discord;
 mod lastfm;
 mod media;
+mod player_engine;
 mod power;
 // Taskbar thumbnail toolbar (prev / play-pause / next under the taskbar
 // preview). Windows-only shell surface; see src/thumbbar.rs.
@@ -3806,6 +3807,7 @@ pub fn run() {
             diagnostics::open_diag_window,
             diagnostics::close_diag_window,
             diagnostics::diag_log,
+            player_engine::ensure_player_engine,
             media::media_update,
             media::media_clear,
             discord::discord_update,

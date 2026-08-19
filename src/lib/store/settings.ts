@@ -6,6 +6,7 @@ import { persist } from "zustand/middleware";
 export type CloseButtonAction = "tray" | "quit";
 export type CacheAutoCleanPeriod = "off" | "daily" | "weekly" | "monthly";
 export type BackgroundMode = "ambient" | "plain";
+export type PlaybackEngine = "auto" | "embed";
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
@@ -44,6 +45,7 @@ type State = {
    *  likes intentionally different per platform. See `lib/lastfm.ts`. */
   lastfmLoveSync: boolean;
   debugConsoleEnabled: boolean;
+  playbackEngine: PlaybackEngine;
   setCloseAction: (v: CloseButtonAction) => void;
   setCacheAutoClean: (v: CacheAutoCleanPeriod) => void;
   markCacheCleaned: () => void;
@@ -58,6 +60,7 @@ type State = {
   /** Forget the connected account and stop scrobbling. */
   clearLastfmSession: () => void;
   setDebugConsoleEnabled: (v: boolean) => void;
+  setPlaybackEngine: (v: PlaybackEngine) => void;
 };
 
 /**
@@ -81,6 +84,7 @@ export const useSettingsStore = create<State>()(
       lastfmAvatar: null,
       lastfmLoveSync: false,
       debugConsoleEnabled: false,
+      playbackEngine: "auto",
       setCloseAction: (closeAction) => set({ closeAction }),
       setCacheAutoClean: (cacheAutoClean) => set({ cacheAutoClean }),
       markCacheCleaned: () => set({ lastCacheCleanAt: Date.now() }),
@@ -103,6 +107,7 @@ export const useSettingsStore = create<State>()(
           lastfmLoveSync: false,
         }),
       setDebugConsoleEnabled: (debugConsoleEnabled) => set({ debugConsoleEnabled }),
+      setPlaybackEngine: (playbackEngine) => set({ playbackEngine }),
     }),
     { name: "ytm-settings" },
   ),
