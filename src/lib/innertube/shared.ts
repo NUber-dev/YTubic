@@ -1,5 +1,6 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
+import { diagLog } from "@/lib/diagnostics";
 import type { ShelfItem, ShelfMore, Thumbnail } from "./types";
 
 export type YtNode = Record<string, any>;
@@ -252,11 +253,16 @@ export async function innertubePost(
   const visitorHeader: Record<string, string> = visitor
     ? { "X-Goog-Visitor-Id": visitor }
     : {};
+  const started = performance.now();
   const res = await tauriFetch(url, {
     method: "POST",
     headers: { ...BASE_HEADERS, ...visitorHeader, ...auth },
     body: JSON.stringify({ context: buildContext(), ...body }),
   });
+  diagLog(
+    "network",
+    `innertube ${endpoint} ${res.status} ${Math.round(performance.now() - started)}ms`,
+  );
 
   // Before the error bail: Google rotates cookies on 4xx responses too.
   await captureSetCookies(res);

@@ -37,9 +37,11 @@ import { useLayoutStore } from "@/lib/store/layout";
 import { usePremiumStatusSync } from "@/lib/store/premium";
 import {
   useCloseBehaviorSync,
+  useDebugConsoleSync,
   useDiscordPresenceSync,
   useSettingsStore,
 } from "@/lib/store/settings";
+import { useInteractionLogger } from "@/lib/interaction-logger";
 import {
   useAccountMetaBackfill,
   useAccountsChangedListener,
@@ -101,6 +103,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   useGlobalShortcuts();
   useCloseBehaviorSync();
   useDiscordPresenceSync();
+  useDebugConsoleSync();
+  useInteractionLogger();
   useCacheAutoClean();
   usePlaybackNotifications();
   useLastfmScrobbler();
