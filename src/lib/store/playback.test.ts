@@ -143,3 +143,26 @@ describe("queueContinuation lifecycle", () => {
     expect(usePlaybackStore.getState().queueContinuation).toBeUndefined();
   });
 });
+
+// The album menu's "Play next" queues a whole album by calling
+// enqueueNext once per track in reverse — each insert lands directly
+// after the current track, so reversing is what restores album order.
+// If enqueueNext's insertion point ever changes, this breaks loudly
+// instead of silently shuffling every album.
+describe("album 'Play next' ordering", () => {
+  beforeEach(() => setup({}));
+
+  it("keeps album order when enqueued back-to-front", () => {
+    setup({ queue: [track("cur"), track("later")], index: 0 });
+    for (const t of [track("a1"), track("a2"), track("a3")].reverse()) {
+      usePlaybackStore.getState().enqueueNext(t);
+    }
+    expect(usePlaybackStore.getState().queue.map((t) => t.videoId)).toEqual([
+      "cur",
+      "a1",
+      "a2",
+      "a3",
+      "later",
+    ]);
+  });
+});
