@@ -64,11 +64,10 @@ import {
   createPlaylistWithTrack,
   dislikeTrack,
   fetchUserPlaylists,
-  likeTrack,
   removeFromPlaylist,
-  removeRating,
   type UserPlaylist,
 } from "@/lib/innertube/mutations";
+import { toggleLiked } from "@/lib/like-actions";
 import { usePlaybackStore } from "@/lib/store/playback";
 import type { ShelfItem } from "@/lib/innertube/types";
 import { syncLastfmLove } from "@/lib/lastfm";
@@ -141,29 +140,24 @@ export function useTrackMenuController(item: ShelfItem) {
 
   const runLike = async () => {
     try {
-      await likeTrack(item.id);
-      qc.setQueryData<ShelfItem[]>(["liked-songs"], (old) => {
-        const list = old ?? [];
-        if (list.some((t) => t.id === item.id)) return list;
-        return [
-          { id: item.id, kind: "song", title: item.title, thumbnails: item.thumbnails } as ShelfItem,
-          ...list,
-        ];
+      await toggleLiked({
+        queryClient: qc,
+        videoId: item.id,
+        wasLiked: false,
+        track: item,
       });
-      toast.success("Added to Liked songs");
-      syncLastfmLove(item, true);
     } catch (e) {
       toast.error(`Like failed: ${String(e)}`);
     }
   };
   const runRemoveRating = async () => {
     try {
-      await removeRating(item.id);
-      qc.setQueryData<ShelfItem[]>(["liked-songs"], (old) =>
-        (old ?? []).filter((t) => t.id !== item.id),
-      );
-      toast.success("Removed from Liked songs");
-      syncLastfmLove(item, false);
+      await toggleLiked({
+        queryClient: qc,
+        videoId: item.id,
+        wasLiked: true,
+        track: item,
+      });
     } catch (e) {
       toast.error(`Remove failed: ${String(e)}`);
     }

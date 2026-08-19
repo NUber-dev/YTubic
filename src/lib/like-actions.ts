@@ -36,18 +36,39 @@ export async function toggleLiked({
 }): Promise<void> {
   if (wasLiked) {
     await removeRating(videoId);
+  } else {
+    await likeTrack(videoId);
+  }
+
+  // A cold-start membership fetch may have captured the list before this
+  // mutation. Cancel it at the cache commit point so its older snapshot cannot
+  // overwrite the patch below. If we interrupted one, restart it after the
+  // patch to recover the complete membership list rather than leaving a
+  // partial placeholder-only cache.
+  const likedSongsKey = ["liked-songs"] as const;
+  const interruptedFetch =
+    queryClient.isFetching({ queryKey: likedSongsKey, exact: true }) > 0;
+  await queryClient.cancelQueries({ queryKey: likedSongsKey, exact: true });
+
+  if (wasLiked) {
     queryClient.setQueryData<ShelfItem[]>(["liked-songs"], (old) =>
       (old ?? []).filter((t) => t.id !== videoId),
     );
     toast.success("Removed from Liked");
   } else {
-    await likeTrack(videoId);
     queryClient.setQueryData<ShelfItem[]>(["liked-songs"], (old) => {
       const list = old ?? [];
       if (list.some((t) => t.id === videoId)) return list;
       return [makeLikedPlaceholder(videoId), ...list];
     });
     toast.success("Added to Liked");
+  }
+  if (interruptedFetch) {
+    void queryClient.invalidateQueries({
+      queryKey: likedSongsKey,
+      exact: true,
+      refetchType: "all",
+    });
   }
   // Mirror the like/unlike to Last.fm as a loved / unloved track.
   syncLastfmLove(track, !wasLiked);
