@@ -136,21 +136,20 @@ pub struct BeginAuth {
 
 /// `auth.getToken` → an unauthorized request token, plus the browser URL the
 /// user visits to approve it.
-async fn get_token(client: &reqwest::Client) -> Result<String, String> {
+async fn get_token(app: &AppHandle, client: &reqwest::Client) -> Result<String, String> {
     let mut params = BTreeMap::new();
     params.insert("method".into(), "auth.getToken".into());
     params.insert("api_key".into(), API_KEY.into());
     let params = finalize(params);
 
-    let body = client
+    let resp = client
         .get(API_ROOT)
         .query(&params)
         .send()
         .await
-        .map_err(|e| format!("network error: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("read error: {e}"))?;
+        .map_err(|e| format!("network error: {e}"))?;
+    crate::diagnostics::note(app, "network", format!("lastfm auth.getToken {}", resp.status()));
+    let body = resp.text().await.map_err(|e| format!("read error: {e}"))?;
 
     check_api_error(&body).map_err(|(c, m)| format!("Last.fm error {c}: {m}"))?;
 
@@ -175,6 +174,7 @@ pub struct LastfmSession {
 /// a failure), and `Err` for a real problem (expired token, bad key, network).
 /// The frontend polls this so connecting needs no manual confirmation step.
 async fn get_session(
+    app: &AppHandle,
     client: &reqwest::Client,
     token: &str,
 ) -> Result<Option<LastfmSession>, String> {
@@ -184,15 +184,14 @@ async fn get_session(
     params.insert("token".into(), token.into());
     let params = finalize(params);
 
-    let body = client
+    let resp = client
         .get(API_ROOT)
         .query(&params)
         .send()
         .await
-        .map_err(|e| format!("network error: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("read error: {e}"))?;
+        .map_err(|e| format!("network error: {e}"))?;
+    crate::diagnostics::note(app, "network", format!("lastfm auth.getSession {}", resp.status()));
+    let body = resp.text().await.map_err(|e| format!("read error: {e}"))?;
 
     match check_api_error(&body) {
         // 14 = token not yet authorized by the user: keep polling, not an error.
@@ -221,6 +220,7 @@ async fn get_session(
 }
 
 /// Outcome of a POST to Last.fm, used to decide the offline queue's fate.
+#[derive(Debug)]
 enum SendOutcome {
     Sent,
     /// Transport failure or a transient server error: keep for retry.
@@ -337,7 +337,9 @@ async fn flush_queue(app: &AppHandle, client: &reqwest::Client, lock: &Mutex<()>
         // Last.fm caps a scrobble batch at 50.
         for chunk in items.chunks(50) {
             let params = scrobble_batch_params(chunk, &sk);
-            match post_signed(client, params).await {
+            let outcome = post_signed(client, params).await;
+            crate::diagnostics::note(app, "network", format!("lastfm flush track.scrobble {outcome:?}"));
+            match outcome {
                 SendOutcome::Sent => {}
                 SendOutcome::Retry => remaining.extend_from_slice(chunk),
                 SendOutcome::Drop(msg) => {
@@ -361,12 +363,12 @@ pub fn lastfm_is_configured() -> bool {
 /// Step 1 of connecting: fetch a request token and hand back the browser URL
 /// the user must open to approve it.
 #[tauri::command]
-pub async fn lastfm_begin_auth() -> Result<BeginAuth, String> {
+pub async fn lastfm_begin_auth(app: AppHandle) -> Result<BeginAuth, String> {
     if API_KEY.is_empty() || API_SECRET.is_empty() {
         return Err("Last.fm API credentials are not configured in this build.".into());
     }
     let client = reqwest::Client::new();
-    let token = get_token(&client).await?;
+    let token = get_token(&app, &client).await?;
     let auth_url = format!(
         "https://www.last.fm/api/auth/?api_key={}&token={}",
         API_KEY, token
@@ -378,9 +380,9 @@ pub async fn lastfm_begin_auth() -> Result<BeginAuth, String> {
 /// once the user has approved the token in their browser, or `None` while it is
 /// still pending.
 #[tauri::command]
-pub async fn lastfm_poll_session(token: String) -> Result<Option<LastfmSession>, String> {
+pub async fn lastfm_poll_session(app: AppHandle, token: String) -> Result<Option<LastfmSession>, String> {
     let client = reqwest::Client::new();
-    get_session(&client, &token).await
+    get_session(&app, &client, &token).await
 }
 
 /// Public profile info for a Last.fm user, used to show an avatar + name in
@@ -396,7 +398,7 @@ pub struct LastfmUserInfo {
 }
 
 #[tauri::command]
-pub async fn lastfm_user_info(user: String) -> Result<LastfmUserInfo, String> {
+pub async fn lastfm_user_info(app: AppHandle, user: String) -> Result<LastfmUserInfo, String> {
     if API_KEY.is_empty() {
         return Err("Last.fm API credentials are not configured in this build.".into());
     }
@@ -407,15 +409,14 @@ pub async fn lastfm_user_info(user: String) -> Result<LastfmUserInfo, String> {
     params.insert("user".to_string(), user);
     params.insert("format".to_string(), "json".to_string());
 
-    let body = client
+    let resp = client
         .get(API_ROOT)
         .query(&params)
         .send()
         .await
-        .map_err(|e| format!("network error: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("read error: {e}"))?;
+        .map_err(|e| format!("network error: {e}"))?;
+    crate::diagnostics::note(&app, "network", format!("lastfm user.getInfo {}", resp.status()));
+    let body = resp.text().await.map_err(|e| format!("read error: {e}"))?;
 
     check_api_error(&body).map_err(|(c, m)| format!("Last.fm error {c}: {m}"))?;
 
@@ -462,6 +463,7 @@ pub async fn lastfm_user_info(user: String) -> Result<LastfmUserInfo, String> {
 /// ephemeral (Last.fm expires it on its own), so a failure is never queued.
 #[tauri::command]
 pub async fn lastfm_update_now_playing(
+    app: AppHandle,
     artist: String,
     track: String,
     album: String,
@@ -484,8 +486,8 @@ pub async fn lastfm_update_now_playing(
     if let Some(d) = duration {
         params.insert("duration".into(), d.to_string());
     }
-    // Best-effort; the classification doesn't matter for now-playing.
-    let _ = post_signed(&client, params).await;
+    let outcome = post_signed(&client, params).await;
+    crate::diagnostics::note(&app, "network", format!("lastfm track.updateNowPlaying {outcome:?}"));
     Ok(())
 }
 
@@ -517,7 +519,9 @@ pub async fn lastfm_scrobble(
     };
 
     let params = scrobble_batch_params(std::slice::from_ref(&scrobble), &session_key);
-    match post_signed(&client, params).await {
+    let outcome = post_signed(&client, params).await;
+    crate::diagnostics::note(&app, "network", format!("lastfm track.scrobble {outcome:?}"));
+    match outcome {
         SendOutcome::Sent => {
             // Sent live, so a good moment to drain any backlog from an earlier
             // offline stretch.
@@ -543,6 +547,7 @@ pub async fn lastfm_scrobble(
 /// state isn't time-critical and isn't queued for retry (unlike scrobbles).
 #[tauri::command]
 pub async fn lastfm_love(
+    app: AppHandle,
     artist: String,
     track: String,
     loved: bool,
@@ -552,16 +557,15 @@ pub async fn lastfm_love(
         return Ok(());
     }
     let client = reqwest::Client::new();
+    let method = if loved { "track.love" } else { "track.unlove" };
     let mut params = BTreeMap::new();
-    params.insert(
-        "method".into(),
-        if loved { "track.love" } else { "track.unlove" }.into(),
-    );
+    params.insert("method".into(), method.into());
     params.insert("api_key".into(), API_KEY.into());
     params.insert("sk".into(), session_key);
     params.insert("artist".into(), artist);
     params.insert("track".into(), track);
-    let _ = post_signed(&client, params).await;
+    let outcome = post_signed(&client, params).await;
+    crate::diagnostics::note(&app, "network", format!("lastfm {method} {outcome:?}"));
     Ok(())
 }
 

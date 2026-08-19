@@ -6,6 +6,7 @@ import { persist } from "zustand/middleware";
 export type CloseButtonAction = "tray" | "quit";
 export type CacheAutoCleanPeriod = "off" | "daily" | "weekly" | "monthly";
 export type BackgroundMode = "ambient" | "plain";
+export type PlaybackEngine = "auto" | "embed";
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
@@ -43,6 +44,8 @@ type State = {
    *  scrobbling and off by default: an opt-in, since people often keep their
    *  likes intentionally different per platform. See `lib/lastfm.ts`. */
   lastfmLoveSync: boolean;
+  debugConsoleEnabled: boolean;
+  playbackEngine: PlaybackEngine;
   setCloseAction: (v: CloseButtonAction) => void;
   setCacheAutoClean: (v: CacheAutoCleanPeriod) => void;
   markCacheCleaned: () => void;
@@ -56,6 +59,8 @@ type State = {
   setLastfmSession: (username: string, sessionKey: string) => void;
   /** Forget the connected account and stop scrobbling. */
   clearLastfmSession: () => void;
+  setDebugConsoleEnabled: (v: boolean) => void;
+  setPlaybackEngine: (v: PlaybackEngine) => void;
 };
 
 /**
@@ -78,6 +83,8 @@ export const useSettingsStore = create<State>()(
       lastfmUsername: null,
       lastfmAvatar: null,
       lastfmLoveSync: false,
+      debugConsoleEnabled: false,
+      playbackEngine: "auto",
       setCloseAction: (closeAction) => set({ closeAction }),
       setCacheAutoClean: (cacheAutoClean) => set({ cacheAutoClean }),
       markCacheCleaned: () => set({ lastCacheCleanAt: Date.now() }),
@@ -99,6 +106,8 @@ export const useSettingsStore = create<State>()(
           lastfmEnabled: false,
           lastfmLoveSync: false,
         }),
+      setDebugConsoleEnabled: (debugConsoleEnabled) => set({ debugConsoleEnabled }),
+      setPlaybackEngine: (playbackEngine) => set({ playbackEngine }),
     }),
     { name: "ytm-settings" },
   ),
@@ -147,5 +156,12 @@ export function useDiscordPresenceSync(): void {
     invoke("discord_set_enabled", { enabled }).catch(() => {
       /* plain-vite dev without a Tauri backend — nothing to sync */
     });
+  }, [enabled]);
+}
+
+export function useDebugConsoleSync(): void {
+  const enabled = useSettingsStore((s) => s.debugConsoleEnabled);
+  useEffect(() => {
+    invoke(enabled ? "open_diag_window" : "close_diag_window").catch(() => {});
   }, [enabled]);
 }

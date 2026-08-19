@@ -1,4 +1,5 @@
 import {
+  CircleHelpIcon,
   DatabaseIcon,
   PaletteIcon,
   PlugIcon,
@@ -19,6 +20,7 @@ import { GeneralTab } from "@/components/settings/general-tab";
 import { AppearanceTab } from "@/components/settings/appearance-tab";
 import { StorageTab } from "@/components/settings/storage-tab";
 import { IntegrationsTab } from "@/components/settings/integrations-tab";
+import { HelpTab } from "@/components/settings/help-tab";
 import {
   useSettingsDialog,
   type SettingsTab,
@@ -30,6 +32,7 @@ const TABS: { id: SettingsTab; label: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon },
   { id: "storage", label: "Storage", icon: DatabaseIcon },
   { id: "integrations", label: "Integrations", icon: PlugIcon },
+  { id: "help", label: "Help", icon: CircleHelpIcon },
 ];
 
 /**
@@ -129,6 +132,7 @@ export function SettingsDialog() {
             {tab === "appearance" && <AppearanceTab />}
             {tab === "storage" && <StorageTab />}
             {tab === "integrations" && <IntegrationsTab />}
+            {tab === "help" && <HelpTab />}
           </div>
         </div>
       </DialogContent>

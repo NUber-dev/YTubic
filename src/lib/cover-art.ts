@@ -1,6 +1,7 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { createStore, del, entries, get, set } from "idb-keyval";
+import { diagLog } from "@/lib/diagnostics";
 
 /**
  * iTunes Search API as a hi-res cover-art fallback.
@@ -177,10 +178,15 @@ export async function lookupITunesCover(
 
       const term = encodeURIComponent(`${artist} ${title}`);
       const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=1`;
+      const started = performance.now();
       const res = await tauriFetch(url, {
         method: "GET",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
+      diagLog(
+        "network",
+        `itunes.apple.com GET ${res.status} ${Math.round(performance.now() - started)}ms`,
+      );
       if (!res.ok) {
         // Don't cache transient HTTP failures.
         return null;

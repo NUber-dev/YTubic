@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::{Mutex, Notify};
 
@@ -25,9 +25,11 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
 mod appid;
+mod diagnostics;
 mod discord;
 mod lastfm;
 mod media;
+mod player_engine;
 mod power;
 // Taskbar thumbnail toolbar (prev / play-pause / next under the taskbar
 // preview). Windows-only shell surface; see src/thumbbar.rs.
@@ -577,21 +579,21 @@ fn generate_account_id() -> String {
 /// common way a signed-in user is shown a sign-in button.
 async fn read_cookies_plain(app: &tauri::AppHandle) -> Option<String> {
     let path = active_cookies_path(app).await?;
-    read_jar_at(&path).await
+    read_jar_at(app, &path).await
 }
 
 /// Decrypt one account's jar off disk. Split out of
 /// `read_cookies_plain` so a refresh can compare against the specific
 /// account it is refreshing rather than whichever one is active.
-async fn read_jar_at(path: &std::path::Path) -> Option<String> {
+async fn read_jar_at(app: &tauri::AppHandle, path: &std::path::Path) -> Option<String> {
     let encrypted = match tokio::fs::read(path).await {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("[auth] no cookie jar at {}", path.display());
+            diagnostics::note(app, "auth", format!("no cookie jar at {}", path.display()));
             return None;
         }
         Err(e) => {
-            eprintln!("[auth] read cookie jar failed: {e}");
+            diagnostics::note(app, "auth", format!("read cookie jar failed: {e}"));
             return None;
         }
     };
@@ -599,18 +601,18 @@ async fn read_jar_at(path: &std::path::Path) -> Option<String> {
     let plain = match tokio::task::spawn_blocking(move || secure_store::decrypt(&encrypted)).await {
         Ok(Ok(p)) => p,
         Ok(Err(e)) => {
-            eprintln!("[auth] decrypt cookie jar failed ({len} bytes): {e}");
+            diagnostics::note(app, "auth", format!("decrypt cookie jar failed ({len} bytes): {e}"));
             return None;
         }
         Err(e) => {
-            eprintln!("[auth] decrypt join failed: {e}");
+            diagnostics::note(app, "auth", format!("decrypt join failed: {e}"));
             return None;
         }
     };
     match String::from_utf8(plain) {
         Ok(s) => Some(s),
         Err(e) => {
-            eprintln!("[auth] cookie jar is not valid UTF-8: {e}");
+            diagnostics::note(app, "auth", format!("cookie jar is not valid UTF-8: {e}"));
             None
         }
     }
@@ -1067,7 +1069,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     let account_id = generate_account_id();
     let webview_data = account_webview_dir(&app, &account_id);
     if let Err(e) = tokio::fs::create_dir_all(&webview_data).await {
-        eprintln!("[login] mkdir webview-data: {e}");
+        diagnostics::note(&app, "login", format!("mkdir webview-data: {e}"));
     }
     // Wiped wholesale on cancel/error (profile + any partial jar); kept
     // on success.
@@ -1107,10 +1109,13 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         // Ticks spent waiting for the handshake to finish after auth
         // cookies first appear (see below).
         let mut full_set_grace: u8 = 0;
+        let mut tick: u32 = 0;
         loop {
             tokio::time::sleep(Duration::from_millis(1500)).await;
+            tick += 1;
 
             let Some(win) = app_poll.get_webview_window("login") else {
+                diagnostics::note(&app_poll, "login", "window closed before auth completed");
                 let _ = app_poll.emit("login-cancelled", ());
                 let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
                 return;
@@ -1119,7 +1124,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             let cookies = match win.cookies() {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[login] cookies error: {e}");
+                    diagnostics::note(&app_poll, "login", format!("cookies error: {e}"));
                     continue;
                 }
             };
@@ -1131,6 +1136,15 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                         .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
                         .unwrap_or(false)
             });
+            diagnostics::note(
+                &app_poll,
+                "login",
+                format!(
+                    "tick={tick} cookies={} has_yt_auth={has_yt_auth} nudged_to_yt={nudged_to_yt} url={}",
+                    cookies.len(),
+                    win.url().map(|u| u.to_string()).unwrap_or_default(),
+                ),
+            );
 
             if !has_yt_auth {
                 // YT cookies aren't set yet. Two ways to land here:
@@ -1157,12 +1171,12 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                     if has_google_auth {
                         if let Ok(url) = "https://music.youtube.com/".parse::<tauri::Url>() {
                             match win.navigate(url) {
-                                Ok(()) => eprintln!(
-                                    "[login] google-auth detected without YT cookies; redirected webview to music.youtube.com"
+                                Ok(()) => diagnostics::note(
+                                    &app_poll,
+                                    "login",
+                                    "google-auth detected without YT cookies, redirected webview to music.youtube.com",
                                 ),
-                                Err(e) => eprintln!(
-                                    "[login] failed to redirect to YT: {e}"
-                                ),
+                                Err(e) => diagnostics::note(&app_poll, "login", format!("failed to redirect to YT: {e}")),
                             }
                         }
                         nudged_to_yt = true;
@@ -1200,20 +1214,20 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 match tokio::task::spawn_blocking(move || secure_store::encrypt(&plain)).await {
                     Ok(Ok(e)) => e,
                     Ok(Err(e)) => {
-                        eprintln!("[login] encrypt cookies: {e}");
+                        diagnostics::note(&app_poll, "login", format!("encrypt cookies: {e}"));
                         let _ = win.close();
                         let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
                         return;
                     }
                     Err(e) => {
-                        eprintln!("[login] encrypt join: {e}");
+                        diagnostics::note(&app_poll, "login", format!("encrypt join: {e}"));
                         let _ = win.close();
                         let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
                         return;
                     }
                 };
             if let Err(e) = write_atomic(&cookies_path, &encrypted).await {
-                eprintln!("[login] write account cookies: {e}");
+                diagnostics::note(&app_poll, "login", format!("write account cookies: {e}"));
                 let _ = win.close();
                 let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
                 return;
@@ -1232,7 +1246,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 // visible to the user as "account didn't appear in
                 // list". Surface it through the cancel event so the
                 // frontend at least flips out of the spinning state.
-                eprintln!("[login] write index: {e}");
+                diagnostics::note(&app_poll, "login", format!("write index: {e}"));
                 let _ = app_poll.emit("login-cancelled", ());
                 let _ = tokio::fs::remove_dir_all(
                     &account_cookies_path(&app_poll, &new_id)
@@ -1252,6 +1266,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             // dedup happens (by identity, email or avatar) and where
             // `accounts-changed` fires, so we never run the full reset
             // twice for one login flow.
+            diagnostics::note(&app_poll, "login", format!("success, account={new_id}"));
             let _ = app_poll.emit("login-success", &new_id);
             let _ = win.close();
             // Keep the WebView profile: it's the live session the periodic
@@ -1357,7 +1372,7 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     // store the keeper has actually reloaded into.
     let loads_before = KEEPER_PAGE_LOADS.load(Ordering::Relaxed);
     let (win, created) = ensure_session_keeper(app, id).await?;
-    eprintln!("[refresh] start id={id} keeper_created={created}");
+    diagnostics::note(app, "auth", format!("refresh start id={id} keeper_created={created}"));
     // A reused keeper is reloaded to force fresh authenticated traffic; a
     // just-created one is already loading the URL from the builder.
     if !created {
@@ -1419,9 +1434,12 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     let Some(plain) = captured else {
         return Err("no auth cookies after reload (profile logged out?)".into());
     };
-    eprintln!(
-        "[refresh] captured at tick={captured_at} cookies={captured_count} \
-         has_login_info={captured_login_info} page_load_confirmed={saw_page_load}"
+    diagnostics::note(
+        app,
+        "auth",
+        format!(
+            "refresh captured at tick={captured_at} cookies={captured_count} has_login_info={captured_login_info} page_load_confirmed={saw_page_load}"
+        ),
     );
 
     // The keeper's snapshot replaces the jar wholesale, which throws away
@@ -1431,17 +1449,17 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     // the right call and the semantics stay as they were, but the diff
     // has never been visible. Log it: if the keeper ever starts REGRESSING
     // values the replay path already learned, this is what will say so.
-    if let Some(existing) = read_jar_at(&account_cookies_path(app, id)).await {
+    if let Some(existing) = read_jar_at(app, &account_cookies_path(app, id)).await {
         let snapshot = String::from_utf8_lossy(&plain).into_owned();
         let before = jar_cookie_keys(&existing);
         let after = jar_cookie_keys(&snapshot);
         let dropped: Vec<&String> = before.difference(&after).collect();
         if !dropped.is_empty() {
-            eprintln!("[refresh] snapshot drops cookie(s) the jar held: {dropped:?}");
+            diagnostics::note(app, "auth", format!("refresh snapshot drops cookie(s) the jar held: {dropped:?}"));
         }
         let changed = changed_cookie_names(&existing, &snapshot);
         if !changed.is_empty() {
-            eprintln!("[refresh] snapshot rotates {changed:?}");
+            diagnostics::note(app, "auth", format!("refresh snapshot rotates {changed:?}"));
         }
     }
 
@@ -1553,9 +1571,10 @@ async fn run_refresh_loop(app: tauri::AppHandle) {
                 None => next_due = now_ts() + REFRESH_INTERVAL_SECS,
                 Some(active) if !account_webview_dir(&app, &active).exists() => {
                     if warned_profileless.as_deref() != Some(active.as_str()) {
-                        eprintln!(
-                            "[refresh] {active} has no persisted webview profile; its snapshot \
-                             cannot be renewed until the user signs in again"
+                        diagnostics::note(
+                            &app,
+                            "auth",
+                            format!("{active} has no persisted webview profile, snapshot cannot be renewed until the user signs in again"),
                         );
                         warned_profileless = Some(active.clone());
                     }
@@ -1568,13 +1587,13 @@ async fn run_refresh_loop(app: tauri::AppHandle) {
                     // cycle before.
                     if !power::wait_for_network(Duration::from_secs(60)).await {
                         if !warned_offline {
-                            eprintln!("[refresh] no internet; deferring until it comes back");
+                            diagnostics::note(&app, "auth", "refresh: no internet, deferring until it comes back");
                             warned_offline = true;
                         }
                         next_due = now_ts() + 30;
                     } else {
                         if warned_offline {
-                            eprintln!("[refresh] internet is back");
+                            diagnostics::note(&app, "auth", "refresh: internet is back");
                             warned_offline = false;
                         }
                         let previous = read_last_refresh(&app, &active).await;
@@ -1582,34 +1601,36 @@ async fn run_refresh_loop(app: tauri::AppHandle) {
                             Ok(()) => {
                                 let now = now_ts();
                                 match previous {
-                                    Some(t) => eprintln!(
-                                        "[refresh] renewed snapshot for {active} \
-                                         (previous succeeded {}s ago)",
-                                        now - t
+                                    Some(t) => diagnostics::note(
+                                        &app,
+                                        "auth",
+                                        format!("renewed snapshot for {active} (previous succeeded {}s ago)", now - t),
                                     ),
-                                    None => eprintln!("[refresh] renewed snapshot for {active}"),
+                                    None => diagnostics::note(&app, "auth", format!("renewed snapshot for {active}")),
                                 }
                                 write_last_refresh(&app, &active, now).await;
                                 failures = 0;
                                 next_due = now + REFRESH_INTERVAL_SECS;
                             }
                             Err(e) => {
-                                eprintln!("[refresh] {active}: {e}");
+                                diagnostics::note(&app, "auth", format!("refresh {active}: {e}"));
                                 // Separate "the keeper misbehaved" from
                                 // "the session is genuinely gone". Only
                                 // on the first failure, so a permanently
                                 // dead profile doesn't probe on a loop.
                                 if failures == 0 {
                                     match probe_session_alive(&app).await {
-                                        Ok(true) => eprintln!(
-                                            "[refresh] the jar still authenticates, so the \
-                                             keeper is what failed"
+                                        Ok(true) => diagnostics::note(
+                                            &app,
+                                            "auth",
+                                            "the jar still authenticates, so the keeper is what failed",
                                         ),
-                                        Ok(false) => eprintln!(
-                                            "[refresh] the jar no longer authenticates; this \
-                                             account needs a re-login"
+                                        Ok(false) => diagnostics::note(
+                                            &app,
+                                            "auth",
+                                            "the jar no longer authenticates, this account needs a re-login",
                                         ),
-                                        Err(e) => eprintln!("[refresh] liveness probe failed: {e}"),
+                                        Err(e) => diagnostics::note(&app, "auth", format!("liveness probe failed: {e}")),
                                     }
                                 }
                                 failures += 1;
@@ -2306,16 +2327,19 @@ async fn merge_response_cookies(
     // user out. If the session really is gone the keeper refresh fails
     // and leaves the jar alone; if it is fine, the snapshot is renewed.
     if !merged.blocked_deletions.is_empty() {
-        eprintln!(
-            "[auth] refused server expiry of identity cookie(s) {:?} from {host}; \
-             re-checking the session against the keeper",
-            merged.blocked_deletions
+        diagnostics::note(
+            &app,
+            "auth",
+            format!(
+                "refused server expiry of identity cookie(s) {:?} from {host}, re-checking the session against the keeper",
+                merged.blocked_deletions
+            ),
         );
         let app_probe = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Some(active) = read_index(&app_probe).await.active {
                 if let Err(e) = refresh_account_cookies(&app_probe, &active).await {
-                    eprintln!("[auth] post-expiry keeper re-check failed: {e}");
+                    diagnostics::note(&app_probe, "auth", format!("post-expiry keeper re-check failed: {e}"));
                 }
             }
         });
@@ -2325,7 +2349,7 @@ async fn merge_response_cookies(
     // is correct browser behavior. It has never been logged, so we have
     // no idea how often it fires in the field. Report it.
     for gone in jar_cookie_keys(&jar).difference(&jar_cookie_keys(&merged.jar)) {
-        eprintln!("[auth] server expired cookie {gone} (response host {host})");
+        diagnostics::note(&app, "auth", format!("server expired cookie {gone} (response host {host})"));
     }
 
     if !merged.needs_write {
@@ -2343,7 +2367,7 @@ async fn merge_response_cookies(
         .await
         .map_err(|e| format!("write jar: {e}"))?;
     if value_changed {
-        eprintln!("[auth] echoed rotated session cookie(s) into the active jar");
+        diagnostics::note(&app, "auth", "echoed rotated session cookie(s) into the active jar");
     }
     Ok(value_changed)
 }
@@ -2761,6 +2785,7 @@ struct StreamServer {
     /// `ytdlp::program` so a mid-session download takes effect
     /// immediately.
     ytdlp_bin: PathBuf,
+    app: tauri::AppHandle,
 }
 
 /// Read the `ephemeral` query flag from a stream/prefetch request.
@@ -3073,12 +3098,15 @@ fn spawn_downloader(
     state: Arc<DownloadState>,
 ) {
     let downloads = srv.downloads.clone();
+    let app = srv.app.clone();
     tokio::spawn(async move {
         let url = format!("https://www.youtube.com/watch?v={video_id}");
         let part_path = target_dir.join(format!("{video_id}.part"));
         let final_path = target_dir.join(format!("{video_id}.webm"));
         let _ = tokio::fs::create_dir_all(&target_dir).await;
         let _ = tokio::fs::remove_file(&part_path).await; // clean stale
+
+        diagnostics::note(&app, "stream", format!("{video_id}: spawning yt-dlp"));
 
         let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
         cmd.args([
@@ -3111,16 +3139,28 @@ fn spawn_downloader(
         // (see resolve_stream_ytdlp for rationale).
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn() {
+        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[stream] spawn {video_id}: {e}");
+                diagnostics::note(&app, "stream", format!("spawn {video_id}: {e}"));
                 state.complete.store(true, Ordering::Release);
                 state.notify.notify_waiters();
                 downloads.lock().await.remove(&map_key);
                 return;
             }
         };
+
+        let stderr = child.stderr.take().unwrap();
+        let stderr_app = app.clone();
+        let stderr_id = video_id.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    diagnostics::note(&stderr_app, "ytdlp", format!("{stderr_id}: {line}"));
+                }
+            }
+        });
 
         let mut stdout = child.stdout.take().unwrap();
         let mut file = tokio::fs::File::create(&part_path).await.ok();
@@ -3134,7 +3174,7 @@ fn spawn_downloader(
         loop {
             match tokio::time::timeout(READ_TIMEOUT, stdout.read(&mut buf)).await {
                 Err(_) => {
-                    eprintln!("[stream] read timeout for {video_id}; killing yt-dlp");
+                    diagnostics::note(&app, "stream", format!("read timeout for {video_id}, killing yt-dlp"));
                     let _ = child.start_kill();
                     ok = false;
                     break;
@@ -3144,7 +3184,7 @@ fn spawn_downloader(
                     let chunk = &buf[..n];
                     if let Some(ref mut f) = file {
                         if let Err(e) = f.write_all(chunk).await {
-                            eprintln!("[stream] write .part: {e}");
+                            diagnostics::note(&app, "stream", format!("write .part: {e}"));
                             file = None;
                             // A truncated prefix must NOT be renamed to .webm
                             // and cached — mark the whole download failed.
@@ -3154,7 +3194,7 @@ fn spawn_downloader(
                     state.notify.notify_waiters();
                 }
                 Ok(Err(e)) => {
-                    eprintln!("[stream] read stdout: {e}");
+                    diagnostics::note(&app, "stream", format!("read stdout: {e}"));
                     ok = false;
                     break;
                 }
@@ -3184,18 +3224,22 @@ fn spawn_downloader(
             .unwrap_or(0);
         if success && part_size >= MIN_AUDIO_BYTES {
             if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
-                eprintln!("[stream] rename: {e}");
+                diagnostics::note(&app, "stream", format!("rename: {e}"));
                 let _ = tokio::fs::remove_file(&part_path).await;
             } else {
-                eprintln!("[stream] cached {video_id} ({part_size} bytes)");
+                diagnostics::note(&app, "stream", format!("cached {video_id} ({part_size} bytes)"));
             }
         } else {
             if success {
-                eprintln!(
-                    "[stream] download too small for {video_id}: {part_size} bytes (min {MIN_AUDIO_BYTES})"
+                diagnostics::note(
+                    &app,
+                    "stream",
+                    format!(
+                        "download too small for {video_id}: {part_size} bytes (min {MIN_AUDIO_BYTES})"
+                    ),
                 );
             } else {
-                eprintln!("[stream] download failed {video_id}");
+                diagnostics::note(&app, "stream", format!("download failed {video_id}"));
             }
             let _ = tokio::fs::remove_file(&part_path).await;
         }
@@ -3291,9 +3335,13 @@ async fn stream_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    eprintln!(
-        "[stream] GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral}",
-        final_path.exists()
+    diagnostics::note(
+        &srv.app,
+        "stream",
+        format!(
+            "GET /stream/{video_id} range={range_hdr:?} cached={} ephemeral={ephemeral}",
+            final_path.exists()
+        ),
     );
 
     if !final_path.exists() {
@@ -3325,7 +3373,7 @@ async fn stream_handler(
         let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
         while !state.complete.load(Ordering::Acquire) {
             if tokio::time::Instant::now() >= deadline {
-                eprintln!("[stream] {video_id}: TIMEOUT after 120s");
+                diagnostics::note(&srv.app, "stream", format!("{video_id}: TIMEOUT after 120s"));
                 return (StatusCode::GATEWAY_TIMEOUT, "download timeout").into_response();
             }
             let notified = state.notify.notified();
@@ -3334,15 +3382,20 @@ async fn stream_handler(
         }
 
         if !final_path.exists() {
-            eprintln!(
-                "[stream] {video_id}: BAD_GATEWAY — complete but no .webm (elapsed {:.2}s)",
-                t0.elapsed().as_secs_f32()
+            diagnostics::note(
+                &srv.app,
+                "stream",
+                format!(
+                    "{video_id}: BAD_GATEWAY, complete but no .webm (elapsed {:.2}s)",
+                    t0.elapsed().as_secs_f32()
+                ),
             );
             return (StatusCode::BAD_GATEWAY, "download failed").into_response();
         }
-        eprintln!(
-            "[stream] {video_id}: download finished in {:.2}s",
-            t0.elapsed().as_secs_f32()
+        diagnostics::note(
+            &srv.app,
+            "stream",
+            format!("{video_id}: download finished in {:.2}s", t0.elapsed().as_secs_f32()),
         );
     }
 
@@ -3365,16 +3418,20 @@ async fn stream_handler(
             axum::http::HeaderValue::from_static(sniffed_ct),
         );
     }
-    eprintln!(
-        "[stream] {video_id}: responding {} ({:.2}s total) ct={:?} len={:?}",
-        resp.status(),
-        t0.elapsed().as_secs_f32(),
-        resp.headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-        resp.headers()
-            .get(axum::http::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok()),
+    diagnostics::note(
+        &srv.app,
+        "stream",
+        format!(
+            "{video_id}: responding {} ({:.2}s total) ct={:?} len={:?}",
+            resp.status(),
+            t0.elapsed().as_secs_f32(),
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            resp.headers()
+                .get(axum::http::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+        ),
     );
     resp
 }
@@ -3490,15 +3547,16 @@ async fn start_stream_server(
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
     ytdlp_bin: PathBuf,
+    app: tauri::AppHandle,
 ) {
     if let Err(e) = tokio::fs::create_dir_all(&cache_dir).await {
-        eprintln!("[stream-server] mkdir {cache_dir:?}: {e}");
+        diagnostics::note(&app, "stream-server", format!("mkdir {cache_dir:?}: {e}"));
     }
     if let Err(e) = tokio::fs::create_dir_all(&ephemeral_dir).await {
-        eprintln!("[stream-server] mkdir {ephemeral_dir:?}: {e}");
+        diagnostics::note(&app, "stream-server", format!("mkdir {ephemeral_dir:?}: {e}"));
     }
     if let Err(e) = tokio::fs::create_dir_all(&cover_dir).await {
-        eprintln!("[stream-server] mkdir {cover_dir:?}: {e}");
+        diagnostics::note(&app, "stream-server", format!("mkdir {cover_dir:?}: {e}"));
     }
 
     // Wipe whatever a previous (anonymous / Free) session left behind.
@@ -3516,16 +3574,18 @@ async fn start_stream_server(
             }
         }
         if wiped > 0 {
-            eprintln!("[stream-server] wiped {wiped} bytes from ephemeral dir");
+            diagnostics::note(&app, "stream-server", format!("wiped {wiped} bytes from ephemeral dir"));
         }
     }
 
+    let log_handle = app.clone();
     let server = StreamServer {
         cache_dir,
         ephemeral_dir,
         cover_dir,
         downloads: Arc::new(Mutex::new(HashMap::new())),
         ytdlp_bin,
+        app,
     };
 
     // Per-launch token as an unguessable path prefix. Baked into the base
@@ -3540,7 +3600,7 @@ async fn start_stream_server(
         .route("/prefetch/:video_id", get(prefetch_handler))
         .route("/cover/:filename", get(cover_serve_handler))
         .with_state(server);
-    let app = Router::new()
+    let router = Router::new()
         .nest(&format!("/{token}"), routes)
         .layer(CorsLayer::permissive());
 
@@ -3548,22 +3608,22 @@ async fn start_stream_server(
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[stream-server] bind failed: {e}");
+            diagnostics::note(&log_handle, "stream-server", format!("bind failed: {e}"));
             return;
         }
     };
     let port = match listener.local_addr() {
         Ok(a) => a.port(),
         Err(e) => {
-            eprintln!("[stream-server] local_addr failed: {e}");
+            diagnostics::note(&log_handle, "stream-server", format!("local_addr failed: {e}"));
             return;
         }
     };
     *port_state.lock().await = Some(port);
-    eprintln!("[stream-server] listening on 127.0.0.1:{port}");
+    diagnostics::note(&log_handle, "stream-server", format!("listening on 127.0.0.1:{port}"));
 
-    if let Err(e) = axum::serve(listener, app).await {
-        eprintln!("[stream-server] serve error: {e}");
+    if let Err(e) = axum::serve(listener, router).await {
+        diagnostics::note(&log_handle, "stream-server", format!("serve error: {e}"));
     }
 }
 
@@ -3701,6 +3761,7 @@ pub fn run() {
             None,
         ))
         .manage(state)
+        .manage(diagnostics::DiagState::default())
         .manage(CloseBehavior::default())
         .manage(JarWriteLock::default())
         .manage(RefreshGuard::default())
@@ -3742,6 +3803,11 @@ pub fn run() {
             focus_main_window,
             open_player_window,
             close_player_window,
+            diagnostics::diag_backlog,
+            diagnostics::open_diag_window,
+            diagnostics::close_diag_window,
+            diagnostics::diag_log,
+            player_engine::ensure_player_engine,
             media::media_update,
             media::media_clear,
             discord::discord_update,
@@ -3787,10 +3853,14 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            eprintln!(
-                "[boot] YTubic {} starting (debug={})",
-                app.package_info().version,
-                cfg!(debug_assertions)
+            diagnostics::note(
+                app.handle(),
+                "boot",
+                format!(
+                    "YTubic {} starting (debug={})",
+                    app.package_info().version,
+                    cfg!(debug_assertions)
+                ),
             );
             let port = port_handle.clone();
             let token = token_handle.clone();
@@ -3810,10 +3880,13 @@ pub fn run() {
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
             let handle = app.handle().clone();
-            eprintln!("[stream-server] cache dir: {cache_dir:?}");
-            eprintln!("[stream-server] ephemeral dir: {ephemeral_dir:?}");
-            eprintln!("[stream-server] cover dir: {cover_dir:?}");
+            diagnostics::note(
+                &handle,
+                "stream-server",
+                format!("cache dir: {cache_dir:?}, ephemeral dir: {ephemeral_dir:?}, cover dir: {cover_dir:?}"),
+            );
             let ytdlp_bin = ytdlp::managed_path(&handle);
+            let server_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
                 migrate_plaintext_cookies(&handle).await;
                 migrate_to_accounts_layout(&handle).await;
@@ -3821,7 +3894,15 @@ pub fn run() {
                 // email-based dedup before the UI reads the list.
                 dedup_accounts_by_identity(&handle).await;
                 cleanup_login_artifacts(&handle).await;
-                start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
+                start_stream_server(
+                    port,
+                    token,
+                    cache_dir,
+                    ephemeral_dir,
+                    cover_dir,
+                    ytdlp_bin,
+                    server_handle,
+                )
                     .await;
             });
             // Subscribe to resume-from-sleep before the loop starts, so a

@@ -4,7 +4,8 @@ export type SettingsTab =
   | "general"
   | "appearance"
   | "storage"
-  | "integrations";
+  | "integrations"
+  | "help";
 
 type State = {
   open: boolean;
