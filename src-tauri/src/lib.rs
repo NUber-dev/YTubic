@@ -1073,7 +1073,8 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
     // on success.
     let account_dir = accounts_dir(&app).join(&account_id);
 
-    let url = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F"
+    const SERVICE_LOGIN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
+    let url = SERVICE_LOGIN_URL
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
 
@@ -1142,10 +1143,12 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 //      hint. The user is stuck on a Google settings
                 //      page and YT never gets a chance to handshake.
                 //
-                // For case (2), force-navigate to music.youtube.com.
-                // YT's auto-sign-in flow picks up the .google.com
-                // session cookies and exchanges them for .youtube.com
-                // cookies that InnerTube actually needs.
+                // For case (2), replay the ServiceLogin URL. With a live
+                // Google session, Google's own redirect chain bridges the
+                // .google.com cookies into the .youtube.com cookies that
+                // InnerTube needs; navigating straight to music.youtube.com
+                // relied on YT's client-side auto-sign-in, which completed
+                // only about half the time and left a bare page.
                 if !nudged_to_yt {
                     let has_google_auth = cookies.iter().any(|c| {
                         let name = c.name();
@@ -1155,10 +1158,10 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                                 .unwrap_or(false)
                     });
                     if has_google_auth {
-                        if let Ok(url) = "https://music.youtube.com/".parse::<tauri::Url>() {
+                        if let Ok(url) = SERVICE_LOGIN_URL.parse::<tauri::Url>() {
                             match win.navigate(url) {
                                 Ok(()) => eprintln!(
-                                    "[login] google-auth detected without YT cookies; redirected webview to music.youtube.com"
+                                    "[login] google-auth detected without YT cookies; replayed ServiceLogin so Google bridges the youtube.com cookies itself"
                                 ),
                                 Err(e) => eprintln!(
                                     "[login] failed to redirect to YT: {e}"
