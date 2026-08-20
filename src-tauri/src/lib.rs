@@ -2688,6 +2688,12 @@ async fn ensure_ytdlp(app: tauri::AppHandle) {
     ytdlp::ensure(app).await;
 }
 
+/// Read bounded, non-networked audio-engine diagnostics for About.
+#[tauri::command]
+async fn get_ytdlp_diagnostics(app: tauri::AppHandle) -> ytdlp::Diagnostics {
+    ytdlp::diagnostics(&app).await
+}
+
 /// Run yt-dlp to resolve a videoId into metadata JSON.
 #[tauri::command]
 fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
@@ -3715,6 +3721,7 @@ pub fn run() {
         .manage(lastfm::LastfmState::default())
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
+            get_ytdlp_diagnostics,
             resolve_stream_ytdlp,
             get_stream_base_url,
             start_login,
