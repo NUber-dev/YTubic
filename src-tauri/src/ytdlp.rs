@@ -448,7 +448,6 @@ async fn update_bundle(managed: &Path) {
 /// serves. One HEAD request, and unlike the GitHub API it carries no rate
 /// limit — the same reason the download URLs above go through
 /// `latest/download/`.
-#[cfg(target_os = "macos")]
 async fn latest_release_tag() -> Option<String> {
     let resp = reqwest::Client::new()
         .head("https://github.com/yt-dlp/yt-dlp/releases/latest")
@@ -468,13 +467,12 @@ async fn latest_release_tag() -> Option<String> {
 }
 
 /// Version the installed copy reports, or `None` if it won't run.
-#[cfg(target_os = "macos")]
 async fn installed_version(managed: &Path) -> Option<String> {
-    let out = tokio::process::Command::new(managed)
-        .arg("--version")
-        .output()
-        .await
-        .ok()?;
+    let mut cmd = tokio::process::Command::new(managed);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd.output().await.ok()?;
     if !out.status.success() {
         return None;
     }
@@ -515,6 +513,24 @@ async fn run_self_update(managed: &Path) {
     };
     if tokio::time::timeout(UPDATE_TIMEOUT, run).await.is_err() {
         eprintln!("[ytdlp] self-update timed out");
+    }
+
+    // `-U` reports its own success and can still leave the old copy in
+    // place (it has, silently, for weeks at a time). Because the stamp is
+    // refreshed before the attempt, a quiet failure buys another 72 hours
+    // on a binary YouTube may already have broken, so confirm the version
+    // actually moved, and fall back to re-fetching the release asset when
+    // it didn't. Same path the first-run download takes.
+    let Some(latest) = latest_release_tag().await else {
+        return;
+    };
+    if installed_version(managed).await.as_deref() == Some(latest.as_str()) {
+        return;
+    }
+    eprintln!("[ytdlp] self-update left us behind {latest}; re-downloading");
+    match download(managed).await {
+        Ok(()) => eprintln!("[ytdlp] re-downloaded {latest}"),
+        Err(e) => eprintln!("[ytdlp] re-download failed: {e}"),
     }
 }
 

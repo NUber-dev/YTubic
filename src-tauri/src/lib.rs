@@ -2698,12 +2698,13 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
     let mut command = std::process::Command::new(ytdlp::program(&ytdlp::managed_path(&app)));
     command.args([
         "-j",
+        // Progressive only: the resolved URL is handed straight to an
+        // <audio> element, which can't play the m3u8 formats some
+        // clients now advertise (and we ship no ffmpeg to remux them).
         "-f",
-        "bestaudio",
+        "bestaudio[protocol^=http]/bestaudio",
         "--no-playlist",
         "--no-warnings",
-        "--extractor-args",
-        "youtube:player_client=tv,android_vr",
         &url,
     ]);
     // Windows: a console-less GUI process spawning the console-subsystem
@@ -2741,8 +2742,16 @@ type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 // search, liked songs). We deliberately do NOT forward cookies to
 // yt-dlp: YouTube's bot-detection treats any authenticated yt-dlp
 // request as a bot and strips every real audio format, leaving only
-// storyboard thumbnails — so anonymous streaming via the android_vr/
-// ios/mweb clients actually works better than authenticated streaming.
+// storyboard thumbnails, so anonymous streaming actually works
+// better than authenticated streaming.
+//
+// Nor do we pin `--extractor-args youtube:player_client=...` any more.
+// YouTube keeps taking clients away (as of 2026-08 `tv` is SABR-only and
+// `android_vr`/`ios`/`mweb` need a GVS PO token, so the old
+// `tv,android_vr` pin resolved to zero audio formats and every uncached
+// track failed). yt-dlp's own default client list is the thing upstream
+// keeps working, and the managed binary self-updates, so pinning here
+// only opts us out of those fixes.
 #[derive(Clone)]
 struct StreamServer {
     /// Persistent cache. Tracks land here for Premium-authenticated
@@ -3083,7 +3092,7 @@ fn spawn_downloader(
         let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
         cmd.args([
             "-f",
-            "bestaudio[ext=webm]/bestaudio",
+            "bestaudio[ext=webm][protocol^=http]/bestaudio[protocol^=http]/bestaudio",
             "--no-playlist",
             "--no-warnings",
             "--no-part",
@@ -3101,8 +3110,6 @@ fn spawn_downloader(
             "3",
             "--socket-timeout",
             "15",
-            "--extractor-args",
-            "youtube:player_client=tv,android_vr",
             "-o",
             "-",
         ]);
