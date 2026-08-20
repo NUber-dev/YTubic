@@ -34,9 +34,11 @@ export function useYtdlpSetup(): void {
     let dispose: (() => void) | undefined;
     let updateTimer: number | undefined;
 
-    const ensureYtdlp = () => {
-      void invoke("ensure_ytdlp").catch((err) => {
-        console.error("[ytdlp] ensure_ytdlp failed:", err);
+    const runYtdlpCommand = (
+      command: "ensure_ytdlp" | "check_ytdlp_update",
+    ) => {
+      void invoke(command).catch((err) => {
+        console.error(`[ytdlp] ${command} failed:`, err);
       });
     };
 
@@ -62,7 +64,7 @@ export function useYtdlpSetup(): void {
           action: {
             label: "Retry",
             onClick: () => {
-              void invoke("ensure_ytdlp");
+              runYtdlpCommand("ensure_ytdlp");
             },
           },
         });
@@ -74,11 +76,14 @@ export function useYtdlpSetup(): void {
       }
       dispose = un;
       // Listener is live — safe to start the Rust side now.
-      ensureYtdlp();
+      runYtdlpCommand("ensure_ytdlp");
       // Closing the main window hides this process to the tray by default,
       // so it may not launch again for weeks. Keep checking while it lives;
       // the Rust-side stamp makes every early poll a local no-op.
-      updateTimer = window.setInterval(ensureYtdlp, UPDATE_POLL_INTERVAL_MS);
+      updateTimer = window.setInterval(
+        () => runYtdlpCommand("check_ytdlp_update"),
+        UPDATE_POLL_INTERVAL_MS,
+      );
     });
 
     return () => {
