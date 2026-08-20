@@ -80,6 +80,7 @@ export const WHATS_NEW: WhatsNewEntry[] = [
         text: "The seek bar and its handle read clearly in both themes.",
       },
     ],
+    note: "Thanks to TavoNiievez and victoria-rose, who diagnosed the playback and library problems before this release.",
   },
   {
     version: "0.4.5",
