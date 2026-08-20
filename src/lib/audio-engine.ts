@@ -677,9 +677,13 @@ export function useAudioEngine() {
   // track / play-state / duration change — never the 2s position refresh
   // above. Discord rate-limits activity updates, and it derives its own
   // progress bar from the start/end timestamps, so one push animates the bar
-  // for the whole song. The worker + (re)connect lifecycle live in
-  // src-tauri/src/discord.rs; the on/off toggle is mirrored separately by
-  // useDiscordPresenceSync, which also clears the activity when disabled.
+  // for the whole song. Pausing hands the worker `paused: true`, which takes
+  // the card down entirely: a Listening activity has no paused look, so
+  // anything left up keeps claiming the user is listening.
+  //
+  // The worker + (re)connect lifecycle live in src-tauri/src/discord.rs; the
+  // on/off toggle is mirrored separately by useDiscordPresenceSync, which
+  // also clears the activity when disabled.
   const discordRp = useSettingsStore((s) => s.discordRichPresence);
   useEffect(() => {
     if (!discordRp) return; // disabled → useDiscordPresenceSync cleared it
@@ -691,7 +695,7 @@ export function useAudioEngine() {
     }
     const dur = Number.isFinite(s.duration) ? s.duration : 0;
     // Timestamps (hence the progress bar) only while actually playing: Discord
-    // can't freeze a bar, so paused shows none rather than a wrong one. Unix
+    // can't freeze a bar, so paused sends none rather than a wrong one. Unix
     // milliseconds, per Discord's Activity spec.
     let startMs: number | null = null;
     let endMs: number | null = null;
@@ -699,6 +703,8 @@ export function useAudioEngine() {
       startMs = Math.round(Date.now() - s.position * 1000);
       endMs = Math.round(startMs + dur * 1000);
     }
+    // `paused` rides along separately: a track still resolving its duration
+    // has no timestamps either, and the worker must not read that as a pause.
     void invoke("discord_update", {
       title: t.title,
       artist: buildArtistLabel(t),
@@ -706,6 +712,7 @@ export function useAudioEngine() {
       imageUrl: pickThumbnail(t.thumbnails, 512) ?? "",
       startMs,
       endMs,
+      paused: !s.playing,
     }).catch(() => {});
   }, [track, playing, duration, discordRp]);
 }

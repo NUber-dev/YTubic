@@ -11,6 +11,9 @@
 //   * Discord rate-limits activity updates, so the frontend only pushes on
 //     track / play-state change (not the 2s SMTC position refresh), and the
 //     worker additionally dedupes identical presences.
+//   * Discord has no paused state for a Listening activity, so a pause clears
+//     the card outright. Leaving it up would keep telling everyone the user is
+//     listening for as long as the app stays open.
 // Commands just drop a message on a channel; the caller never blocks.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -45,6 +48,10 @@ const LOGO_URL: &str =
 /// A track's presence as the frontend sees it. `start_ms`/`end_ms` are Unix
 /// milliseconds (per Discord's Activity spec) and are `None` while paused, so
 /// Discord shows no progress bar rather than a wrong one.
+///
+/// `paused` is tracked separately rather than inferred from the missing
+/// timestamps: a track whose duration hasn't resolved yet also has none, and
+/// that must not be mistaken for a pause.
 struct Presence {
     title: String,
     artist: String,
@@ -52,20 +59,17 @@ struct Presence {
     image_url: String,
     start_ms: Option<i64>,
     end_ms: Option<i64>,
+    paused: bool,
 }
 
 impl Presence {
     /// Dedup key for skipping redundant IPC writes. Deliberately excludes the
-    /// exact timestamps (they drift a little on every push); `start_ms.is_some()`
-    /// still distinguishes the playing state (has a bar) from paused (no bar).
+    /// exact timestamps (they drift a little on every push); `paused` still
+    /// separates the playing card from the cleared one.
     fn signature(&self) -> String {
         format!(
             "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
-            self.title,
-            self.artist,
-            self.album,
-            self.image_url,
-            self.start_ms.is_some(),
+            self.title, self.artist, self.album, self.image_url, self.paused,
         )
     }
 }
@@ -208,6 +212,12 @@ fn worker(rx: Receiver<Msg>) {
         };
 
         if client.is_none() {
+            // Paused means the desired state is "no card", and a connection we
+            // never opened has none to take down. Wait for playback to resume
+            // rather than dialling Discord every tick to say nothing.
+            if p.paused {
+                continue;
+            }
             client = connect();
             if client.is_none() {
                 continue; // Discord not up yet — retry on the next tick.
@@ -238,7 +248,18 @@ fn worker(rx: Receiver<Msg>) {
         }
 
         if let Some(c) = client.as_mut() {
-            match push(c, p) {
+            // Paused clears the card instead of leaving one that still reads
+            // "Listening to YTubic". Routed through the same dedup / rate-limit
+            // path as a normal push (rather than fired straight from the
+            // message handler) so toggling play/pause can't burst past
+            // Discord's limit, and so the re-assert tick keeps re-clearing a
+            // card Discord might otherwise leave up for hours.
+            let result = if p.paused {
+                c.clear_activity()
+            } else {
+                push(c, p)
+            };
+            match result {
                 Ok(()) => {
                     last_sig = Some(sig);
                     last_push_at = Some(now);
@@ -269,6 +290,7 @@ pub fn discord_update(
     image_url: String,
     start_ms: Option<i64>,
     end_ms: Option<i64>,
+    paused: bool,
 ) {
     handle.send(Msg::Update(Presence {
         title,
@@ -277,6 +299,7 @@ pub fn discord_update(
         image_url,
         start_ms,
         end_ms,
+        paused,
     }));
 }
 
