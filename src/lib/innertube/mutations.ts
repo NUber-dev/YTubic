@@ -1,4 +1,10 @@
-import { innertubePost, rawBrowse, type YtNode } from "./shared";
+import {
+  collectContinuationItems,
+  innertubePost,
+  rawBrowse,
+  readPagingToken,
+  type YtNode,
+} from "./shared";
 
 /**
  * Mutating InnerTube actions (likes + playlist edits). All require the
@@ -60,8 +66,9 @@ export async function fetchUserPlaylists(): Promise<UserPlaylist[]> {
   const json = await rawBrowse("FEmusic_liked_playlists");
   const tabs: YtNode[] =
     json?.contents?.singleColumnBrowseResultsRenderer?.tabs ?? [];
-  const sections: YtNode[] =
-    tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
+  const sectionList: YtNode | undefined =
+    tabs[0]?.tabRenderer?.content?.sectionListRenderer;
+  const sections: YtNode[] = sectionList?.contents ?? [];
 
   const out: UserPlaylist[] = [];
   for (const section of sections) {
@@ -69,7 +76,17 @@ export async function fetchUserPlaylists(): Promise<UserPlaylist[]> {
       section?.gridRenderer ??
       section?.musicShelfRenderer ??
       section?.musicCarouselShelfRenderer;
-    const items: YtNode[] = shelf?.items ?? shelf?.contents ?? [];
+    const firstPage: YtNode[] = shelf?.items ?? shelf?.contents ?? [];
+    // The shelf is paged at ~25 rows, so an owner of 30+ playlists would
+    // otherwise find the "Add to playlist" submenu missing everything past
+    // the first page.
+    const token =
+      readPagingToken(shelf) ??
+      (sections.length === 1 ? readPagingToken(sectionList) : undefined);
+    const items: YtNode[] = [
+      ...firstPage,
+      ...(await collectContinuationItems(token)),
+    ];
     for (const raw of items) {
       const r =
         raw?.musicTwoRowItemRenderer ??

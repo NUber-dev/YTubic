@@ -299,6 +299,131 @@ export function rawBrowseContinuation(token: string): Promise<YtNode> {
 }
 
 /**
+ * Paging token belonging to ONE container (a gridRenderer, musicShelfRenderer
+ * or the object a continuation page unwrapped to), read only off that node.
+ *
+ * Deliberately not `findContinuationToken`: that walks the whole response and
+ * returns whatever it hits first, which on a library page can be a filter
+ * chip's reload token rather than the grid's own next-page token. Following
+ * the wrong one either loops or silently returns nothing.
+ *
+ * Two shapes in the wild: the legacy `continuations[].nextContinuationData`
+ * and the newer trailing `continuationItemRenderer` appended to the item list.
+ */
+export function readPagingToken(container: YtNode | undefined): string | undefined {
+  if (!container) return undefined;
+  const conts: YtNode[] = container.continuations ?? [];
+  for (const c of conts) {
+    const legacy: string | undefined = c?.nextContinuationData?.continuation;
+    if (legacy) return legacy;
+    const modern: string | undefined =
+      c?.continuationEndpoint?.continuationCommand?.token ??
+      c?.continuationCommand?.token;
+    if (modern) return modern;
+  }
+  const items: YtNode[] = container.items ?? container.contents ?? [];
+  const last = items[items.length - 1];
+  const token: string | undefined =
+    last?.continuationItemRenderer?.continuationEndpoint?.continuationCommand
+      ?.token;
+  return token;
+}
+
+/**
+ * A `sectionListContinuation` hands back whole sections rather than rows, so
+ * unwrap any row that is itself a grid or shelf into the rows it holds. Rows
+ * that are already item renderers pass through untouched.
+ */
+function flattenContainerRows(rows: YtNode[]): YtNode[] {
+  const out: YtNode[] = [];
+  for (const row of rows) {
+    const inner: YtNode | undefined =
+      row?.gridRenderer ?? row?.musicShelfRenderer ?? row?.musicPlaylistShelfRenderer;
+    const nested: YtNode[] | undefined = inner?.items ?? inner?.contents;
+    if (nested?.length) out.push(...nested);
+    else out.push(row);
+  }
+  return out;
+}
+
+/**
+ * Unwrap a /browse continuation response into the rows it carries plus the
+ * token for the page after it. Covers every wrapper YTM returns for a paged
+ * library grid or shelf; an unrecognized shape yields no items, which ends
+ * the walk rather than looping.
+ */
+export function parseContinuationPage(json: YtNode | undefined): {
+  items: YtNode[];
+  token?: string;
+} {
+  const cc: YtNode | undefined = json?.continuationContents;
+  const container: YtNode | undefined =
+    cc?.gridContinuation ??
+    cc?.musicShelfContinuation ??
+    cc?.musicPlaylistShelfContinuation ??
+    cc?.sectionListContinuation ??
+    cc?.playlistVideoListContinuation;
+  if (container) {
+    const items: YtNode[] = container.items ?? container.contents ?? [];
+    return { items: flattenContainerRows(items), token: readPagingToken(container) };
+  }
+
+  // Newer responses skip `continuationContents` and append through an action.
+  const actions: YtNode[] = json?.onResponseReceivedActions ?? [];
+  for (const a of actions) {
+    const appended: YtNode[] | undefined =
+      a?.appendContinuationItemsAction?.continuationItems;
+    if (!appended?.length) continue;
+    return {
+      items: flattenContainerRows(appended),
+      token: readPagingToken({ items: appended }),
+    };
+  }
+  return { items: [] };
+}
+
+// A library grid hands back ~25 rows a page, so a 500-playlist library is 20
+// requests. The cap is a runaway guard (a token that keeps returning itself
+// would otherwise spin forever), set far above any real library.
+const MAX_CONTINUATION_PAGES = 40;
+
+/**
+ * Follow a container's paging tokens to exhaustion and return every row past
+ * the first page, in order.
+ *
+ * Truncation is the failure mode this exists to prevent, but a mid-walk error
+ * still can't be fatal: callers use this for library shelves where showing
+ * the pages that did load beats showing an error, so a failed request just
+ * ends the walk. Repeated tokens are dropped as well, since a server that
+ * hands back the token it was given would otherwise loop.
+ */
+export async function collectContinuationItems(
+  firstToken: string | undefined,
+): Promise<YtNode[]> {
+  const out: YtNode[] = [];
+  const seen = new Set<string>();
+  let token = firstToken;
+  for (let page = 0; token && page < MAX_CONTINUATION_PAGES; page++) {
+    if (seen.has(token)) break;
+    seen.add(token);
+    let json: YtNode;
+    try {
+      json = await rawBrowseContinuation(token);
+    } catch (e) {
+      if (import.meta.env.DEV) {
+        console.debug("[innertube] continuation page failed:", e);
+      }
+      break;
+    }
+    const { items, token: nextToken } = parseContinuationPage(json);
+    if (items.length === 0) break;
+    out.push(...items);
+    token = nextToken;
+  }
+  return out;
+}
+
+/**
  * Follow a RELOAD continuation (`reloadContinuationData`) — the kind the
  * playlist Suggestions shelf uses for its refresh action. Unlike next-
  * continuations these are sent as query params, matching the web client
@@ -896,10 +1021,13 @@ export function collectShelfNodes(sections: YtNode[]): YtNode[] {
     }
     if (node.gridRenderer?.items) {
       // gridRenderer wraps raw two-row items; synthesize a shelf-like node.
+      // `continuations` rides along: the grid is what owns the paging token,
+      // and a caller that drops it here shows only the first ~25 rows.
       out.push({
         musicShelfRenderer: {
           title: node.gridRenderer.header?.gridHeaderRenderer?.title,
           contents: node.gridRenderer.items,
+          continuations: node.gridRenderer.continuations,
         },
       });
     }

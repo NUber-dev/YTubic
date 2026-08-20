@@ -1,8 +1,10 @@
 import type { ShelfItem } from "./types";
 import {
+  collectContinuationItems,
   collectShelfNodes,
   mapShelfWrapper,
   rawBrowse,
+  readPagingToken,
   type YtNode,
 } from "./shared";
 
@@ -23,16 +25,53 @@ async function browseSections(browseId: string): Promise<LibrarySection[]> {
   const json = await rawBrowse(browseId);
   const tabs: YtNode[] =
     json?.contents?.singleColumnBrowseResultsRenderer?.tabs ?? [];
-  const sections: YtNode[] =
-    tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
+  const sectionList: YtNode | undefined =
+    tabs[0]?.tabRenderer?.content?.sectionListRenderer;
+  const sections: YtNode[] = sectionList?.contents ?? [];
 
   const shelfNodes = collectShelfNodes(sections);
+  // A library shelf is paged: the browse response carries roughly the first
+  // 25 rows and a token for the rest. Without following it, a library of 30+
+  // playlists (or artists, or albums) renders as ~25 and the remainder simply
+  // isn't there. Shelves are walked in parallel because a library page can
+  // hold several and they page independently.
+  const paged = await Promise.all(
+    shelfNodes.map(async (wrapper, i) => {
+      const shelf: YtNode =
+        wrapper.musicShelfRenderer ??
+        wrapper.musicCarouselShelfRenderer ??
+        wrapper;
+      // The token normally sits on the grid/shelf itself. When a one-shelf
+      // page hangs it off the section list instead, that is unambiguously
+      // this shelf's, so take it rather than render a truncated library.
+      const token =
+        readPagingToken(shelf) ??
+        (shelfNodes.length === 1 ? readPagingToken(sectionList) : undefined);
+      const rest = await collectContinuationItems(token);
+      return { wrapper, i, rest };
+    }),
+  );
+
   const out: LibrarySection[] = [];
-  shelfNodes.forEach((wrapper, i) => {
+  for (const { wrapper, i, rest } of paged) {
     const { title, items } = mapShelfWrapper(wrapper, i);
-    if (items.length === 0) return;
-    out.push({ id: `${title}-${i}`, title, items });
-  });
+    // Continuation rows arrive as the same renderers the first page used, so
+    // they map through the identical path rather than a parallel one.
+    const more = rest.length
+      ? mapShelfWrapper({ musicShelfRenderer: { contents: rest } }, i).items
+      : [];
+    // Dedupe across the page boundary: the row keys the grid renders with
+    // are these ids, so a row YTM happens to repeat would collide.
+    const seen = new Set<string>();
+    const all = [...items, ...more].filter((it) => {
+      if (!it.id) return true;
+      if (seen.has(it.id)) return false;
+      seen.add(it.id);
+      return true;
+    });
+    if (all.length === 0) continue;
+    out.push({ id: `${title}-${i}`, title, items: all });
+  }
   return out;
 }
 
