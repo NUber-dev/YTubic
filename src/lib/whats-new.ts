@@ -55,6 +55,33 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.6",
+    date: "August 20, 2026",
+    summary: "Playback fix and a full library listing",
+    changes: [
+      {
+        type: "fixed",
+        title: "Songs would not play",
+        text: "Anything not already cached failed to start. YouTube stopped serving the playback clients the app asked for.",
+      },
+      {
+        type: "fixed",
+        title: "Large libraries were cut short",
+        text: "Only about the first 25 playlists, albums and artists were listed; the rest are back.",
+      },
+      {
+        type: "fixed",
+        title: "Discord stayed on a paused song",
+        text: "Pausing now takes the status down instead of leaving it up for hours.",
+      },
+      {
+        type: "fixed",
+        title: "Invisible progress bar in the light theme",
+        text: "The seek bar and its handle were drawn for the dark theme only.",
+      },
+    ],
+  },
+  {
     version: "0.4.5",
     date: "August 19, 2026",
     summary: "Share links, album menus and macOS fixes",
