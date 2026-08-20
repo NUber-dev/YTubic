@@ -68,6 +68,9 @@ const DOWNLOAD_URL: &str =
 
 /// How often to let the managed copy check for an update.
 const UPDATE_INTERVAL: Duration = Duration::from_secs(72 * 60 * 60);
+/// Bound version probes used by update verification and the About dialog.
+/// The cold macOS directory bundle can legitimately take about 30 seconds.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(45);
 /// Hard cap on the `-U` self-update run.
 #[cfg(not(target_os = "macos"))]
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -381,6 +384,28 @@ fn update_stamp_path(managed: &Path) -> PathBuf {
     install_root(managed).join("last-update-check")
 }
 
+fn update_stamp_time(managed: &Path) -> Option<u64> {
+    let raw = std::fs::read_to_string(update_stamp_path(managed)).ok()?;
+    raw.trim().parse().ok()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostics {
+    pub version: Option<String>,
+    pub last_check_at: Option<u64>,
+}
+
+/// Read the managed version and existing persistent update stamp. No update
+/// or network request is performed, and the subprocess probe is bounded.
+pub async fn diagnostics(app: &tauri::AppHandle) -> Diagnostics {
+    let managed = managed_path(app);
+    Diagnostics {
+        version: installed_version(&managed).await,
+        last_check_at: update_stamp_time(&managed),
+    }
+}
+
 fn touch_update_stamp(managed: &Path) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -390,8 +415,7 @@ fn touch_update_stamp(managed: &Path) {
 }
 
 fn update_stamp_age(managed: &Path) -> Option<Duration> {
-    let raw = std::fs::read_to_string(update_stamp_path(managed)).ok()?;
-    let then = raw.trim().parse::<u64>().ok()?;
+    let then = update_stamp_time(managed)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -472,7 +496,11 @@ async fn installed_version(managed: &Path) -> Option<String> {
     cmd.arg("--version");
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let out = cmd.output().await.ok()?;
+    cmd.kill_on_drop(true);
+    let out = tokio::time::timeout(VERSION_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
     if !out.status.success() {
         return None;
     }

@@ -2727,6 +2727,12 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
     String::from_utf8(output.stdout).map_err(|e| format!("stdout not utf8: {e}"))
 }
 
+/// Read bounded, non-networked audio-engine diagnostics for About.
+#[tauri::command]
+async fn get_ytdlp_diagnostics(app: tauri::AppHandle) -> ytdlp::Diagnostics {
+    ytdlp::diagnostics(&app).await
+}
+
 /// Lifecycle of a single track's yt-dlp download. yt-dlp writes
 /// bytes into a `<videoId>.part` file which is renamed to
 /// `<videoId>.webm` on successful completion; stream handlers block on
@@ -3744,6 +3750,7 @@ pub fn run() {
             autostart_is_enabled,
             notify_track,
             get_cache_dir,
+            get_ytdlp_diagnostics,
             set_cache_dir,
             pick_cache_folder,
             focus_main_window,

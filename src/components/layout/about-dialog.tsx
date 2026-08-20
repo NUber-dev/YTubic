@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Dialog,
@@ -19,6 +20,11 @@ import { DiscordIcon, GithubIcon } from "@/components/shared/brand-icons";
 
 const REPO_URL = "https://github.com/NUber-dev/YTubic";
 const DISCORD_URL = "https://discord.gg/4gccUpZyYH";
+
+type YtdlpDiagnostics = {
+  version: string | null;
+  lastCheckAt: number | null;
+};
 
 const CREDITS: { name: string; role: string; url: string }[] = [
   {
@@ -47,12 +53,16 @@ export function AboutDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [version, setVersion] = useState<string>("");
+  const [ytdlp, setYtdlp] = useState<YtdlpDiagnostics | null>(null);
 
   useEffect(() => {
     if (!open) return;
     getVersion()
       .then(setVersion)
       .catch(() => setVersion(""));
+    invoke<YtdlpDiagnostics>("get_ytdlp_diagnostics")
+      .then(setYtdlp)
+      .catch(() => setYtdlp(null));
   }, [open]);
 
   const link = (url: string) => () => {
@@ -96,6 +106,17 @@ export function AboutDialog({
           affiliated with, endorsed by, or sponsored by Google or YouTube.
           "YouTube" and "YouTube Music" are trademarks of Google LLC.
         </p>
+
+        {ytdlp && (
+          <p className="text-xs text-muted-foreground">
+            Audio engine: yt-dlp {ytdlp.version ?? "unavailable"}. Last update
+            check:{" "}
+            {ytdlp.lastCheckAt
+              ? new Date(ytdlp.lastCheckAt * 1000).toLocaleString()
+              : "never"}
+            .
+          </p>
+        )}
 
         {IS_BETA_PLATFORM && (
           <p className="text-sm text-muted-foreground">
