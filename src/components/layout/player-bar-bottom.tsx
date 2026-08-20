@@ -28,10 +28,10 @@ import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
 import { QueuePopover } from "@/components/layout/queue-panel";
 import {
-  LyricsBody,
   LyricsSourceButton,
   useLyricsView,
 } from "@/components/layout/lyrics-view";
+import { PlayerMediaPanel } from "@/components/layout/player-media-panel";
 import {
   ProgressSlider,
   VolumeControl,
@@ -233,7 +233,7 @@ export function PlayerBarBottom() {
         {/* RIGHT wing: secondary actions, justified to the right edge. */}
         <div className="flex flex-1 items-center justify-end gap-0.5">
           {track ? <LikeDislikeButtons videoId={track.videoId} track={track} /> : null}
-          <LyricsPopover state={lyricsState} />
+          <LyricsPopover state={lyricsState} videoId={track?.videoId} />
           <QueuePopover />
           <VolumeControl direction="vertical" />
           <PlayerMoreMenu track={track} />
@@ -270,8 +270,10 @@ export function PlayerBarBottom() {
 
 function LyricsPopover({
   state,
+  videoId,
 }: {
   state: ReturnType<typeof useLyricsView>;
+  videoId?: string;
 }) {
   if (!state.hasTrack) {
     return (
@@ -296,15 +298,14 @@ function LyricsPopover({
         align="end"
         side="top"
         sideOffset={12}
-        className="flex h-[28rem] w-[24rem] flex-col gap-2 p-0"
+        className="flex h-[28rem] w-[24rem] flex-col p-0"
       >
-        <header className="flex shrink-0 items-center justify-between border-b border-hairline px-3 py-2">
-          <span className="text-sm font-medium">Lyrics</span>
-          <LyricsSourceButton state={state} />
-        </header>
-        <div className="min-h-0 flex-1 overflow-hidden px-2 pb-3">
-          <LyricsBody state={state} />
-        </div>
+        <PlayerMediaPanel
+          videoId={videoId}
+          lyricsState={state}
+          trailing={<LyricsSourceButton state={state} />}
+          headerClassName="border-b border-hairline px-2 py-1"
+        />
       </PopoverContent>
     </Popover>
   );
