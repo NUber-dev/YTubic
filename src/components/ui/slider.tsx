@@ -87,14 +87,13 @@ function Slider({
           style={isVertical ? { height: activeSize } : { width: activeSize }}
         />
         {/* Inactive pill — starts after the thumb gap, runs to the end.
-            Keeps the `slider-track` data-slot so existing
-            `[&_[data-slot=slider-track]]:bg-white/20` overrides target
-            the visible inactive bar. */}
+            Keeps the `slider-track` data-slot so a consumer can still
+            retint the visible inactive bar. */}
         <div
           data-slot="slider-track"
           aria-hidden
           className={cn(
-            "absolute rounded-full bg-muted",
+            "absolute rounded-full bg-slider-track",
             isVertical ? "inset-x-0 top-0" : "inset-y-0 right-0"
           )}
           style={
@@ -108,7 +107,7 @@ function Slider({
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}
-          className="block shrink-0 rounded-full bg-white shadow-[0_0_3px_rgba(255,255,255,0.35),0_0_8px_rgba(255,255,255,0.15)] transition-shadow hover:shadow-[0_0_5px_rgba(255,255,255,0.5),0_0_12px_rgba(255,255,255,0.25)] focus-visible:shadow-[0_0_5px_rgba(255,255,255,0.5),0_0_12px_rgba(255,255,255,0.25)] focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50 data-[orientation=horizontal]:h-5 data-[orientation=horizontal]:w-1.5 data-[orientation=vertical]:h-1.5 data-[orientation=vertical]:w-5"
+          className="block shrink-0 rounded-full bg-slider-thumb shadow-(--slider-thumb-glow) transition-shadow hover:shadow-(--slider-thumb-glow-strong) focus-visible:shadow-(--slider-thumb-glow-strong) focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50 data-[orientation=horizontal]:h-5 data-[orientation=horizontal]:w-1.5 data-[orientation=vertical]:h-1.5 data-[orientation=vertical]:w-5"
         />
       ))}
     </SliderPrimitive.Root>

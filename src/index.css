@@ -52,6 +52,16 @@
   --surface-active: oklch(1 0 0 / 85%);
   --hairline: oklch(0 0 0 / 12%);
   --titlebar-hover: oklch(0 0 0 / 7%);
+
+  /* Slider (seek bar, volume). The thumb and the unplayed part of the
+     track have to read against a translucent surface laid over blurred
+     album art, so they are tinted opposite the surface rather than
+     pinned to white: near-black here, near-white in dark mode. */
+  --slider-track: oklch(0 0 0 / 20%);
+  --slider-thumb: oklch(0.205 0 0);
+  --slider-thumb-glow: 0 0 3px oklch(0 0 0 / 30%), 0 0 8px oklch(0 0 0 / 15%);
+  --slider-thumb-glow-strong: 0 0 5px oklch(0 0 0 / 40%),
+    0 0 12px oklch(0 0 0 / 22%);
 }
 
 .dark {
@@ -99,6 +109,12 @@
   --surface-active: oklch(0 0 0 / 60%);
   --hairline: oklch(1 0 0 / 10%);
   --titlebar-hover: oklch(1 0 0 / 10%);
+
+  --slider-track: oklch(1 0 0 / 20%);
+  --slider-thumb: oklch(1 0 0);
+  --slider-thumb-glow: 0 0 3px oklch(1 0 0 / 35%), 0 0 8px oklch(1 0 0 / 15%);
+  --slider-thumb-glow-strong: 0 0 5px oklch(1 0 0 / 50%),
+    0 0 12px oklch(1 0 0 / 25%);
 }
 
 @theme inline {
@@ -140,6 +156,8 @@
   --color-surface-active: var(--surface-active);
   --color-hairline: var(--hairline);
   --color-titlebar-hover: var(--titlebar-hover);
+  --color-slider-track: var(--slider-track);
+  --color-slider-thumb: var(--slider-thumb);
 }
 
 @layer base {
