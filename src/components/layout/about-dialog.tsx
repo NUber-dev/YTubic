@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Dialog,
@@ -20,12 +19,6 @@ import { DiscordIcon, GithubIcon } from "@/components/shared/brand-icons";
 
 const REPO_URL = "https://github.com/NUber-dev/YTubic";
 const DISCORD_URL = "https://discord.gg/4gccUpZyYH";
-
-type YtdlpDiagnostics = {
-  version: string | null;
-  lastCheckAt: number | null;
-  lastResult: { success: boolean; message: string } | null;
-};
 
 const CREDITS: { name: string; role: string; url: string }[] = [
   {
@@ -54,16 +47,12 @@ export function AboutDialog({
   onOpenChange: (v: boolean) => void;
 }) {
   const [version, setVersion] = useState<string>("");
-  const [ytdlp, setYtdlp] = useState<YtdlpDiagnostics | null>(null);
 
   useEffect(() => {
     if (!open) return;
     getVersion()
       .then(setVersion)
       .catch(() => setVersion(""));
-    invoke<YtdlpDiagnostics>("get_ytdlp_diagnostics")
-      .then(setYtdlp)
-      .catch(() => setYtdlp(null));
   }, [open]);
 
   const link = (url: string) => () => {
@@ -122,36 +111,6 @@ export function AboutDialog({
             </button>
             .
           </p>
-        )}
-
-        {ytdlp && (
-          <div className="rounded-md border border-border/70 bg-muted/30 px-3 py-2.5">
-            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Audio engine
-            </p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-              <dt className="text-muted-foreground">yt-dlp</dt>
-              <dd>{ytdlp.version ?? "Unavailable"}</dd>
-              <dt className="text-muted-foreground">Last update check</dt>
-              <dd>
-                {ytdlp.lastCheckAt
-                  ? new Date(ytdlp.lastCheckAt * 1000).toLocaleString()
-                  : "Never"}
-              </dd>
-              {ytdlp.lastResult && (
-                <>
-                  <dt className="text-muted-foreground">Result</dt>
-                  <dd
-                    className={
-                      ytdlp.lastResult.success ? undefined : "text-destructive"
-                    }
-                  >
-                    {ytdlp.lastResult.message}
-                  </dd>
-                </>
-              )}
-            </dl>
-          </div>
         )}
 
         <div>

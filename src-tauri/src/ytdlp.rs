@@ -160,7 +160,6 @@ pub async fn ensure(app: tauri::AppHandle) {
         Ok(()) => {
             eprintln!("[ytdlp] downloaded managed binary to {managed:?}");
             touch_update_stamp(&managed);
-            write_update_result(&managed, &Ok("Installed managed copy".to_string()));
             #[cfg(target_os = "macos")]
             {
                 prewarm(&managed);
@@ -170,7 +169,6 @@ pub async fn ensure(app: tauri::AppHandle) {
         }
         Err(e) => {
             eprintln!("[ytdlp] download failed: {e}");
-            write_update_result(&managed, &Err(e.clone()));
             if !path_works {
                 emit_state(&app, "error", Some(e));
             }
@@ -383,58 +381,6 @@ fn update_stamp_path(managed: &Path) -> PathBuf {
     install_root(managed).join("last-update-check")
 }
 
-fn update_result_path(managed: &Path) -> PathBuf {
-    install_root(managed).join("last-update-result.json")
-}
-
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateResult {
-    pub success: bool,
-    pub message: String,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Diagnostics {
-    pub version: Option<String>,
-    pub last_check_at: Option<u64>,
-    pub last_result: Option<UpdateResult>,
-}
-
-fn write_update_result(managed: &Path, result: &Result<String, String>) {
-    let stored = match result {
-        Ok(message) => UpdateResult {
-            success: true,
-            message: message.clone(),
-        },
-        Err(message) => UpdateResult {
-            success: false,
-            message: message.clone(),
-        },
-    };
-    if let Ok(json) = serde_json::to_vec(&stored) {
-        let _ = std::fs::write(update_result_path(managed), json);
-    }
-}
-
-fn update_stamp_time(managed: &Path) -> Option<u64> {
-    let raw = std::fs::read_to_string(update_stamp_path(managed)).ok()?;
-    raw.trim().parse().ok()
-}
-
-pub async fn diagnostics(app: &tauri::AppHandle) -> Diagnostics {
-    let managed = managed_path(app);
-    let last_result = std::fs::read(update_result_path(&managed))
-        .ok()
-        .and_then(|json| serde_json::from_slice(&json).ok());
-    Diagnostics {
-        version: installed_version(&managed).await,
-        last_check_at: update_stamp_time(&managed),
-        last_result,
-    }
-}
-
 fn touch_update_stamp(managed: &Path) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -444,7 +390,8 @@ fn touch_update_stamp(managed: &Path) {
 }
 
 fn update_stamp_age(managed: &Path) -> Option<Duration> {
-    let then = update_stamp_time(managed)?;
+    let raw = std::fs::read_to_string(update_stamp_path(managed)).ok()?;
+    let then = raw.trim().parse::<u64>().ok()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -463,10 +410,9 @@ async fn maybe_self_update(managed: &Path) {
     touch_update_stamp(managed);
 
     #[cfg(target_os = "macos")]
-    let result = update_bundle(managed).await;
+    update_bundle(managed).await;
     #[cfg(not(target_os = "macos"))]
-    let result = run_self_update(managed).await;
-    write_update_result(managed, &result);
+    run_self_update(managed).await;
 }
 
 /// macOS replacement for `-U`: yt-dlp's updater refuses to touch a
@@ -474,15 +420,14 @@ async fn maybe_self_update(managed: &Path) {
 /// executables"), so compare the installed version against the newest
 /// release ourselves and re-install the bundle when they differ.
 #[cfg(target_os = "macos")]
-async fn update_bundle(managed: &Path) -> Result<String, String> {
+async fn update_bundle(managed: &Path) {
     let Some(latest) = latest_release_tag().await else {
-        let message = "Could not read the latest release tag; kept the current copy".to_string();
-        eprintln!("[ytdlp] {message}");
-        return Err(message);
+        eprintln!("[ytdlp] could not read the latest release tag; keeping the current copy");
+        return;
     };
     let installed = installed_version(managed).await;
     if installed.as_deref() == Some(latest.as_str()) {
-        return Ok(format!("Already up to date ({latest})"));
+        return;
     }
     eprintln!(
         "[ytdlp] updating {} -> {latest}",
@@ -494,12 +439,8 @@ async fn update_bundle(managed: &Path) -> Result<String, String> {
         Ok(()) => {
             eprintln!("[ytdlp] updated to {latest}");
             prewarm(managed);
-            Ok(format!("Updated to {latest}"))
         }
-        Err(e) => {
-            eprintln!("[ytdlp] update failed: {e}");
-            Err(format!("Update failed: {e}"))
-        }
+        Err(e) => eprintln!("[ytdlp] update failed: {e}"),
     }
 }
 
@@ -545,7 +486,7 @@ async fn installed_version(managed: &Path) -> Option<String> {
 
 /// Windows / Linux: the single-file release replaces itself in place.
 #[cfg(not(target_os = "macos"))]
-async fn run_self_update(managed: &Path) -> Result<String, String> {
+async fn run_self_update(managed: &Path) {
     let mut cmd = tokio::process::Command::new(managed);
     cmd.arg("-U");
     #[cfg(windows)]
@@ -556,19 +497,22 @@ async fn run_self_update(managed: &Path) -> Result<String, String> {
     // wedged child would outlive it as an orphan.
     cmd.kill_on_drop(true);
 
-    let run = tokio::time::timeout(UPDATE_TIMEOUT, cmd.output()).await;
-    match run {
-        Ok(Ok(out)) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let line = stdout
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("");
-            eprintln!("[ytdlp] self-update ({}): {line}", out.status);
+    let run = async {
+        match cmd.output().await {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let line = stdout
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("");
+                eprintln!("[ytdlp] self-update ({}): {line}", out.status);
+            }
+            Err(e) => eprintln!("[ytdlp] self-update spawn failed: {e}"),
         }
-        Ok(Err(e)) => eprintln!("[ytdlp] self-update spawn failed: {e}"),
-        Err(_) => eprintln!("[ytdlp] self-update timed out"),
+    };
+    if tokio::time::timeout(UPDATE_TIMEOUT, run).await.is_err() {
+        eprintln!("[ytdlp] self-update timed out");
     }
 
     // `-U` reports its own success and can still leave the old copy in
@@ -578,51 +522,15 @@ async fn run_self_update(managed: &Path) -> Result<String, String> {
     // actually moved, and fall back to re-fetching the release asset when
     // it didn't. Same path the first-run download takes.
     let Some(latest) = latest_release_tag().await else {
-        return Err("Could not read the latest release tag".to_string());
+        return;
     };
     if installed_version(managed).await.as_deref() == Some(latest.as_str()) {
-        return Ok(format!("Already up to date ({latest})"));
+        return;
     }
     eprintln!("[ytdlp] self-update left us behind {latest}; re-downloading");
     match download(managed).await {
-        Ok(()) => {
-            eprintln!("[ytdlp] re-downloaded {latest}");
-            Ok(format!("Updated to {latest}"))
-        }
-        Err(e) => {
-            eprintln!("[ytdlp] re-download failed: {e}");
-            Err(format!("Update failed: {e}"))
-        }
-    }
-}
-
-#[cfg(test)]
-mod diagnostics_tests {
-    use super::*;
-
-    #[test]
-    fn update_diagnostics_sidecars_round_trip() {
-        let root = std::env::temp_dir().join(format!(
-            "ytubic-ytdlp-diagnostics-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        #[cfg(target_os = "macos")]
-        let managed = root.join(MACOS_BUNDLE_DIR).join(BINARY_NAME);
-        #[cfg(not(target_os = "macos"))]
-        let managed = root.join(BINARY_NAME);
-
-        std::fs::write(update_stamp_path(&managed), "1787263200").unwrap();
-        write_update_result(&managed, &Err("network unavailable".to_string()));
-
-        assert_eq!(update_stamp_time(&managed), Some(1787263200));
-        let stored: UpdateResult =
-            serde_json::from_slice(&std::fs::read(update_result_path(&managed)).unwrap()).unwrap();
-        assert!(!stored.success);
-        assert_eq!(stored.message, "network unavailable");
-
-        let _ = std::fs::remove_dir_all(root);
+        Ok(()) => eprintln!("[ytdlp] re-downloaded {latest}"),
+        Err(e) => eprintln!("[ytdlp] re-download failed: {e}"),
     }
 }
 
