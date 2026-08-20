@@ -2688,12 +2688,6 @@ async fn ensure_ytdlp(app: tauri::AppHandle) {
     ytdlp::ensure(app).await;
 }
 
-/// Read bounded, non-networked audio-engine diagnostics for About.
-#[tauri::command]
-async fn get_ytdlp_diagnostics(app: tauri::AppHandle) -> ytdlp::Diagnostics {
-    ytdlp::diagnostics(&app).await
-}
-
 /// Run yt-dlp to resolve a videoId into metadata JSON.
 #[tauri::command]
 fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
@@ -2731,6 +2725,12 @@ fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<Strin
         ));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("stdout not utf8: {e}"))
+}
+
+/// Read bounded, non-networked audio-engine diagnostics for About.
+#[tauri::command]
+async fn get_ytdlp_diagnostics(app: tauri::AppHandle) -> ytdlp::Diagnostics {
+    ytdlp::diagnostics(&app).await
 }
 
 /// Lifecycle of a single track's yt-dlp download. yt-dlp writes
@@ -3721,7 +3721,6 @@ pub fn run() {
         .manage(lastfm::LastfmState::default())
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
-            get_ytdlp_diagnostics,
             resolve_stream_ytdlp,
             get_stream_base_url,
             start_login,
@@ -3751,6 +3750,7 @@ pub fn run() {
             autostart_is_enabled,
             notify_track,
             get_cache_dir,
+            get_ytdlp_diagnostics,
             set_cache_dir,
             pick_cache_folder,
             focus_main_window,
