@@ -57,27 +57,27 @@ export const WHATS_NEW: WhatsNewEntry[] = [
   {
     version: "0.4.6",
     date: "August 20, 2026",
-    summary: "Playback fix and a full library listing",
+    summary: "Songs play again and the full library is listed",
     changes: [
       {
         type: "fixed",
-        title: "Songs would not play",
-        text: "Anything not already cached failed to start. YouTube stopped serving the playback clients the app asked for.",
+        title: "Songs play again",
+        text: "Tracks that are not in the cache start normally, on a playback path that keeps up with YouTube's changes.",
       },
       {
         type: "fixed",
-        title: "Large libraries were cut short",
-        text: "Only about the first 25 playlists, albums and artists were listed; the rest are back.",
+        title: "The whole library is listed",
+        text: "Every playlist, album and artist shows up, however many you have, in the library and in Add to playlist.",
       },
       {
         type: "fixed",
-        title: "Discord stayed on a paused song",
-        text: "Pausing now takes the status down instead of leaving it up for hours.",
+        title: "Discord follows the pause",
+        text: "Pausing takes the status down, and resuming puts it back.",
       },
       {
         type: "fixed",
-        title: "Invisible progress bar in the light theme",
-        text: "The seek bar and its handle were drawn for the dark theme only.",
+        title: "The progress bar is visible in the light theme",
+        text: "The seek bar and its handle read clearly in both themes.",
       },
     ],
   },
