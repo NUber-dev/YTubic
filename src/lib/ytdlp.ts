@@ -9,6 +9,10 @@ type YtdlpState = {
 };
 
 const TOAST_ID = "ytdlp-setup";
+// `ensure_ytdlp` does no network work until its 72-hour stamp expires. Polling
+// hourly keeps a tray-resident process close to that cadence without turning
+// a launch-time check into a second scheduler on the Rust side.
+const UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Mount once in AppShell. Kicks off `ensure_ytdlp` on the Rust side
@@ -28,6 +32,15 @@ export function useYtdlpSetup(): void {
   useEffect(() => {
     let cancelled = false;
     let dispose: (() => void) | undefined;
+    let updateTimer: number | undefined;
+
+    const runYtdlpCommand = (
+      command: "ensure_ytdlp" | "check_ytdlp_update",
+    ) => {
+      void invoke(command).catch((err) => {
+        console.error(`[ytdlp] ${command} failed:`, err);
+      });
+    };
 
     void listen<YtdlpState>("ytdlp-state", (e) => {
       const { phase, message } = e.payload;
@@ -51,7 +64,7 @@ export function useYtdlpSetup(): void {
           action: {
             label: "Retry",
             onClick: () => {
-              void invoke("ensure_ytdlp");
+              runYtdlpCommand("ensure_ytdlp");
             },
           },
         });
@@ -63,14 +76,20 @@ export function useYtdlpSetup(): void {
       }
       dispose = un;
       // Listener is live — safe to start the Rust side now.
-      void invoke("ensure_ytdlp").catch((err) => {
-        console.error("[ytdlp] ensure_ytdlp failed:", err);
-      });
+      runYtdlpCommand("ensure_ytdlp");
+      // Closing the main window hides this process to the tray by default,
+      // so it may not launch again for weeks. Keep checking while it lives;
+      // the Rust-side stamp makes every early poll a local no-op.
+      updateTimer = window.setInterval(
+        () => runYtdlpCommand("check_ytdlp_update"),
+        UPDATE_POLL_INTERVAL_MS,
+      );
     });
 
     return () => {
       cancelled = true;
       dispose?.();
+      if (updateTimer !== undefined) window.clearInterval(updateTimer);
     };
   }, []);
 }

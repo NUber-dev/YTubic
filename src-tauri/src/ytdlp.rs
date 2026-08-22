@@ -120,6 +120,10 @@ fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<String>) {
     );
 }
 
+// Setup, manual retries and the long-session timer can overlap. One lock keeps
+// them from updating or replacing the managed binary concurrently.
+static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Idempotent "make yt-dlp available" entry point. Called from the
 /// frontend on every launch (so the webview's event listener is
 /// guaranteed to be mounted before any state event fires) and safe to
@@ -128,8 +132,7 @@ fn emit_state(app: &tauri::AppHandle, phase: &str, message: Option<String>) {
 /// Emits `ytdlp-state` events: `downloading` → `ready` | `error`.
 pub async fn ensure(app: tauri::AppHandle) {
     // Serialize concurrent calls (StrictMode double-mount, retry spam).
-    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _guard = LOCK.lock().await;
+    let _guard = ENSURE_LOCK.lock().await;
 
     let managed = managed_path(&app);
 
@@ -173,6 +176,16 @@ pub async fn ensure(app: tauri::AppHandle) {
                 emit_state(&app, "error", Some(e));
             }
         }
+    }
+}
+
+/// Check an existing managed copy for an update without repeating first-run
+/// setup, readiness events, or macOS prewarming and legacy cleanup.
+pub async fn check_update(app: tauri::AppHandle) {
+    let _guard = ENSURE_LOCK.lock().await;
+    let managed = managed_path(&app);
+    if managed.exists() {
+        maybe_self_update(&managed).await;
     }
 }
 

@@ -2688,6 +2688,12 @@ async fn ensure_ytdlp(app: tauri::AppHandle) {
     ytdlp::ensure(app).await;
 }
 
+/// Throttled update check for a process that remains alive in the tray.
+#[tauri::command]
+async fn check_ytdlp_update(app: tauri::AppHandle) {
+    ytdlp::check_update(app).await;
+}
+
 /// Run yt-dlp to resolve a videoId into metadata JSON.
 #[tauri::command]
 fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
@@ -3719,6 +3725,7 @@ pub fn run() {
         .manage(lastfm::LastfmState::default())
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
+            check_ytdlp_update,
             resolve_stream_ytdlp,
             get_stream_base_url,
             start_login,
