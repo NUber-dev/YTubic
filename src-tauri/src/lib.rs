@@ -3674,9 +3674,13 @@ pub fn run() {
     let token_handle = state.token.clone();
 
     tauri::Builder::default()
+        // The `deep-link` feature forwards the second instance's argv
+        // (a `ytubic://` URL) to the deep-link plugin, so the running app
+        // receives it as a `deep-link://new-url` event.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(
             // Default StateFlags includes DECORATIONS, which would
             // override our `decorations: false` from tauri.conf.json
@@ -3799,6 +3803,15 @@ pub fn run() {
                 app.package_info().version,
                 cfg!(debug_assertions)
             );
+            // The NSIS installer registers `ytubic://` for release builds;
+            // dev runs and Linux need the runtime registration.
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = app.deep_link().register_all() {
+                    eprintln!("[deep-link] register failed: {e}");
+                }
+            }
             let port = port_handle.clone();
             let token = token_handle.clone();
             // User-chosen cache root (Settings → Storage) or the OS

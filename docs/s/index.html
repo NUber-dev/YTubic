@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>YTubic</title>
+  <link rel="icon" href="icon.svg">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: oklch(0.145 0 0);
+      --card: oklch(0 0 0 / 35%);
+      --line: oklch(1 0 0 / 10%);
+      --t1: oklch(0.985 0 0);
+      --t2: oklch(0.708 0 0);
+      --t3: oklch(0.556 0 0);
+      --brand: #fa1f3e;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--t1);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+      position: relative; overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    /* Blurred copy of the cover behind everything — the app's own
+       backdrop trick. Hidden until the image actually loads. */
+    .bg {
+      position: absolute; inset: -15%; width: 130%; height: 130%;
+      object-fit: cover; filter: blur(90px) saturate(1.4);
+      opacity: 0; transition: opacity 1.2s ease;
+      pointer-events: none;
+    }
+    .bg.on { opacity: 0.18; }
+    .vignette {
+      position: absolute; inset: 0; pointer-events: none;
+      background: radial-gradient(ellipse at 50% 40%, oklch(0.145 0 0 / 0%) 0%, oklch(0.145 0 0 / 70%) 100%);
+    }
+    /* Fine monochrome noise over the blurred backdrop and the vignette.
+       Both are smooth dark gradients, which band badly on 8-bit
+       displays; the grain dithers the steps away. */
+    .grain {
+      position: absolute; inset: 0; pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 160px 160px;
+      opacity: 0.05;
+      mix-blend-mode: overlay;
+    }
+    .card {
+      position: relative;
+      width: 100%; max-width: 420px;
+      display: flex; flex-direction: column;
+      background: var(--card);
+      border: 1px solid var(--line); border-radius: 18px;
+      overflow: hidden;
+      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+      box-shadow: 0 24px 64px oklch(0 0 0 / 35%);
+    }
+    .head { display: flex; align-items: center; gap: 16px; padding: 20px 20px 6px; }
+    .cover {
+      width: 96px; height: 96px; flex-shrink: 0;
+      object-fit: cover; border-radius: 10px;
+      border: 1px solid oklch(1 0 0 / 8%);
+      background: oklch(0.205 0 0);
+      display: none;
+    }
+    .cover.on { display: block; }
+    .meta { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .kicker {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+      text-transform: uppercase; color: var(--t3); margin: 0;
+    }
+    h1 {
+      font-size: 17px; font-weight: 600; line-height: 1.3; margin: 0;
+      overflow-wrap: anywhere;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .sub { font-size: 13px; color: var(--t2); margin: 0; }
+    .divider { height: 1px; background: var(--line); }
+    .actions { display: flex; flex-direction: column; gap: 10px; padding: 10px 20px 20px; }
+    a.btn {
+      display: flex; align-items: center; justify-content: center;
+      height: 38px; border-radius: 8px; text-decoration: none;
+      font-size: 14px;
+    }
+    .primary { background: var(--brand); color: var(--t1); font-weight: 600; }
+    .primary:hover { filter: brightness(1.08); }
+    .secondary { background: oklch(1 0 0 / 8%); color: var(--t1); font-weight: 500; }
+    .secondary:hover { background: oklch(1 0 0 / 13%); }
+    .foot {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 14px 20px; background: oklch(0 0 0 / 20%);
+    }
+    .brand { display: flex; align-items: center; gap: 7px; }
+    .brand span { font-size: 12px; font-weight: 500; color: var(--t2); }
+    .note { font-size: 12px; color: var(--t3); margin: 0; text-align: right; }
+    .note a { color: var(--t2); text-underline-offset: 3px; }
+    .note a:hover { color: var(--t1); }
+  </style>
+</head>
+<body>
+  <img id="bg" class="bg" alt="" aria-hidden="true">
+  <div class="vignette"></div>
+  <div class="grain"></div>
+  <main class="card">
+    <div class="head">
+      <img id="cover" class="cover" alt="">
+      <div class="meta">
+        <p class="kicker" id="kicker">Shared link</p>
+        <h1 id="title">Loading…</h1>
+        <p class="sub" id="sub"></p>
+      </div>
+    </div>
+    <div class="actions">
+      <a id="app" class="btn primary" href="#">Open in YTubic</a>
+      <a id="ytm" class="btn secondary" href="#">Open in YouTube Music</a>
+    </div>
+    <div class="divider"></div>
+    <div class="foot">
+      <div class="brand">
+        <svg width="15" height="15" viewBox="0 0 213 213" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="106.5" cy="106.5" r="106.5" fill="#FF0033"/><path d="M114.9 122.1c8.7-5 13-7.5 14.5-10.8 1.3-2.8 1.3-6.1 0-8.9-1.5-3.3-5.8-5.8-14.5-10.8L76.4 69.4c-8.7-5-13-7.5-16.5-7.1-3.1 0.3-5.9 2-7.8 4.5-2.1 2.9-2.1 7.9-2.1 17.9v44.4c0 10 0 15 2.1 17.9 1.8 2.5 4.6 4.1 7.8 4.5 3.6 0.4 7.9-2.1 16.5-7.1l38.5-22.2Z" fill="white"/><rect x="146.6" y="60.4" width="16.4" height="91.4" rx="8.2" fill="white"/></svg>
+        <span>YTubic</span>
+      </div>
+      <p class="note"><a href="https://github.com/NUber-dev/YTubic/releases/latest">Download</a> for Windows, macOS and Linux</p>
+    </div>
+  </main>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      var ID = /^[A-Za-z0-9_-]{6,}$/;
+      var title = document.getElementById("title"), sub = document.getElementById("sub");
+      var kicker = document.getElementById("kicker");
+      var kinds = { v: "watch", artist: "artist", album: "album", playlist: "playlist" };
+      var kind = null, id = null;
+      for (var k in kinds) {
+        var val = q.get(k);
+        if (val && ID.test(val)) { kind = kinds[k]; id = val; break; }
+      }
+      if (!kind) {
+        title.textContent = "This link is empty";
+        sub.textContent = "It doesn't point at a song, album, artist or playlist.";
+        document.querySelector(".actions").style.display = "none";
+        return;
+      }
+      var appUrl = kind === "watch" ? "ytubic://watch?v=" + id : "ytubic://" + kind + "/" + id;
+      var ytmPath = { watch: "watch?v=", artist: "channel/", album: "browse/", playlist: "playlist?list=" }[kind];
+      document.getElementById("app").href = appUrl;
+      document.getElementById("ytm").href = "https://music.youtube.com/" + ytmPath + id;
+      kicker.textContent = { watch: "Song", artist: "Artist", album: "Album", playlist: "Playlist" }[kind];
+
+      var t = q.get("t");
+      if (t) { title.textContent = t; document.title = t + " · YTubic"; }
+      else title.textContent = kicker.textContent;
+
+      if (kind !== "watch") return;
+      // The sharp thumb and the blurred backdrop are the same image; the
+      // backdrop only fades in once the sharp copy has actually loaded.
+      var cover = document.getElementById("cover");
+      var bg = document.getElementById("bg");
+      cover.onerror = function () { cover.onerror = null; cover.src = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"; };
+      cover.onload = function () {
+        cover.classList.add("on");
+        bg.src = cover.src;
+        bg.classList.add("on");
+      };
+      cover.src = "https://i.ytimg.com/vi/" + id + "/maxresdefault.jpg";
+      // oEmbed answers with CORS, so the link itself doesn't need to carry metadata.
+      fetch("https://www.youtube.com/oembed?format=json&url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + id))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) { if (!t) title.textContent = "Shared song"; return; }
+          var artist = (d.author_name || "").replace(/\s*-\s*Topic$/i, "").trim();
+          if (!t && d.title) title.textContent = d.title;
+          if (artist) sub.textContent = artist;
+          document.title = title.textContent + (artist ? " · " + artist : "") + " · YTubic";
+        })
+        .catch(function () { if (!t) title.textContent = "Shared song"; });
+    })();
+  </script>
+</body>
+</html>

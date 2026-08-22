@@ -25,7 +25,8 @@ import {
   Share2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { copyToClipboard, trackShareUrl } from "@/lib/clipboard";
+import { copyLink } from "@/lib/clipboard";
+import { universalShareUrl } from "@/lib/deep-link";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -400,12 +401,10 @@ export function TrackMenuItems({
 
       <Separator />
 
+      {/* One link for everyone: the share page opens the track in YTubic
+          when it's installed and falls back to YouTube Music when it isn't. */}
       <Item
-        onSelect={async () => {
-          const ok = await copyToClipboard(trackShareUrl(item.id));
-          if (ok) toast.success("Link copied to clipboard");
-          else toast.error("Couldn't copy the link");
-        }}
+        onSelect={() => void copyLink(universalShareUrl("watch", item.id))}
       >
         <Share2Icon />
         Share

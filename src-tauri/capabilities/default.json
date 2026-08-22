@@ -23,6 +23,7 @@
       ]
     },
     "store:default",
+    "deep-link:default",
     "window-state:default",
     "updater:default",
     "process:allow-restart",

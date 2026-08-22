@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 /**
  * Copy text to the clipboard. `navigator.clipboard` is the happy path;
  * some WebView contexts refuse it, so we fall back to a hidden textarea
@@ -24,7 +26,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-/** Canonical share URL for a song/video row. */
-export function trackShareUrl(videoId: string): string {
-  return `https://music.youtube.com/watch?v=${videoId}`;
+/** Copy a link and toast the outcome. */
+export async function copyLink(url: string): Promise<void> {
+  const ok = await copyToClipboard(url);
+  if (ok) toast.success("Link copied to clipboard");
+  else toast.error("Couldn't copy the link");
 }

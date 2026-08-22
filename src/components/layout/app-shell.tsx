@@ -30,6 +30,7 @@ import { usePlaybackNotifications } from "@/lib/playback-notifications";
 import { useLastfmScrobbler } from "@/lib/lastfm-scrobbler";
 import { useYtdlpSetup } from "@/lib/ytdlp";
 import { useUpdateStartupCheck } from "@/lib/updater";
+import { useDeepLinks } from "@/lib/use-deep-links";
 import { useWhatsNewOnUpdate } from "@/lib/store/whats-new";
 import { pickHighResThumbnail } from "@/components/shared/thumbnail";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
@@ -93,6 +94,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useYtdlpSetup();
   useUpdateStartupCheck();
   useWhatsNewOnUpdate();
+  useDeepLinks();
   usePremiumStatusSync();
   useLoginSuccessListener();
   useAccountsChangedListener();

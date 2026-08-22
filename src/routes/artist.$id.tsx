@@ -21,6 +21,8 @@ import { TrackList } from "@/components/shared/track-list";
 import { pickHighResThumbnail } from "@/components/shared/thumbnail";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { copyLink } from "@/lib/clipboard";
+import { universalShareUrl } from "@/lib/deep-link";
 import { Separator } from "@/components/ui/separator";
 import { usePlaybackStore } from "@/lib/store/playback";
 import type {
@@ -180,26 +182,6 @@ function ArtistActions({ artist }: { artist: ArtistPage }) {
     }
   };
 
-  const share = async () => {
-    const url = `https://music.youtube.com/channel/${artist.id}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      toast.success("Link copied to clipboard");
-    } catch {
-      // Clipboard API can be unavailable in some webview contexts —
-      // fall back to the legacy execCommand path.
-      const ta = document.createElement("textarea");
-      ta.value = url;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      const ok = document.execCommand("copy");
-      ta.remove();
-      if (ok) toast.success("Link copied to clipboard");
-      else toast.error("Couldn't copy the link");
-    }
-  };
 
   return (
     <>
@@ -238,7 +220,16 @@ function ArtistActions({ artist }: { artist: ArtistPage }) {
           count={artist.subscribers}
         />
       ) : null}
-      <Button variant="outline" size="icon" aria-label="Share" onClick={share}>
+      {/* One link for everyone: the share page opens the artist in YTubic
+          when it's installed and falls back to YouTube Music when it isn't. */}
+      <Button
+        variant="outline"
+        size="icon"
+        aria-label="Share"
+        onClick={() =>
+          void copyLink(universalShareUrl("artist", artist.id, artist.name))
+        }
+      >
         <Share2Icon />
       </Button>
     </>
