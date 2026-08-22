@@ -31,10 +31,14 @@ export function universalShareUrl(
   kind: DeepLinkTarget["kind"],
   id: string,
   title?: string,
+  cover?: string,
 ): string {
   const q = new URLSearchParams();
   q.set(kind === "watch" ? "v" : kind, id);
   if (kind !== "watch" && title) q.set("t", title);
+  // Songs get their cover from i.ytimg.com by video id; everything else
+  // has to carry it in the link (the page whitelists YouTube CDN hosts).
+  if (kind !== "watch" && cover) q.set("c", cover);
   return `${SHARE_BASE}?${q.toString()}`;
 }
 

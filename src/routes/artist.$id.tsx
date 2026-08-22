@@ -227,7 +227,14 @@ function ArtistActions({ artist }: { artist: ArtistPage }) {
         size="icon"
         aria-label="Share"
         onClick={() =>
-          void copyLink(universalShareUrl("artist", artist.id, artist.name))
+          void copyLink(
+            universalShareUrl(
+              "artist",
+              artist.id,
+              artist.name,
+              pickHighResThumbnail(artist.thumbnails) ?? undefined,
+            ),
+          )
         }
       >
         <Share2Icon />

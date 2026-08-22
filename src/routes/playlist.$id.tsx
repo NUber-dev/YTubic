@@ -10,6 +10,7 @@ import {
   PinOffIcon,
   RefreshCwIcon,
   SearchIcon,
+  Share2Icon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -39,6 +40,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePlaybackStore } from "@/lib/store/playback";
+import { copyLink } from "@/lib/clipboard";
+import { universalShareUrl } from "@/lib/deep-link";
 import {
   useIsPinned,
   usePinnedPlaylistsStore,
@@ -326,27 +329,51 @@ function PlaylistPageView() {
           openedFromArtist ? undefined : () => void shufflePlaylist()
         }
         actions={
-          isArtistTopSongs ||
-          openedFromArtist ? null : isLikedSongs ? null : pinned ? (
-            <Button variant="outline" onClick={() => unpin(id)}>
-              <PinOffIcon />
-              Unpin
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              onClick={() =>
-                pin({
-                  id,
-                  title: header.title,
-                  thumbnailUrl:
-                    header.thumbnails[header.thumbnails.length - 1]?.url,
-                })
-              }
-            >
-              <PinIcon />
-              Pin to sidebar
-            </Button>
+          isArtistTopSongs || openedFromArtist ? null : isLikedSongs ? null : (
+            <>
+              {pinned ? (
+                <Button variant="outline" onClick={() => unpin(id)}>
+                  <PinOffIcon />
+                  Unpin
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    pin({
+                      id,
+                      title: header.title,
+                      thumbnailUrl:
+                        header.thumbnails[header.thumbnails.length - 1]?.url,
+                    })
+                  }
+                >
+                  <PinIcon />
+                  Pin to sidebar
+                </Button>
+              )}
+              {/* One link for everyone: the share page opens the playlist in
+                  YTubic when it's installed and falls back to YouTube Music
+                  when it isn't. The YTM fallback wants the bare list id, so
+                  the internal VL prefix stays out of the link. */}
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label="Share"
+                onClick={() =>
+                  void copyLink(
+                    universalShareUrl(
+                      "playlist",
+                      id.startsWith("VL") ? id.slice(2) : id,
+                      header.title,
+                      header.thumbnails[header.thumbnails.length - 1]?.url,
+                    ),
+                  )
+                }
+              >
+                <Share2Icon />
+              </Button>
+            </>
           )
         }
         toolbar={

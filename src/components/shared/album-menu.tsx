@@ -7,6 +7,7 @@ import {
   MoreHorizontalIcon,
   PlayIcon,
   RadioIcon,
+  Share2Icon,
   ShuffleIcon,
   UserIcon,
 } from "lucide-react";
@@ -26,7 +27,10 @@ import {
   ctxPrimitives,
   dropPrimitives,
 } from "@/components/shared/track-context-menu";
+import { pickHighResThumbnail } from "@/components/shared/thumbnail";
 import { fetchAlbum } from "@/lib/innertube/album";
+import { copyLink } from "@/lib/clipboard";
+import { universalShareUrl } from "@/lib/deep-link";
 import { fetchRadio } from "@/lib/innertube/radio";
 import { usePlaybackStore } from "@/lib/store/playback";
 import type { AlbumPage, ShelfItem } from "@/lib/innertube/types";
@@ -131,7 +135,21 @@ export function useAlbumMenuController(albumId: string, album?: AlbumPage) {
     navigate({ to: "/artist/$id", params: { id: artist.id } });
   };
 
-  return { play, playNext, addToQueue, startRadio, goToArtist };
+  // The title travels in the link so the share page has something to
+  // show before (or without) any metadata fetch of its own.
+  const share = async () => {
+    const a = await resolve();
+    await copyLink(
+      universalShareUrl(
+        "album",
+        albumId,
+        a?.title,
+        a ? (pickHighResThumbnail(a.thumbnails) ?? undefined) : undefined,
+      ),
+    );
+  };
+
+  return { play, playNext, addToQueue, startRadio, goToArtist, share };
 }
 
 export function AlbumMenuItems({
@@ -142,7 +160,8 @@ export function AlbumMenuItems({
   primitives: typeof ctxPrimitives;
 }) {
   const { Item, Separator } = primitives;
-  const { play, playNext, addToQueue, startRadio, goToArtist } = controller;
+  const { play, playNext, addToQueue, startRadio, goToArtist, share } =
+    controller;
 
   return (
     <>
@@ -172,6 +191,15 @@ export function AlbumMenuItems({
       <Item onSelect={() => void goToArtist()}>
         <UserIcon />
         Go to artist
+      </Item>
+
+      <Separator />
+
+      {/* One link for everyone: the share page opens the album in YTubic
+          when it's installed and falls back to YouTube Music when it isn't. */}
+      <Item onSelect={() => void share()}>
+        <Share2Icon />
+        Share
       </Item>
     </>
   );

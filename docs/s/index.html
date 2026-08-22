@@ -156,17 +156,32 @@
       if (t) { title.textContent = t; document.title = t + " · YTubic"; }
       else title.textContent = kicker.textContent;
 
-      if (kind !== "watch") return;
       // The sharp thumb and the blurred backdrop are the same image; the
       // backdrop only fades in once the sharp copy has actually loaded.
       var cover = document.getElementById("cover");
       var bg = document.getElementById("bg");
-      cover.onerror = function () { cover.onerror = null; cover.src = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"; };
       cover.onload = function () {
         cover.classList.add("on");
         bg.src = cover.src;
         bg.classList.add("on");
       };
+
+      if (kind !== "watch") {
+        // Albums, artists and playlists can't derive a cover from the id,
+        // so the link carries one (?c=). Only YouTube CDN hosts pass.
+        var c = q.get("c");
+        try {
+          var cu = new URL(c);
+          if (
+            cu.protocol === "https:" &&
+            (cu.hostname === "i.ytimg.com" ||
+              /(^|\.)googleusercontent\.com$/.test(cu.hostname) ||
+              /(^|\.)ggpht\.com$/.test(cu.hostname))
+          ) cover.src = cu.href;
+        } catch (e) {}
+        return;
+      }
+      cover.onerror = function () { cover.onerror = null; cover.src = "https://i.ytimg.com/vi/" + id + "/hqdefault.jpg"; };
       cover.src = "https://i.ytimg.com/vi/" + id + "/maxresdefault.jpg";
       // oEmbed answers with CORS, so the link itself doesn't need to carry metadata.
       fetch("https://www.youtube.com/oembed?format=json&url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + id))
