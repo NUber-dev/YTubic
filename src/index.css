@@ -401,6 +401,25 @@
     backface-visibility: hidden;
   }
 
+  /* Now-Playing overlay lyrics — scoped to `.np-lyrics` so the compact
+     player card is untouched. Bigger, centered text; wider line spacing; the
+     top blur strip is dropped (it double-blurs against the overlay backdrop).
+     `.np-lyrics .lyrics-line` (0,2,0) outranks the line's `text-lg` (0,1,0). */
+  .np-lyrics .lyrics-line {
+    font-size: clamp(2.1rem, 3vw, 3.4rem);
+    line-height: 1.35;
+    padding-block: 0.5rem;
+    text-align: center;
+    transform-origin: center;
+  }
+  .np-lyrics .lyrics-no-scrollbar {
+    gap: 1.5rem;
+    padding-inline: 5%;
+  }
+  .np-lyrics .lyrics-blur-overlay {
+    display: none;
+  }
+
   /* Seeking. The 1.26s cross-fade is tuned for the slow handoff between
      two lines during playback; when the playhead is dragged it lags the
      text far behind the thumb. While a seek is in flight the same
