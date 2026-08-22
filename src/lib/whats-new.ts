@@ -55,6 +55,23 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.4.7",
+    date: "August 22, 2026",
+    summary: "Share links that open YTubic",
+    changes: [
+      {
+        type: "new",
+        title: "Share links now open the app",
+        text: "Sharing a song, album, playlist or artist copies a link to a page that opens it right in YTubic, or on YouTube Music for people without the app.",
+      },
+      {
+        type: "fixed",
+        title: "Signing in could get stuck on an empty YouTube Music page",
+        text: "The window now finishes the Google sign-in and closes on its own.",
+      },
+    ],
+  },
+  {
     version: "0.4.6",
     date: "August 20, 2026",
     summary: "Playback and library fixes",
