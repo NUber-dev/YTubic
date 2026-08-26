@@ -9,7 +9,7 @@ import type { ShelfItem } from "@/lib/innertube/types";
 import { getLikedIdsSet } from "@/components/shared/like-buttons";
 import { toggleLiked } from "@/lib/like-actions";
 import { fetchRadio, fetchWatchQueueContinuation } from "@/lib/innertube/radio";
-import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
+import { saveTrackMeta, streamUrlFor } from "@/lib/stream";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 import { usePremiumStore } from "@/lib/store/premium";
 import { useSettingsStore } from "@/lib/store/settings";
@@ -105,7 +105,7 @@ export function useAudioEngine() {
       // One automatic retry of the SAME track before giving up. Most
       // first-play failures are a transient googlevideo 403 on the media
       // URL: the stream server drops the failed entry immediately, so a
-      // re-fetch spawns a fresh yt-dlp resolve that usually succeeds —
+      // re-fetch runs WEB_REMIX resolve again and usually succeeds —
       // exactly what a manual re-click does. Only retry a track the user
       // actively wants playing, and only once per track instance.
       {
@@ -206,7 +206,7 @@ export function useAudioEngine() {
     // Premium gate: signed-out / Free accounts browse but don't stream.
     // Every entry path (track clicks, media keys, tray, floating window,
     // restored queues) funnels through this effect, so one check here
-    // guarantees no yt-dlp spawn and no cache write happens without
+    // guarantees no stream resolve and no cache write happens without
     // Premium. A deliberate play attempt (playing=true) gets the
     // explainer dialog; the silent preload of a restored queue
     // (playing=false) just parks the track.
@@ -243,10 +243,9 @@ export function useAudioEngine() {
       );
     }
 
-    // Playback goes through our local streaming HTTP server. It spawns
-    // yt-dlp and pipes the audio bytes progressively so playback starts
-    // as soon as the first chunk lands (typically ~200ms after the
-    // yt-dlp subprocess starts emitting bytes).
+    // Playback goes through our local streaming HTTP server. The frontend
+    // resolves a WEB_REMIX googlevideo URL (cookies + decipher), registers
+    // it with Rust, then streams progressively from disk/cache — no yt-dlp.
     streamUrlFor(streamVideoId)
       .then((src) => {
         if (token !== resolveTokenRef.current) return;
@@ -467,39 +466,6 @@ export function useAudioEngine() {
       dispose?.();
     };
   }, [queryClient]);
-
-  // Prefetch the next queued track in the background while the current
-  // one plays. First-time plays take ~2s (yt-dlp resolve + first audio
-  // chunk); by the time the user hits "next" the file is cached on
-  // disk and playback starts instantly with full seek support.
-  const status = usePlaybackStore((s) => s.status);
-  const { nextVideoId } = usePlaybackStore(
-    useShallow((s) => ({
-      nextVideoId:
-        s.index >= 0 && s.index + 1 < s.queue.length
-          ? s.queue[s.index + 1].videoId
-          : undefined,
-    })),
-  );
-  // Substitute via source-prefs for the prefetch too — otherwise we'd
-  // warm the cache for the wrong stream when the user has switched the
-  // upcoming track to its video version.
-  const nextStreamVideoId = useTrackSourceStore((s) =>
-    nextVideoId ? resolveStreamId(nextVideoId, s.byVideoId) : undefined,
-  );
-  useEffect(() => {
-    if (status !== "ready") return;
-    if (!nextStreamVideoId) return;
-    void prefetchStream(nextStreamVideoId);
-    // Label the prefetched file too — same reasoning as the play path.
-    const st = usePlaybackStore.getState();
-    void saveTrackMeta(
-      nextStreamVideoId,
-      st.index >= 0 && st.index + 1 < st.queue.length
-        ? st.queue[st.index + 1]
-        : undefined,
-    );
-  }, [status, nextStreamVideoId]);
 
   // Auto-extend the queue with radio tracks when we're near the end, so
   // playback continues past the explicit queue.

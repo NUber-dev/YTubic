@@ -74,8 +74,8 @@ async function sweep(): Promise<void> {
     videoIds: targets,
   });
   useSettingsStore.getState().markCacheCleaned();
-  // Deleted files may have been marked "already prefetched" — drop the
-  // memo so they become prefetchable again, and refresh any open
+  // Deleted files may still be remembered as labelled — drop the
+  // memo so sidecars can be rewritten, and refresh any open
   // Settings cache list.
   clearPrefetchMemo();
   void queryClient.invalidateQueries({ queryKey: ["cache-list"] });
