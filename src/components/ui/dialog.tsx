@@ -44,9 +44,12 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        // Starts below the custom title bar (--titlebar-h) so the
-        // window-control strip stays crisp above the dim + blur.
-        "fixed inset-x-0 bottom-0 top-(--titlebar-h) z-50 bg-black/50 backdrop-blur-xs data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        // Covers the whole window, title bar included — the app menu,
+        // sidebar toggle and history arrows are as inert as the rest of
+        // the app while a dialog is up, and should read that way. The
+        // minimize / maximize / close cluster is the exception: it lifts
+        // itself above this (see `WINDOW_CHROME_ATTR` below).
+        "fixed inset-0 z-50 bg-black/50 backdrop-blur-xs data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
         className
       )}
       {...props}
@@ -54,11 +57,33 @@ function DialogOverlay({
   )
 }
 
+/**
+ * Marks window chrome that has to keep working while a dialog is open:
+ * the minimize / maximize / close cluster, and the title bar's drag
+ * strip. Both sit above the overlay and opt back into pointer events
+ * (Radix pins `pointer-events: none` on the body) — see `top-bar.tsx`.
+ *
+ * Moving or resizing the window is a window action, not a dismissal, so
+ * `DialogContent` below ignores outside interactions that start in here
+ * instead of closing the dialog. Without that, dragging the title bar
+ * closed the dialog and the aborted gesture selected the page text
+ * underneath.
+ */
+export const WINDOW_CHROME_ATTR = "data-window-chrome";
+
+function isWindowChrome(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element && !!target.closest(`[${WINDOW_CHROME_ATTR}]`)
+  );
+}
+
 function DialogContent({
   className,
   overlayClassName,
   children,
   showCloseButton = true,
+  onInteractOutside,
+  onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -68,11 +93,29 @@ function DialogContent({
   // through its backdrop) without affecting every other dialog.
   overlayClassName?: string
 }) {
+  const contentRef = React.useRef<HTMLDivElement>(null)
+
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        ref={contentRef}
+        // Radix focuses the first focusable control on open, which paints
+        // a focus ring on whatever happens to be first — a text field, a
+        // close button, a tab. Focus the panel itself instead: the focus
+        // trap and Escape still work, Tab still walks the dialog, and
+        // nothing starts out highlighted. The panel is focusable because
+        // Radix's FocusScope gives it `tabIndex={-1}`.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          contentRef.current?.focus({ preventScroll: true })
+          onOpenAutoFocus?.(e)
+        }}
+        onInteractOutside={(e) => {
+          if (isWindowChrome(e.target)) e.preventDefault();
+          onInteractOutside?.(e);
+        }}
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className

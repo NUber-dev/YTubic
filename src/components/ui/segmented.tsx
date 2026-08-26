@@ -46,7 +46,14 @@ export function SegmentedControl<T extends string>({
     <div
       role="radiogroup"
       className={cn(
-        "inline-flex h-8 shrink-0 items-center rounded-md border bg-background p-0.5 shadow-xs dark:border-input dark:bg-input/30",
+        // Track and thumb per the design: the same `--w050` / `--w070`
+        // resting fill as the switch, with the selected segment raised
+        // on `--w140` instead of tinted.
+        //
+        // The segment's radius is the track's minus the 2px padding
+        // (10 - 2 = 8, i.e. `rounded-md` here, since `--radius` is 10px).
+        // Matching the two made the inner corner bulge past the outer one.
+        "inline-flex shrink-0 items-center gap-0.5 rounded-[10px] border border-w070 bg-w050 p-0.5",
         fullWidth && "flex w-full",
         disabled && "pointer-events-none opacity-50",
         className,
@@ -63,19 +70,19 @@ export function SegmentedControl<T extends string>({
             disabled={disabled}
             onClick={() => onChange(opt.value)}
             className={cn(
-              "relative flex h-full items-center justify-center rounded-sm px-3 text-sm font-medium whitespace-nowrap transition-colors",
+              "relative flex h-7 items-center justify-center rounded-md px-4 text-[13px] whitespace-nowrap transition-colors duration-[140ms]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               fullWidth && "flex-1",
               active
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground",
+                ? "font-semibold text-t1"
+                : "font-medium text-t6 hover:text-t3",
             )}
           >
             {active && (
               <motion.span
                 layout
                 layoutId={layoutId}
-                className="absolute inset-0 rounded-sm bg-accent"
+                className="absolute inset-0 rounded-md bg-w140 shadow-[0_1px_2px_var(--k350),inset_0_1px_0_var(--w080)]"
                 transition={shouldReduceMotion ? { duration: 0 } : SPRING}
               />
             )}
