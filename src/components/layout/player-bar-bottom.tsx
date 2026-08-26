@@ -34,6 +34,7 @@ import {
 } from "@/components/layout/lyrics-view";
 import {
   ProgressSlider,
+  SpeedControl,
   VolumeControl,
   formatTime,
   repeatLabel,
@@ -235,6 +236,7 @@ export function PlayerBarBottom() {
           {track ? <LikeDislikeButtons videoId={track.videoId} track={track} /> : null}
           <LyricsPopover state={lyricsState} />
           <QueuePopover />
+          <SpeedControl />
           <VolumeControl direction="vertical" />
           <PlayerMoreMenu track={track} />
         </div>

@@ -24,6 +24,22 @@ export type RepeatMode = "off" | "all" | "one";
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
+/** Discrete rates exposed in the player UI. Maps 1:1 to HTMLAudioElement.playbackRate. */
+export const PLAYBACK_RATES = [0.1, 0.25, 0.5, 1, 1.25, 1.5, 2] as const;
+export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
+
+export function isPlaybackRate(v: number): v is PlaybackRate {
+  return (PLAYBACK_RATES as readonly number[]).includes(v);
+}
+
+export function formatPlaybackRate(rate: number): string {
+  // Keep the label short in the transport chrome ("1×", "0.25×").
+  if (rate === 1) return "1×";
+  // Trim trailing zeros so 0.50 → 0.5, but keep 0.25 intact.
+  const s = Number.isInteger(rate) ? String(rate) : String(rate);
+  return `${s}×`;
+}
+
 export type PlaybackState = {
   // Queue
   queue: QueueTrack[];
@@ -42,6 +58,8 @@ export type PlaybackState = {
   /** 0..1 — store as fraction; UI can scale. */
   volume: number;
   muted: boolean;
+  /** HTMLAudioElement.playbackRate — discrete steps from PLAYBACK_RATES. */
+  playbackRate: PlaybackRate;
   /** Current playhead, seconds. */
   position: number;
   /** Real duration (from audio element, once loaded). */
@@ -88,9 +106,10 @@ export type PlaybackState = {
   seek: (seconds: number) => void;
   clearPendingSeek: () => void;
 
-  // Actions — volume
+  // Actions — volume / speed
   setVolume: (volume: number) => void;
   toggleMute: () => void;
+  setPlaybackRate: (rate: PlaybackRate) => void;
   setShuffle: (on: boolean) => void;
   cycleRepeat: () => void;
 };
@@ -179,6 +198,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   playing: false,
   volume: 0.8,
   muted: false,
+  playbackRate: 1,
   position: 0,
   duration: 0,
   pendingSeek: undefined,
@@ -441,6 +461,10 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   setVolume: (volume) =>
     set({ volume: Math.max(0, Math.min(1, volume)), muted: false }),
   toggleMute: () => set((s) => ({ muted: !s.muted })),
+  setPlaybackRate: (rate) => {
+    if (!isPlaybackRate(rate)) return;
+    set({ playbackRate: rate });
+  },
   setShuffle: (on) => {
     set((s) => {
       if (!on) return { shuffle: false };
@@ -484,6 +508,7 @@ export const usePlaybackStore = isFloatingPlayerWindow()
           queueContinuation: s.queueContinuation,
           volume: s.volume,
           muted: s.muted,
+          playbackRate: s.playbackRate,
         }),
         onRehydrateStorage: () => (state) => {
           if (!state) return;
@@ -494,6 +519,8 @@ export const usePlaybackStore = isFloatingPlayerWindow()
           state.streamUrl = undefined;
           state.pendingSeek = undefined;
           state.error = undefined;
+          // Guard against corrupted / future-unknown rates from storage.
+          if (!isPlaybackRate(state.playbackRate)) state.playbackRate = 1;
         },
       }),
     );
@@ -520,9 +547,9 @@ export function currentTrack(state: PlaybackState): QueueTrack | undefined {
  * `FloatingPlayerSyncReceiver` writes those fields directly via
  * `setState` when state events arrive.
  *
- * Some actions (`seek`, `setVolume`, `toggleMute`) also do an
- * optimistic local update so the corresponding slider/icon doesn't
- * jump back for the round-trip.
+ * Some actions (`seek`, `setVolume`, `toggleMute`, `setPlaybackRate`)
+ * also do an optimistic local update so the corresponding control
+ * doesn't jump back for the round-trip.
  *
  * Call this from the floating window's entrypoint module before any
  * component reads from the store. Guarded so an accidental call from
@@ -551,6 +578,11 @@ export function initFloatingPlaybackBridge(): void {
     toggleMute: () => {
       usePlaybackStore.setState((s) => ({ muted: !s.muted }));
       sendAction({ type: "toggleMute" });
+    },
+    setPlaybackRate: (rate) => {
+      if (!isPlaybackRate(rate)) return;
+      usePlaybackStore.setState({ playbackRate: rate });
+      sendAction({ type: "setPlaybackRate", rate });
     },
     setShuffle: (on) => sendAction({ type: "setShuffle", on }),
     cycleRepeat: () => sendAction({ type: "cycleRepeat" }),
