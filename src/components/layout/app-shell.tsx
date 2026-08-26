@@ -25,6 +25,7 @@ import { WhatsNewDialog } from "@/components/layout/whats-new-dialog";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAudioEngine } from "@/lib/audio-engine";
+import { useResolveCurrentAlbum } from "@/lib/use-track-album";
 import { useCacheAutoClean } from "@/lib/cache-cleanup";
 import { usePlaybackNotifications } from "@/lib/playback-notifications";
 import { useLastfmScrobbler } from "@/lib/lastfm-scrobbler";
@@ -91,6 +92,7 @@ function useGlobalShortcuts() {
 
 export function AppShell({ children }: { children: ReactNode }) {
   useAudioEngine();
+  useResolveCurrentAlbum();
   useYtdlpSetup();
   useUpdateStartupCheck();
   useWhatsNewOnUpdate();
@@ -190,16 +192,23 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   useEffect(() => {
     let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void listen<{ id: string }>("nav:artist", (e) => {
-      void navigate({ to: "/artist/$id", params: { id: e.payload.id } });
-    }).then((un) => {
-      if (cancelled) un();
-      else dispose = un;
-    });
+    const disposers: (() => void)[] = [];
+    const watch = (
+      event: "nav:artist" | "nav:album",
+      to: "/artist/$id" | "/album/$id",
+    ) => {
+      void listen<{ id: string }>(event, (e) => {
+        void navigate({ to, params: { id: e.payload.id } });
+      }).then((un) => {
+        if (cancelled) un();
+        else disposers.push(un);
+      });
+    };
+    watch("nav:artist", "/artist/$id");
+    watch("nav:album", "/album/$id");
     return () => {
       cancelled = true;
-      dispose?.();
+      for (const un of disposers) un();
     };
   }, [navigate]);
 

@@ -56,7 +56,7 @@ type Props = {
  * Triple-dot overflow menu for the player surfaces. Wraps the same
  * `TrackMenuItems` block used by the right-click context menu on
  * track rows, so the actions (Play next, Add to queue, Start radio,
- * Like / Remove from liked, Add to playlist, Go to artist, Share)
+ * Like / Remove from liked, Add to playlist, Go to artist / album, Share)
  * stay in sync between every entry point.
  *
  * Splits into a main-window branch (uses `useNavigate` directly) and
@@ -82,6 +82,9 @@ function PlayerMoreMenuMain(props: Props) {
       onGoToArtist={(id) =>
         navigate({ to: "/artist/$id", params: { id } })
       }
+      onGoToAlbum={(id) =>
+        navigate({ to: "/album/$id", params: { id } })
+      }
     />
   );
 }
@@ -94,6 +97,12 @@ function PlayerMoreMenuFloating(props: Props) {
         void emit("nav:artist", { id });
         // Bring the main window to the front so the user actually
         // sees the page they just navigated to.
+        void invoke("focus_main_window").catch(() => {
+          /* command might not be registered in older builds */
+        });
+      }}
+      onGoToAlbum={(id) => {
+        void emit("nav:album", { id });
         void invoke("focus_main_window").catch(() => {
           /* command might not be registered in older builds */
         });
@@ -114,7 +123,11 @@ function PlayerMoreMenuInner({
   align = "end",
   side = "top",
   onGoToArtist,
-}: Props & { onGoToArtist: (artistId: string) => void }) {
+  onGoToAlbum,
+}: Props & {
+  onGoToArtist: (artistId: string) => void;
+  onGoToAlbum: (albumId: string) => void;
+}) {
   const item: ShelfItem = track
     ? {
         kind: "song",
@@ -123,6 +136,7 @@ function PlayerMoreMenuInner({
         thumbnails: track.thumbnails,
         artists: track.artists,
         album: track.album,
+        albumId: track.albumId,
         duration: track.duration,
       }
     : { kind: "song", id: "", title: "", thumbnails: [] };
@@ -162,6 +176,7 @@ function PlayerMoreMenuInner({
                 controller={controller}
                 primitives={dropPrimitives}
                 onGoToArtist={onGoToArtist}
+                onGoToAlbum={onGoToAlbum}
               />
             </>
           ) : null}

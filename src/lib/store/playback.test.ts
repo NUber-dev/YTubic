@@ -166,3 +166,36 @@ describe("album 'Play next' ordering", () => {
     ]);
   });
 });
+
+describe("playback shelfItemToTrack albumId", () => {
+  beforeEach(() => setup({}));
+
+  it("carries albumId from a shelf item into the queue", () => {
+    usePlaybackStore.getState().playNow({
+      kind: "song",
+      id: "vid",
+      title: "Song",
+      thumbnails: [],
+      album: "The Album",
+      albumId: "MPREb_x",
+    });
+    expect(usePlaybackStore.getState().queue[0]).toMatchObject({
+      videoId: "vid",
+      album: "The Album",
+      albumId: "MPREb_x",
+    });
+  });
+
+  it("patchQueueTrack stamps albumId onto queued copies", () => {
+    setup({ queue: [track("vid")], index: 0 });
+    usePlaybackStore.getState().patchQueueTrack("vid", {
+      albumId: "MPREb_later",
+      album: "Late Album",
+    });
+    expect(usePlaybackStore.getState().queue[0]).toMatchObject({
+      videoId: "vid",
+      albumId: "MPREb_later",
+      album: "Late Album",
+    });
+  });
+});

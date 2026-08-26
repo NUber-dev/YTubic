@@ -695,9 +695,9 @@ export function PlayerBar({
       {/* Bottom row: lyrics-source + queue + volume on the left,
           song/video toggle + more menu on the right. `PlayerMoreMenu`
           handles the floating-window case internally — its
-          `onGoToArtist` callback emits a Tauri nav event there
-          instead of calling `useNavigate` (which would throw without
-          a router). */}
+          `onGoToArtist` / `onGoToAlbum` callbacks emit a Tauri nav
+          event there instead of calling `useNavigate` (which would
+          throw without a router). */}
       <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-3">
         <div className="flex items-center gap-0.5">
           <LyricsSourceButton state={lyricsState} />

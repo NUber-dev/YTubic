@@ -475,6 +475,56 @@ export function findContinuationToken(root: unknown): string | undefined {
   return result;
 }
 
+/** True for a browse id that opens an album page (`/album/$id`). */
+export function isAlbumBrowseId(id: string | undefined): id is string {
+  return typeof id === "string" && id.startsWith("MPREb_");
+}
+
+/**
+ * Album browse id on a navigation endpoint. YTM sometimes omits
+ * `pageType` and only ships `MPREb_…`; treat that as an album too.
+ */
+export function albumBrowseIdFromEndpoint(
+  ep: YtNode | undefined,
+): string | undefined {
+  const browse = ep?.browseEndpoint;
+  const id = browse?.browseId;
+  if (typeof id !== "string" || !id) return undefined;
+  const pageType = browse.browseEndpointContextSupportedConfigs
+    ?.browseEndpointContextMusicConfig?.pageType as string | undefined;
+  if (typeof pageType === "string" && pageType.includes("ALBUM")) return id;
+  if (isAlbumBrowseId(id)) return id;
+  return undefined;
+}
+
+/** "Go to album" (and similar) on a row/card overflow menu. */
+export function albumBrowseIdFromMenu(raw: YtNode): string | undefined {
+  const items: YtNode[] = raw.menu?.menuRenderer?.items ?? [];
+  for (const it of items) {
+    const nav =
+      it.menuNavigationItemRenderer?.navigationEndpoint ??
+      it.navigationEndpoint;
+    const id = albumBrowseIdFromEndpoint(nav);
+    if (id) return id;
+  }
+  return undefined;
+}
+
+function albumFromSubtitleRuns(runs: YtNode[]): {
+  album?: string;
+  albumId?: string;
+} {
+  let album: string | undefined;
+  let albumId: string | undefined;
+  for (const run of runs) {
+    const id = albumBrowseIdFromEndpoint(run.navigationEndpoint);
+    if (!id) continue;
+    album = (typeof run.text === "string" ? run.text : undefined) ?? album;
+    albumId = id;
+  }
+  return { album, albumId };
+}
+
 /**
  * Map a `playlistPanelVideoRenderer` (the row shape /next returns inside
  * a playlistPanelRenderer — used for radio/autoplay tracks) to our
@@ -490,21 +540,20 @@ export function mapPlaylistPanelVideo(raw: YtNode): ShelfItem | null {
     raw.longBylineText?.runs ?? raw.shortBylineText?.runs ?? [];
 
   const artists: { id?: string; name: string }[] = [];
-  let album: string | undefined;
-  let albumId: string | undefined;
   for (const run of subtitleRuns) {
     const browseId = run.navigationEndpoint?.browseEndpoint?.browseId as
-      string | undefined;
+      | string
+      | undefined;
     const pageType = run.navigationEndpoint?.browseEndpoint
       ?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig
       ?.pageType as string | undefined;
     if (browseId && pageType?.includes("ARTIST")) {
       artists.push({ id: browseId, name: run.text ?? "" });
-    } else if (browseId && pageType?.includes("ALBUM")) {
-      album = run.text ?? album;
-      albumId = browseId;
     }
   }
+  const fromByline = albumFromSubtitleRuns(subtitleRuns);
+  const album = fromByline.album;
+  const albumId = fromByline.albumId ?? albumBrowseIdFromMenu(raw);
 
   const duration = parseDuration(readRuns(raw.lengthText));
   const thumbnails = readThumbnails(raw.thumbnail);
@@ -835,10 +884,13 @@ export function mapResponsiveListItem(raw: YtNode): ShelfItem | null {
       if (browseId && pageType?.includes("ARTIST")) {
         artists.push({ id: browseId, name: run.text ?? "" });
         hadNav = true;
-      } else if (browseId && pageType?.includes("ALBUM")) {
-        album = run.text ?? album;
-        albumId = browseId;
-        hadNav = true;
+      } else {
+        const albumBrowse = albumBrowseIdFromEndpoint(nav);
+        if (albumBrowse) {
+          album = run.text ?? album;
+          albumId = albumBrowse;
+          hadNav = true;
+        }
       }
     }
     if (hadNav) continue;
@@ -937,7 +989,7 @@ export function mapResponsiveListItem(raw: YtNode): ShelfItem | null {
       thumbnails,
       artists: artists.length ? artists : undefined,
       album,
-      albumId,
+      albumId: albumId ?? albumBrowseIdFromMenu(raw),
       duration,
       explicit: explicit || undefined,
       playCount,

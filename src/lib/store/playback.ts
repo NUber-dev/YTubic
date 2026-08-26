@@ -15,6 +15,8 @@ export type QueueTrack = {
   subtitle?: string;
   artists?: { id?: string; name: string }[];
   album?: string;
+  /** Browse id for the album this track belongs to (e.g. "MPREb_…"). */
+  albumId?: string;
   thumbnails: Thumbnail[];
   /** Original duration from browse responses, may be undefined until /player resolves. */
   duration?: number;
@@ -72,6 +74,11 @@ export type PlaybackState = {
   clearQueue: () => void;
   setAutoRadio: (on: boolean) => void;
   setQueueContinuation: (token?: string) => void;
+  /** Stamp album metadata onto queued copies of a video (Go to album). */
+  patchQueueTrack: (
+    videoId: string,
+    patch: Partial<Pick<QueueTrack, "album" | "albumId">>,
+  ) => void;
 
   // Actions — transport
   toggle: () => void;
@@ -104,6 +111,7 @@ function shelfItemToTrack(item: ShelfItem | QueueTrack): QueueTrack | null {
     subtitle: item.subtitle,
     artists: item.artists,
     album: item.album,
+    albumId: item.albumId,
     thumbnails: item.thumbnails,
     duration: item.duration,
   };
@@ -345,6 +353,21 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   setAutoRadio: (on) => set({ autoRadio: on }),
 
   setQueueContinuation: (token) => set({ queueContinuation: token }),
+
+  patchQueueTrack: (videoId, patch) => {
+    set((s) => {
+      let changed = false;
+      const queue = s.queue.map((t) => {
+        if (t.videoId !== videoId) return t;
+        const albumId = patch.albumId ?? t.albumId;
+        const album = patch.album ?? t.album;
+        if (albumId === t.albumId && album === t.album) return t;
+        changed = true;
+        return { ...t, album, albumId };
+      });
+      return changed ? { queue } : s;
+    });
+  },
 
   toggle: () => {
     const { queue, playing } = get();

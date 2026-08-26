@@ -2,12 +2,61 @@ import type { AlbumPage, MinimalArtist, ShelfItem } from "./types";
 import { parseTrackCount } from "./parse-count";
 import {
   collectResponsiveRows,
+  mapPlaylistPanelVideo,
   mapResponsiveListItem,
   rawBrowse,
+  rawNext,
   readRuns,
   readThumbnails,
   type YtNode,
 } from "./shared";
+
+/** Pull the watch-next playlist panel out of a `/next` response. */
+function watchNextPanel(json: YtNode): YtNode | undefined {
+  return (
+    json?.contents?.singleColumnMusicWatchNextResultsRenderer?.tabbedRenderer
+      ?.watchNextTabbedResultsRenderer?.tabs?.[0]?.tabRenderer?.content
+      ?.musicQueueRenderer?.content?.playlistPanelRenderer ??
+    json?.continuationContents?.playlistPanelContinuation
+  );
+}
+
+/**
+ * Album browse id for `videoId` from a `/next` payload. Matches the
+ * current-track row first; does not fall back to a neighbor's album.
+ */
+export function albumIdFromWatchNext(
+  json: YtNode,
+  videoId: string,
+): string | undefined {
+  const panel = watchNextPanel(json);
+  for (const c of (panel?.contents as YtNode[] | undefined) ?? []) {
+    const row =
+      c.playlistPanelVideoRenderer ??
+      c.playlistPanelVideoWrapperRenderer?.primaryRenderer
+        ?.playlistPanelVideoRenderer;
+    if (!row) continue;
+    const mapped = mapPlaylistPanelVideo(row);
+    if (mapped?.id === videoId && mapped.albumId) return mapped.albumId;
+  }
+  return undefined;
+}
+
+/**
+ * Look up the album browse id for a playing video. Used when the queue
+ * item was built from a row that didn't carry an album link (radio,
+ * home, persisted queues).
+ */
+export async function fetchAlbumIdForVideo(
+  videoId: string,
+): Promise<string | undefined> {
+  const json = await rawNext({
+    videoId,
+    isAudioOnly: true,
+    enablePersistentPlaylistPanel: true,
+  });
+  return albumIdFromWatchNext(json, videoId);
+}
 
 function extractAlbumHeader(json: YtNode): YtNode {
   return (
@@ -77,7 +126,15 @@ export async function fetchAlbum(id: string): Promise<AlbumPage> {
     const mapped = mapResponsiveListItem(row);
     if (mapped && mapped.kind === "song" && !seenIds.has(mapped.id)) {
       seenIds.add(mapped.id);
-      tracks.push(mapped);
+      // Album-page rows rarely carry their own album browse link (the
+      // user is already on the album), so stamp the page id/title onto
+      // each track. That lets "Go to album" and Last.fm scrobbles work
+      // after the user queues from this page.
+      tracks.push({
+        ...mapped,
+        album: mapped.album ?? title,
+        albumId: mapped.albumId ?? id,
+      });
     }
   }
 

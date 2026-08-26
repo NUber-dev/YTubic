@@ -56,6 +56,7 @@ function PlayerCoverMenuMain(props: Props) {
     <PlayerCoverMenuInner
       {...props}
       onGoToArtist={(id) => navigate({ to: "/artist/$id", params: { id } })}
+      onGoToAlbum={(id) => navigate({ to: "/album/$id", params: { id } })}
     />
   );
 }
@@ -70,6 +71,12 @@ function PlayerCoverMenuFloating(props: Props) {
           /* command might not be registered in older builds */
         });
       }}
+      onGoToAlbum={(id) => {
+        void emit("nav:album", { id });
+        void invoke("focus_main_window").catch(() => {
+          /* command might not be registered in older builds */
+        });
+      }}
     />
   );
 }
@@ -78,7 +85,11 @@ function PlayerCoverMenuInner({
   track,
   children,
   onGoToArtist,
-}: Props & { onGoToArtist: (artistId: string) => void }) {
+  onGoToAlbum,
+}: Props & {
+  onGoToArtist: (artistId: string) => void;
+  onGoToAlbum: (albumId: string) => void;
+}) {
   // Same stub-item dance as `PlayerMoreMenu`: the controller owns React
   // Query hooks that can't be skipped when nothing is playing.
   const item: ShelfItem = track
@@ -89,6 +100,7 @@ function PlayerCoverMenuInner({
         thumbnails: track.thumbnails,
         artists: track.artists,
         album: track.album,
+        albumId: track.albumId,
         duration: track.duration,
       }
     : { kind: "song", id: "", title: "", thumbnails: [] };
@@ -133,6 +145,7 @@ function PlayerCoverMenuInner({
             controller={controller}
             primitives={ctxPrimitives}
             onGoToArtist={onGoToArtist}
+            onGoToAlbum={onGoToAlbum}
           />
           <ContextMenuSeparator />
           <ContextMenuItem

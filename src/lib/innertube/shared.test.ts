@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { mapShelfWrapper, splitSetCookieHeader, type YtNode } from "./shared";
+import {
+  albumBrowseIdFromEndpoint,
+  mapPlaylistPanelVideo,
+  mapResponsiveListItem,
+  mapShelfWrapper,
+  splitSetCookieHeader,
+  type YtNode,
+} from "./shared";
 
 // Fallback splitter for runtimes without Headers.getSetCookie. The
 // tricky part is NOT splitting on the comma inside an Expires date.
@@ -122,5 +129,120 @@ describe("mapShelfWrapper more endpoint", () => {
       },
     };
     expect(mapShelfWrapper(wrapper, 0).more).toBeUndefined();
+  });
+});
+
+describe("album browse id extraction", () => {
+  it("treats MPREb_ as an album even without pageType", () => {
+    expect(
+      albumBrowseIdFromEndpoint({
+        browseEndpoint: { browseId: "MPREb_abc" },
+      }),
+    ).toBe("MPREb_abc");
+  });
+
+  it("ignores artist channels", () => {
+    expect(
+      albumBrowseIdFromEndpoint({
+        browseEndpoint: {
+          browseId: "UCxyz",
+          browseEndpointContextSupportedConfigs: {
+            browseEndpointContextMusicConfig: {
+              pageType: "MUSIC_PAGE_TYPE_ARTIST",
+            },
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("maps a panel video album from a byline without pageType", () => {
+    const item = mapPlaylistPanelVideo({
+      title: { runs: [{ text: "Song" }] },
+      navigationEndpoint: { watchEndpoint: { videoId: "vid1" } },
+      longBylineText: {
+        runs: [
+          { text: "Artist" },
+          { text: " • " },
+          {
+            text: "The Album",
+            navigationEndpoint: { browseEndpoint: { browseId: "MPREb_x" } },
+          },
+        ],
+      },
+    });
+    expect(item).toMatchObject({
+      id: "vid1",
+      album: "The Album",
+      albumId: "MPREb_x",
+    });
+  });
+
+  it("maps a panel video album from the overflow menu", () => {
+    const item = mapPlaylistPanelVideo({
+      title: { runs: [{ text: "Song" }] },
+      navigationEndpoint: { watchEndpoint: { videoId: "vid1" } },
+      longBylineText: { runs: [{ text: "Artist" }] },
+      menu: {
+        menuRenderer: {
+          items: [
+            {
+              menuNavigationItemRenderer: {
+                text: { runs: [{ text: "Go to album" }] },
+                navigationEndpoint: {
+                  browseEndpoint: { browseId: "MPREb_from_menu" },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(item?.albumId).toBe("MPREb_from_menu");
+  });
+
+  it("maps a list-row album from the overflow menu", () => {
+    const item = mapResponsiveListItem({
+      flexColumns: [
+        {
+          musicResponsiveListItemFlexColumnRenderer: {
+            text: {
+              runs: [
+                {
+                  text: "Song",
+                  navigationEndpoint: { watchEndpoint: { videoId: "vid1" } },
+                },
+              ],
+            },
+          },
+        },
+        {
+          musicResponsiveListItemFlexColumnRenderer: {
+            text: { runs: [{ text: "Artist" }] },
+          },
+        },
+      ],
+      menu: {
+        menuRenderer: {
+          items: [
+            {
+              menuNavigationItemRenderer: {
+                navigationEndpoint: {
+                  browseEndpoint: {
+                    browseId: "MPREb_row",
+                    browseEndpointContextSupportedConfigs: {
+                      browseEndpointContextMusicConfig: {
+                        pageType: "MUSIC_PAGE_TYPE_ALBUM",
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(item).toMatchObject({ id: "vid1", albumId: "MPREb_row" });
   });
 });
