@@ -1,20 +1,25 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
-import { CheckIcon, Loader2Icon, UsersRoundIcon } from "lucide-react";
+import {
+  IconCheck,
+  IconLoader2,
+  IconUsersGroup,
+  IconX,
+} from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  frostedDialogOverlay,
+  frostedDialogPanel,
 } from "@/components/ui/dialog";
-import {
-  fetchChannelList,
-  type ChannelChoice,
-} from "@/lib/innertube/channels";
+import { fetchChannelList, type ChannelChoice } from "@/lib/innertube/channels";
 import { useAccounts } from "@/lib/store/accounts";
 import { useChannelPickerDialog } from "@/lib/store/channel-picker";
 import { cn } from "@/lib/utils";
@@ -68,28 +73,47 @@ export function ChannelPickerDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Choose a channel</DialogTitle>
-          <DialogDescription>
-            Your Google account can hold several YouTube channels. Library,
-            likes and recommendations belong to the channel, not the
-            account, so pick the one YTubic should use.
+      <DialogContent
+        showCloseButton={false}
+        overlayClassName={frostedDialogOverlay}
+        className={cn(
+          "w-[460px] max-w-[calc(100vw-2rem)] gap-4 rounded-2xl px-[26px] pb-[22px] pt-6 shadow-[0_30px_70px_-20px_var(--k850)] sm:max-w-[460px]",
+          frostedDialogPanel,
+        )}
+      >
+        {/* Catch-light along the top edge, as on the other dialogs. */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-px top-0 h-px bg-[linear-gradient(90deg,transparent,var(--w160),transparent)]"
+        />
+        <DialogClose className="absolute right-4 top-4 z-[2] grid size-7 cursor-pointer place-items-center rounded-lg border border-w070 bg-w030 text-t6 transition-colors duration-[140ms] hover:bg-w080 hover:text-t2">
+          <IconX className="size-3" />
+          <span className="sr-only">Close</span>
+        </DialogClose>
+
+        {/* Right padding clears the close button. */}
+        <DialogHeader className="gap-2 pr-[34px]">
+          <DialogTitle className="text-2xl font-bold leading-none tracking-[-0.02em] text-t1">
+            Choose a channel
+          </DialogTitle>
+          <DialogDescription className="text-[13.5px] leading-[1.5] text-t4 text-pretty">
+            Your library, likes and recommendations belong to the channel, not
+            the account. Pick the one YTubic should use.
           </DialogDescription>
         </DialogHeader>
 
         {channels.isLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2Icon className="size-5 animate-spin text-muted-foreground" />
+          <div className="flex items-center justify-center py-10">
+            <IconLoader2 className="size-5 animate-spin text-t6" />
           </div>
         ) : channels.isError ? (
-          <div className="flex flex-col items-start gap-3 py-2">
-            <p className="text-sm text-muted-foreground">
+          <div className="flex flex-col items-start gap-3.5 py-1">
+            <p className="text-[13.5px] leading-[1.5] text-t4">
               Couldn't load the channel list. Check your connection and try
               again.
             </p>
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               onClick={() => void channels.refetch()}
             >
@@ -106,35 +130,38 @@ export function ChannelPickerDialog() {
                   type="button"
                   onClick={() => void pick(c)}
                   className={cn(
-                    "flex items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 text-left transition-colors",
+                    "flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors duration-[140ms]",
                     isCurrent
-                      ? "border-border/60 bg-surface"
-                      : "hover:bg-accent/50",
+                      ? "border-w075 bg-w060"
+                      : "border-transparent hover:bg-w050",
                   )}
                 >
                   <Avatar className="size-9">
                     {c.photoUrl ? <AvatarImage src={c.photoUrl} /> : null}
-                    <AvatarFallback>
-                      <UsersRoundIcon className="size-4" />
+                    <AvatarFallback className="bg-w070 text-t5">
+                      <IconUsersGroup className="size-4" />
                     </AvatarFallback>
                   </Avatar>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="truncate text-sm font-medium leading-none">
+                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="truncate text-sm font-semibold leading-none text-t2">
                       {c.name}
                     </span>
-                    <span className="truncate text-xs text-muted-foreground">
+                    <span className="truncate text-[12.5px] leading-none text-t6">
                       {c.byline ||
                         (c.pageId ? "Brand channel" : "Personal channel")}
                     </span>
                   </span>
                   {isCurrent ? (
-                    <CheckIcon className="size-4 shrink-0 text-muted-foreground" />
+                    <IconCheck
+                      className="size-4 shrink-0 text-acc1"
+                      stroke={2.4}
+                    />
                   ) : null}
                 </button>
               );
             })}
             {channels.data && channels.data.length === 0 ? (
-              <p className="py-4 text-sm text-muted-foreground">
+              <p className="py-4 text-[13.5px] text-t5">
                 No channels found for this account.
               </p>
             ) : null}

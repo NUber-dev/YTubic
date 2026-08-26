@@ -82,7 +82,7 @@ describe("What's New", () => {
     for (const entry of WHATS_NEW) {
       expect(entry.changes.length, `${entry.version} has no changes`).toBeGreaterThan(0);
       for (const c of entry.changes) {
-        expect(["new", "improved", "fixed", "security"]).toContain(c.type);
+        expect(["new", "improved", "fixed"]).toContain(c.type);
         expect(c.title.trim().length, `${entry.version}: empty title`).toBeGreaterThan(0);
         expect(c.text.trim().length, `${entry.version}: "${c.title}" has no detail`).toBeGreaterThan(20);
         expect(c.title.trim().endsWith("."), `${entry.version}: "${c.title}" ends with a period`).toBe(false);

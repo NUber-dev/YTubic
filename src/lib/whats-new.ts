@@ -1,4 +1,4 @@
-export type WhatsNewChangeType = "new" | "improved" | "fixed" | "security";
+export type WhatsNewChangeType = "new" | "improved" | "fixed";
 
 export type WhatsNewChange = {
   type: WhatsNewChangeType;
@@ -30,8 +30,9 @@ export type WhatsNewEntry = {
    */
   imageAlign?: "top";
   /**
-   * Typed change list. The dialog groups these into "New & Improved",
-   * "Fixed", and "Security" sections with counts, in that order.
+   * Typed change list, rendered in order as one flat list. The type
+   * only picks the bullet colour: `new` and `improved` get the accent
+   * dot, `fixed` a muted one.
    */
   changes: WhatsNewChange[];
   /**
