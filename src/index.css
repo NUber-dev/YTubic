@@ -9,8 +9,9 @@
      instead of overlapping the window-control buttons. */
   --titlebar-h: 36px;
 
-  /* YouTube brand red */
-  --brand: #fa1f3e;
+  /* YouTube brand red. Same value as the design system's --acc1. */
+  --brand: #fa1f4b;
+  --brand-rgb: 250, 31, 75;
   --brand-foreground: oklch(0.985 0 0);
 
   --background: oklch(1 0 0);
@@ -62,6 +63,135 @@
   --slider-thumb-glow: 0 0 3px oklch(0 0 0 / 30%), 0 0 8px oklch(0 0 0 / 15%);
   --slider-thumb-glow-strong: 0 0 5px oklch(0 0 0 / 40%),
     0 0 12px oklch(0 0 0 / 22%);
+
+  /* ------------------------------------------------------------------
+     Design-system palette (Claude Design handoff, 2026-08).
+
+     A raw palette that sits alongside the shadcn semantic tokens above.
+     Names are terse on purpose and match the design handoff 1:1, so a
+     value read off a prototype can be pasted straight in:
+
+       --t1 ... --t10   text ramp, 1 = strongest
+       --w020 ... --w350
+                        white overlay at that alpha in dark mode; in
+                        light mode the same token flips to *black* on a
+                        compressed scale, so "lighten by X" in dark
+                        reads as "darken by ~X" in light
+       --k180 ... --k900
+                        black overlay, likewise compressed in light
+       --surf1 ... --surf7   opaque surfaces, low to high
+       --glass1 ... --glass6 translucent surfaces; always pair with
+                        backdrop-filter: blur(22px) saturate(1.4)
+                        (blur(18px) on larger panels)
+       --acc1 ... --acc5     accent ramp, all one hue (~348deg). --acc1
+                        does NOT flip between themes; only --acc2...5
+                        darken in light mode
+       --desk1 ... --desk3   desktop backdrop behind the window
+       --g6* / --g9*    gradient stops for the background washes
+
+     :root carries the light values and .dark the dark ones. The handoff
+     is written the other way round (dark is its base), so the two blocks
+     are swapped relative to the prototypes.
+
+     Components move onto these one at a time; until a component is
+     migrated it keeps using the semantic tokens above. ---------------- */
+  --acc1: #fa1f4b;
+  --acc1rgb: 250, 31, 75;
+  --acc2: #d61239;
+  --acc3: #c71236;
+  --acc4: #b01030;
+  --acc5: #e1123b;
+
+  --t1: #18181b;
+  --t2: #27272a;
+  --t3: #3f3f46;
+  --t4: #52525b;
+  --t5: #6b6b74;
+  --t6: #74747d;
+  --t7: #82828b;
+  --t8: #94949d;
+  --t9: #8e8e97;
+  --t10: #a2a2aa;
+  --tph: #8b8b94;
+
+  --win: #ffffff;
+  --surf1: #ffffff;
+  --surf2: #f1f1f4;
+  --surf3: #f1f1f4;
+  --surf4: #e4e4e8;
+  --surf5: #d9d9df;
+  --surf6: #d2d2d9;
+  --surf7: #c3c3ca;
+
+  --desk1: #f2f2f5;
+  --desk2: #e7e7eb;
+  --desk3: #dbdbe1;
+  --scrim: rgba(255, 255, 255, 0.68);
+  --sidepanel: rgba(0, 0, 0, 0.028);
+
+  --glass1: rgba(255, 255, 255, 0.55);
+  --glass2: rgba(255, 255, 255, 0.86);
+  --glass3: rgba(252, 252, 253, 0.8);
+  --glass4: rgba(252, 252, 253, 0.86);
+  --glass5: rgba(252, 252, 253, 0.88);
+  --glass6: rgba(252, 252, 253, 0.9);
+
+  --g6a: rgba(255, 255, 255, 0.6);
+  --g6b: rgba(255, 255, 255, 0.65);
+  --g9a: rgba(255, 255, 255, 0.55);
+  --g9b: rgba(255, 255, 255, 0.35);
+  --g9c: rgba(252, 252, 253, 0.88);
+  --g9d: rgba(255, 255, 255, 0.7);
+
+  --w020: rgba(0, 0, 0, 0.035);
+  --w028: rgba(0, 0, 0, 0.04);
+  --w030: rgba(0, 0, 0, 0.045);
+  --w035: rgba(0, 0, 0, 0.05);
+  --w040: rgba(0, 0, 0, 0.055);
+  --w045: rgba(0, 0, 0, 0.06);
+  --w050: rgba(0, 0, 0, 0.06);
+  --w055: rgba(0, 0, 0, 0.065);
+  --w060: rgba(0, 0, 0, 0.07);
+  --w070: rgba(0, 0, 0, 0.08);
+  --w075: rgba(0, 0, 0, 0.085);
+  --w080: rgba(0, 0, 0, 0.09);
+  --w085: rgba(0, 0, 0, 0.095);
+  --w090: rgba(0, 0, 0, 0.1);
+  --w100: rgba(0, 0, 0, 0.1);
+  --w110: rgba(0, 0, 0, 0.11);
+  --w120: rgba(0, 0, 0, 0.11);
+  --w140: rgba(0, 0, 0, 0.12);
+  --w150: rgba(0, 0, 0, 0.12);
+  --w160: rgba(0, 0, 0, 0.13);
+  --w170: rgba(0, 0, 0, 0.13);
+  --w180: rgba(0, 0, 0, 0.14);
+  --w200: rgba(0, 0, 0, 0.15);
+  --w220: rgba(0, 0, 0, 0.16);
+  --w240: rgba(0, 0, 0, 0.16);
+  --w250: rgba(0, 0, 0, 0.17);
+  --w260: rgba(0, 0, 0, 0.17);
+  --w280: rgba(0, 0, 0, 0.18);
+  --w300: rgba(0, 0, 0, 0.18);
+  --w350: rgba(0, 0, 0, 0.2);
+
+  --k180: rgba(0, 0, 0, 0.05);
+  --k200: rgba(0, 0, 0, 0.06);
+  --k220: rgba(0, 0, 0, 0.06);
+  --k240: rgba(0, 0, 0, 0.07);
+  --k300: rgba(0, 0, 0, 0.08);
+  --k320: rgba(0, 0, 0, 0.08);
+  --k350: rgba(0, 0, 0, 0.09);
+  --k400: rgba(0, 0, 0, 0.1);
+  --k420: rgba(0, 0, 0, 0.1);
+  --k550: rgba(0, 0, 0, 0.12);
+  --k600: rgba(0, 0, 0, 0.14);
+  --k800: rgba(0, 0, 0, 0.15);
+  --k850: rgba(0, 0, 0, 0.16);
+  --k900: rgba(0, 0, 0, 0.18);
+
+  --fs-title: #18181b;
+  --fs-sub: #52525b;
+  --fs-label: #74747d;
 }
 
 .dark {
@@ -115,6 +245,105 @@
   --slider-thumb-glow: 0 0 3px oklch(1 0 0 / 35%), 0 0 8px oklch(1 0 0 / 15%);
   --slider-thumb-glow-strong: 0 0 5px oklch(1 0 0 / 50%),
     0 0 12px oklch(1 0 0 / 25%);
+
+  /* Dark half of the design-system palette; see the block in :root for
+     what the names mean. --acc1 deliberately does not flip -- the accent
+     stays vivid in both themes. */
+  --acc2: #ff5e7e;
+  --acc3: #ff8aa1;
+  --acc4: #ffb3c2;
+  --acc5: #fd4b6f;
+
+  --t1: #f5f4f2;
+  --t2: #ededef;
+  --t3: #dcdce0;
+  --t4: #b7b7be;
+  --t5: #9a9aa1;
+  --t6: #8c8c94;
+  --t7: #7b7b83;
+  --t8: #6e6e76;
+  --t9: #5c5c63;
+  --t10: #4a4a51;
+  --tph: #afafb7;
+
+  --win: #131316;
+  --surf1: #1b1b1f;
+  --surf2: #26262b;
+  --surf3: #151517;
+  --surf4: #232328;
+  --surf5: #2c2c31;
+  --surf6: #2e2e34;
+  --surf7: #45454c;
+
+  --desk1: #191920;
+  --desk2: #0f0f11;
+  --desk3: #0b0b0d;
+  --scrim: rgba(11, 11, 13, 0.48);
+  --sidepanel: rgba(14, 13, 13, 0.42);
+
+  --glass1: rgba(10, 10, 12, 0.38);
+  --glass2: rgba(13, 13, 16, 0.85);
+  --glass3: rgba(27, 27, 31, 0.72);
+  --glass4: rgba(27, 27, 31, 0.82);
+  --glass5: rgba(24, 24, 28, 0.86);
+  --glass6: rgba(20, 20, 23, 0.88);
+
+  --g6a: rgba(6, 6, 8, 0.5);
+  --g6b: rgba(6, 6, 8, 0.55);
+  --g9a: rgba(9, 9, 11, 0.42);
+  --g9b: rgba(9, 9, 11, 0.2);
+  --g9c: rgba(9, 9, 11, 0.86);
+  --g9d: rgba(9, 9, 11, 0.62);
+
+  --w020: rgba(255, 255, 255, 0.02);
+  --w028: rgba(255, 255, 255, 0.028);
+  --w030: rgba(255, 255, 255, 0.03);
+  --w035: rgba(255, 255, 255, 0.035);
+  --w040: rgba(255, 255, 255, 0.04);
+  --w045: rgba(255, 255, 255, 0.045);
+  --w050: rgba(255, 255, 255, 0.05);
+  --w055: rgba(255, 255, 255, 0.055);
+  --w060: rgba(255, 255, 255, 0.06);
+  --w070: rgba(255, 255, 255, 0.07);
+  --w075: rgba(255, 255, 255, 0.075);
+  --w080: rgba(255, 255, 255, 0.08);
+  --w085: rgba(255, 255, 255, 0.085);
+  --w090: rgba(255, 255, 255, 0.09);
+  --w100: rgba(255, 255, 255, 0.1);
+  --w110: rgba(255, 255, 255, 0.11);
+  --w120: rgba(255, 255, 255, 0.12);
+  --w140: rgba(255, 255, 255, 0.14);
+  --w150: rgba(255, 255, 255, 0.15);
+  --w160: rgba(255, 255, 255, 0.16);
+  --w170: rgba(255, 255, 255, 0.17);
+  --w180: rgba(255, 255, 255, 0.18);
+  --w200: rgba(255, 255, 255, 0.2);
+  --w220: rgba(255, 255, 255, 0.22);
+  --w240: rgba(255, 255, 255, 0.24);
+  --w250: rgba(255, 255, 255, 0.25);
+  --w260: rgba(255, 255, 255, 0.26);
+  --w280: rgba(255, 255, 255, 0.28);
+  --w300: rgba(255, 255, 255, 0.3);
+  --w350: rgba(255, 255, 255, 0.35);
+
+  --k180: rgba(0, 0, 0, 0.18);
+  --k200: rgba(0, 0, 0, 0.2);
+  --k220: rgba(0, 0, 0, 0.22);
+  --k240: rgba(0, 0, 0, 0.24);
+  --k300: rgba(0, 0, 0, 0.3);
+  --k320: rgba(0, 0, 0, 0.32);
+  --k350: rgba(0, 0, 0, 0.35);
+  --k400: rgba(0, 0, 0, 0.4);
+  --k420: rgba(0, 0, 0, 0.42);
+  --k550: rgba(0, 0, 0, 0.55);
+  --k600: rgba(0, 0, 0, 0.6);
+  --k800: rgba(0, 0, 0, 0.8);
+  --k850: rgba(0, 0, 0, 0.85);
+  --k900: rgba(0, 0, 0, 0.9);
+
+  --fs-title: #ffffff;
+  --fs-sub: rgba(255, 255, 255, 0.62);
+  --fs-label: rgba(255, 255, 255, 0.5);
 }
 
 @theme inline {
@@ -158,6 +387,97 @@
   --color-titlebar-hover: var(--titlebar-hover);
   --color-slider-track: var(--slider-track);
   --color-slider-thumb: var(--slider-thumb);
+
+  /* Design-system palette -- see :root. Exposed here so the terse
+     names work as colour utilities: bg-surf2, text-t4, border-w090. */
+  --color-acc1: var(--acc1);
+  --color-acc2: var(--acc2);
+  --color-acc3: var(--acc3);
+  --color-acc4: var(--acc4);
+  --color-acc5: var(--acc5);
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-t4: var(--t4);
+  --color-t5: var(--t5);
+  --color-t6: var(--t6);
+  --color-t7: var(--t7);
+  --color-t8: var(--t8);
+  --color-t9: var(--t9);
+  --color-t10: var(--t10);
+  --color-tph: var(--tph);
+  --color-win: var(--win);
+  --color-surf1: var(--surf1);
+  --color-surf2: var(--surf2);
+  --color-surf3: var(--surf3);
+  --color-surf4: var(--surf4);
+  --color-surf5: var(--surf5);
+  --color-surf6: var(--surf6);
+  --color-surf7: var(--surf7);
+  --color-desk1: var(--desk1);
+  --color-desk2: var(--desk2);
+  --color-desk3: var(--desk3);
+  --color-scrim: var(--scrim);
+  --color-sidepanel: var(--sidepanel);
+  --color-glass1: var(--glass1);
+  --color-glass2: var(--glass2);
+  --color-glass3: var(--glass3);
+  --color-glass4: var(--glass4);
+  --color-glass5: var(--glass5);
+  --color-glass6: var(--glass6);
+  --color-g6a: var(--g6a);
+  --color-g6b: var(--g6b);
+  --color-g9a: var(--g9a);
+  --color-g9b: var(--g9b);
+  --color-g9c: var(--g9c);
+  --color-g9d: var(--g9d);
+  --color-w020: var(--w020);
+  --color-w028: var(--w028);
+  --color-w030: var(--w030);
+  --color-w035: var(--w035);
+  --color-w040: var(--w040);
+  --color-w045: var(--w045);
+  --color-w050: var(--w050);
+  --color-w055: var(--w055);
+  --color-w060: var(--w060);
+  --color-w070: var(--w070);
+  --color-w075: var(--w075);
+  --color-w080: var(--w080);
+  --color-w085: var(--w085);
+  --color-w090: var(--w090);
+  --color-w100: var(--w100);
+  --color-w110: var(--w110);
+  --color-w120: var(--w120);
+  --color-w140: var(--w140);
+  --color-w150: var(--w150);
+  --color-w160: var(--w160);
+  --color-w170: var(--w170);
+  --color-w180: var(--w180);
+  --color-w200: var(--w200);
+  --color-w220: var(--w220);
+  --color-w240: var(--w240);
+  --color-w250: var(--w250);
+  --color-w260: var(--w260);
+  --color-w280: var(--w280);
+  --color-w300: var(--w300);
+  --color-w350: var(--w350);
+  --color-k180: var(--k180);
+  --color-k200: var(--k200);
+  --color-k220: var(--k220);
+  --color-k240: var(--k240);
+  --color-k300: var(--k300);
+  --color-k320: var(--k320);
+  --color-k350: var(--k350);
+  --color-k400: var(--k400);
+  --color-k420: var(--k420);
+  --color-k550: var(--k550);
+  --color-k600: var(--k600);
+  --color-k800: var(--k800);
+  --color-k850: var(--k850);
+  --color-k900: var(--k900);
+  --color-fs-title: var(--fs-title);
+  --color-fs-sub: var(--fs-sub);
+  --color-fs-label: var(--fs-label);
 }
 
 @layer base {
@@ -192,6 +512,18 @@
   body.layout-resizing [data-slot="sidebar-gap"],
   body.layout-resizing [data-slot="sidebar-container"] {
     transition: none !important;
+  }
+
+  /* Transparent drag strip over the title bar (see top-bar.tsx). It
+     must be inert while no dialog is open, or it would swallow clicks
+     meant for the app menu and the history buttons. Radix marks the
+     body `data-scroll-locked` for as long as a modal is up, which is
+     exactly the window in which the strip should be live. */
+  .titlebar-drag-shield {
+    pointer-events: none;
+  }
+  body[data-scroll-locked] .titlebar-drag-shield {
+    pointer-events: auto;
   }
 
   /* Thin, subtle scrollbars (used in main content area and carousels). */
@@ -428,20 +760,46 @@
     opacity: 0.05;
   }
 
-  /* Attention pulse on the newest version chip in the What's New
-     timeline. Uses box-shadow (not outline) so it layers under the
-     chip's solid outline that punches a gap in the timeline rail. */
-  @keyframes whats-new-pulse {
-    0% {
-      box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 50%, transparent);
+  /* Liked songs has no artwork of its own, so it wears a generated
+     cover: the design system's red radial wash with a white heart
+     centred at 52% of the tile. Used at playlist-row size in the
+     sidebar. The hero-sized tile in the design breathes (`likedGlow`),
+     but the mini one is deliberately static — the prototype leaves its
+     animation unset. */
+  .liked-cover {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white' fill-opacity='0.94'><path d='M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z'/></svg>"),
+      radial-gradient(
+        130% 110% at 22% 12%,
+        #ff5f79,
+        #e8214c 34%,
+        #8e1230 68%,
+        #2a0913
+      );
+    background-position: center, center;
+    background-repeat: no-repeat, no-repeat;
+    background-size: 52% 52%, 140% 118%;
+  }
+
+  /* Entrance for a release in the What's New window. Keyed on the
+     version, so stepping along the rail replays it rather than swapping
+     the text in place. */
+  @keyframes whats-new-enter {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
     }
-    70%,
-    100% {
-      box-shadow: 0 0 0 9px transparent;
+    to {
+      opacity: 1;
+      transform: none;
     }
   }
-  .whats-new-pulse {
-    animation: whats-new-pulse 2.6s ease-out infinite;
+  .whats-new-enter {
+    animation: whats-new-enter 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .whats-new-enter {
+      animation: none;
+    }
   }
 
   /* Top-of-column blur strip. Strongest at the top of the overlay,
@@ -470,4 +828,5 @@
       transparent 80%
     );
   }
+
 }
