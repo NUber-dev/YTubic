@@ -4,24 +4,21 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { ArrowLeftIcon, ArrowRightIcon, MoreHorizontalIcon } from "lucide-react";
 import {
-  ArrowLeftIcon,
-  ArrowRightIcon,
-  MoreHorizontalIcon,
-  SettingsIcon,
-  LayoutDashboardIcon,
-  PanelRightIcon,
-  PanelBottomIcon,
-  ExternalLinkIcon,
-  PaletteIcon,
-  SunIcon,
-  MoonIcon,
-  MonitorIcon,
-  BugIcon,
-  DownloadIcon,
-  InfoIcon,
-  PowerIcon,
-} from "lucide-react";
+  IconBugFilled,
+  IconDeviceDesktopFilled,
+  IconExternalLink,
+  IconInfoCircleFilled,
+  IconLayoutBottombarFilled,
+  IconLayoutFilled,
+  IconLayoutSidebarRightFilled,
+  IconMoonFilled,
+  IconPaletteFilled,
+  IconSettingsFilled,
+  IconSunFilled,
+} from "@tabler/icons-react";
+import { IconPowerFilled } from "@/components/shared/filled-icons";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -40,6 +37,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -47,12 +45,14 @@ import {
   DialogTitle,
   frostedDialogOverlay,
   frostedDialogPanel,
+  WINDOW_CHROME_ATTR,
 } from "@/components/ui/dialog";
+import { IconX } from "@tabler/icons-react";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { useLayoutStore, type LayoutMode } from "@/lib/store/layout";
 import { IS_MAC } from "@/lib/platform";
 import { openSettings } from "@/lib/store/settings-dialog";
-import { checkForUpdates } from "@/lib/updater";
 import { AboutDialog } from "@/components/layout/about-dialog";
 
 // Caption-bar nav buttons get just an icon-color shift on hover —
@@ -140,7 +140,7 @@ export function TopBar() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
               <DropdownMenuItem onSelect={() => openSettings()}>
-                <SettingsIcon />
+                <IconSettingsFilled />
                 Settings
               </DropdownMenuItem>
               <LayoutSubMenu />
@@ -149,30 +149,23 @@ export function TopBar() {
               <DropdownMenuSeparator />
 
               <DropdownMenuItem onSelect={() => setReportOpen(true)}>
-                <BugIcon />
+                <IconBugFilled />
                 Report Issue
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onSelect={() => {
-                  void checkForUpdates({ silent: false });
-                }}
-              >
-                <DownloadIcon />
-                Check for Updates
-              </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setAboutOpen(true)}>
-                <InfoIcon />
+                <IconInfoCircleFilled />
                 About
               </DropdownMenuItem>
 
               <DropdownMenuSeparator />
 
               <DropdownMenuItem
+                variant="destructive"
                 onSelect={() => {
                   void invoke("quit_app");
                 }}
               >
-                <PowerIcon />
+                <IconPowerFilled />
                 Quit
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -203,35 +196,67 @@ export function TopBar() {
             almost anywhere in the bar to move the window. */}
         <div data-tauri-drag-region className="h-full flex-1" />
 
-        {!IS_MAC && (
-          <div className="flex h-full items-center">
-            <button
-              type="button"
-              onClick={() => win().minimize()}
-              aria-label="Minimize"
-              className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
-            >
-              <MinimizeGlyph />
-            </button>
-            <button
-              type="button"
-              onClick={() => win().toggleMaximize()}
-              aria-label={maximized ? "Restore" : "Maximize"}
-              className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
-            >
-              {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
-            </button>
-            <button
-              type="button"
-              onClick={() => win().close()}
-              aria-label="Close"
-              className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-[#c42b1c] hover:text-white"
-            >
-              <CloseGlyph />
-            </button>
-          </div>
-        )}
       </header>
+
+      {/* Keeps the window draggable by its title bar while a dialog is
+          open. The overlay covers the real header, so this transparent
+          strip carries the drag region above it; `titlebar-drag-shield`
+          (index.css) only turns pointer events on while Radix has the
+          body scroll-locked, so at rest it can't steal clicks from the
+          app menu and history buttons below it. It sits under the
+          window controls, which need their own clicks. */}
+      <div
+        {...{ [WINDOW_CHROME_ATTR]: "" }}
+        data-tauri-drag-region
+        aria-hidden
+        className="titlebar-drag-shield fixed inset-x-0 top-0 z-[55] h-(--titlebar-h) select-none"
+      />
+
+      {/* Rendered outside <header> on purpose. A dialog overlay covers
+          the title bar, but minimize / maximize / close must stay usable
+          — and `z-[60]` can only clear the overlay from the root
+          stacking context. The header's own `relative z-30` establishes
+          one, which would trap any z-index set inside it. Also
+          `pointer-events-auto`, because Radix pins `pointer-events: none`
+          on the body for as long as a dialog is open.
+
+          The header's drag spacer runs the full width underneath this
+          cluster; the buttons sit on top of it, so they take the click
+          rather than starting a window drag.
+
+          macOS is excluded: its traffic lights are native chrome and no
+          web overlay reaches them. */}
+      {!IS_MAC && (
+        <div
+          {...{ [WINDOW_CHROME_ATTR]: "" }}
+          className="pointer-events-auto fixed right-0 top-0 z-[60] flex h-9 items-center"
+        >
+          <button
+            type="button"
+            onClick={() => win().minimize()}
+            aria-label="Minimize"
+            className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
+          >
+            <MinimizeGlyph />
+          </button>
+          <button
+            type="button"
+            onClick={() => win().toggleMaximize()}
+            aria-label={maximized ? "Restore" : "Maximize"}
+            className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-titlebar-hover"
+          >
+            {maximized ? <RestoreGlyph /> : <MaximizeGlyph />}
+          </button>
+          <button
+            type="button"
+            onClick={() => win().close()}
+            aria-label="Close"
+            className="flex h-full w-11 items-center justify-center text-foreground/85 transition-colors hover:bg-[#c42b1c] hover:text-white"
+          >
+            <CloseGlyph />
+          </button>
+        </div>
+      )}
 
       <ReportIssueDialog open={reportOpen} onOpenChange={setReportOpen} />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
@@ -245,24 +270,24 @@ function LayoutSubMenu() {
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <LayoutDashboardIcon />
+        <IconLayoutFilled />
         Layout
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-44">
+      <DropdownMenuSubContent>
         <DropdownMenuRadioGroup
           value={mode}
           onValueChange={(v) => setMode(v as LayoutMode)}
         >
           <DropdownMenuRadioItem value="right">
-            <PanelRightIcon className="size-4" />
+            <IconLayoutSidebarRightFilled className="size-4" />
             Side card
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="bottom">
-            <PanelBottomIcon className="size-4" />
+            <IconLayoutBottombarFilled className="size-4" />
             Bottom bar
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="floating">
-            <ExternalLinkIcon className="size-4" />
+            <IconExternalLink className="size-4" />
             Floating window
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
@@ -280,24 +305,24 @@ function ThemeSubMenu() {
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <PaletteIcon />
+        <IconPaletteFilled />
         Theme
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-40">
+      <DropdownMenuSubContent>
         <DropdownMenuRadioGroup
           value={value}
           onValueChange={(v) => setTheme(v)}
         >
           <DropdownMenuRadioItem value="light">
-            <SunIcon className="size-4" />
+            <IconSunFilled className="size-4" />
             Light
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="dark">
-            <MoonIcon className="size-4" />
+            <IconMoonFilled className="size-4" />
             Dark
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="system">
-            <MonitorIcon className="size-4" />
+            <IconDeviceDesktopFilled className="size-4" />
             System
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
@@ -360,38 +385,59 @@ function ReportIssueDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className={frostedDialogPanel}
+        showCloseButton={false}
         overlayClassName={frostedDialogOverlay}
+        className={cn(
+          "w-[560px] max-w-[calc(100vw-2rem)] gap-4 rounded-2xl px-[26px] pb-[22px] pt-6 shadow-[0_30px_70px_-20px_var(--k850)] sm:max-w-[560px]",
+          frostedDialogPanel,
+        )}
       >
-        <DialogHeader>
-          <DialogTitle>Report an issue</DialogTitle>
-          <DialogDescription>
-            Tell us what went wrong or what you'd like to see. Submitting opens
-            a prefilled GitHub issue in your browser — app version and OS are
-            attached automatically.
+        {/* Catch-light along the top edge, as on the other dialogs. */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-px top-0 h-px bg-[linear-gradient(90deg,transparent,var(--w160),transparent)]"
+        />
+        <DialogClose className="absolute right-4 top-4 z-[2] grid size-7 cursor-pointer place-items-center rounded-lg border border-w070 bg-w030 text-t6 transition-colors duration-[140ms] hover:bg-w080 hover:text-t2">
+          <IconX className="size-3" />
+          <span className="sr-only">Close</span>
+        </DialogClose>
+
+        {/* Right padding clears the close button. */}
+        <DialogHeader className="gap-2 pr-[34px]">
+          <DialogTitle className="text-2xl font-bold leading-none tracking-[-0.02em] text-t1">
+            Report an issue
+          </DialogTitle>
+          <DialogDescription className="text-[13.5px] leading-[1.5] text-t4 text-pretty">
+            Tell us what went wrong or what you'd like to see. Submitting
+            opens a prefilled GitHub issue in your browser.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
           <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Short summary (optional)"
           />
+          {/* Same surface as `Input`, minus its fixed height. */}
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
             placeholder="What happened? Steps to reproduce, expected vs actual…"
-            rows={6}
-            className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs transition-[color,box-shadow] outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:bg-input/30"
+            rows={7}
+            className="w-full resize-none rounded-lg border border-w120 bg-w050 px-3 py-3 text-[13.5px] leading-[1.5] text-t2 outline-none transition-[background-color,border-color,box-shadow] duration-[140ms] placeholder:text-tph hover:border-w200 hover:bg-w080 focus-visible:border-acc1 focus-visible:bg-w070 focus-visible:ring-[3px] focus-visible:ring-[rgba(var(--acc1rgb),0.18)]"
           />
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+        <DialogFooter className="gap-2.5 pt-0.5">
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={() => onOpenChange(false)}
+          >
             Cancel
           </Button>
-          <Button onClick={() => void submit()} disabled={!body.trim()}>
+          <Button size="lg" onClick={() => void submit()} disabled={!body.trim()}>
             Submit
           </Button>
         </DialogFooter>
