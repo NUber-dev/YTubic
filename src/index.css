@@ -829,4 +829,97 @@
     );
   }
 
+  /* ------------------------------------------------------------------
+     Sidebar collapse.
+
+     One motion, one curve: 220ms on `cubic-bezier(.32, .72, 0, 1)` —
+     the panel's width, the group paddings, the section labels' height
+     and the rows' start inset all ride it together, so the sidebar
+     reads as a single object being squeezed rather than a pile of
+     elements each doing its own thing.
+
+     What keeps it calm is geometry, not timing. Every row lays its
+     leading glyph out in a fixed 32px cell (see `sidebar.tsx`), which
+     is exactly the rail's content column, so nothing switches to
+     `justify-center` half-way through — the glyph is already on the
+     rail's axis and only drifts the 2px between the two paddings.
+     Labels never take part in layout either: their column collapses to
+     zero on its own, so they only have to fade.
+
+     The fade is the one asymmetric part, because it is the one thing
+     that should not be seen crossing the panel edge. Collapsing, the
+     labels leave first (90ms, no delay) and the width follows them in;
+     expanding, the width opens first and the labels arrive last
+     (140ms after a 110ms wait). Transitions take their timing from the
+     state being entered, so the `[data-collapsible=icon]` copy of a
+     rule is the collapse and the bare rule is the expand.
+     ------------------------------------------------------------------ */
+  [data-slot="sidebar-gap"],
+  [data-slot="sidebar-container"] {
+    transition-property: left, right, width;
+    transition-duration: 220ms;
+    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  [data-slot="sidebar-header"],
+  [data-slot="sidebar-footer"],
+  [data-slot="sidebar-group"] {
+    transition-property: margin, padding;
+    transition-duration: 220ms;
+    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  /* Colours stay on their own quick curve so hover still feels instant;
+     only the start inset travels with the panel. */
+  [data-slot="sidebar-menu-button"] {
+    transition-property: padding, background-color, color;
+    transition-duration: 220ms, 140ms, 140ms;
+    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1), linear,
+      linear;
+  }
+
+  /* The section label squeezes its own height shut, so the rows below
+     rise by exactly its 24px instead of being yanked by a margin. */
+  [data-slot="sidebar-group-label"] {
+    transition-property: height, opacity;
+    transition-duration: 220ms, 140ms;
+    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1), linear;
+    transition-delay: 0ms, 110ms;
+  }
+  [data-collapsible="icon"] [data-slot="sidebar-group-label"] {
+    transition-duration: 220ms, 90ms;
+    transition-delay: 0ms, 0ms;
+  }
+
+  /* Row labels, the wordmark, the tier chip, the update card's text
+     column — everything the rail has no room for. */
+  [data-slot="sidebar-menu-button"] > span:not([data-slot]),
+  [data-sidebar-label] {
+    transition-property: opacity;
+    transition-duration: 140ms;
+    transition-timing-function: linear;
+    transition-delay: 110ms;
+  }
+  [data-collapsible="icon"] [data-slot="sidebar-menu-button"] > span:not([data-slot]),
+  [data-collapsible="icon"] [data-sidebar-label] {
+    opacity: 0;
+    transition-duration: 90ms;
+    transition-delay: 0ms;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-slot="sidebar-gap"],
+    [data-slot="sidebar-container"],
+    [data-slot="sidebar-header"],
+    [data-slot="sidebar-footer"],
+    [data-slot="sidebar-group"],
+    [data-slot="sidebar-group-label"],
+    [data-slot="sidebar-menu-button"],
+    [data-slot="sidebar-menu-button"] > span:not([data-slot]),
+    [data-sidebar-label] {
+      transition-duration: 1ms;
+      transition-delay: 0ms;
+    }
+  }
+
 }

@@ -95,7 +95,7 @@ export function JumpToCurrentButton({ tracks }: Props) {
   // 22rem side card in `right` mode, hugging the window edge in
   // `bottom`/`floating` modes. The bottom offset lifts above the
   // bottom-bar when it's present.
-  const left = state === "collapsed" ? "4rem" : "13rem";
+  const left = state === "collapsed" ? "3.5rem" : "13rem";
   const right = mode === "right" ? "23rem" : "1rem";
   const bottom = mode === "bottom" ? "6rem" : "1rem";
   const Icon = activeAbove ? ArrowUpIcon : ArrowDownIcon;

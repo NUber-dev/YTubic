@@ -56,3 +56,15 @@ export const useUpdateStore = create<State>()((set) => ({
       handle: null,
     }),
 }));
+
+// Dev-only handle for driving the sidebar update card by hand: the real
+// flow needs a published release, and the dev fallback only seeds the
+// "available" state. In the browser console:
+//
+//   __updateStore.getState().setAvailable("0.5.1", null)
+//   __updateStore.getState().setDownloading(37)
+//   __updateStore.getState().setReady()
+//   __updateStore.getState().reset()
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__updateStore = useUpdateStore;
+}

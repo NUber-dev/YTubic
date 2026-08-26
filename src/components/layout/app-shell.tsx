@@ -190,16 +190,22 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   useEffect(() => {
     let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void listen<{ id: string }>("nav:artist", (e) => {
-      void navigate({ to: "/artist/$id", params: { id: e.payload.id } });
-    }).then((un) => {
-      if (cancelled) un();
-      else dispose = un;
-    });
+    const disposers: (() => void)[] = [];
+    const bind = <T,>(event: string, run: (payload: T) => void) => {
+      void listen<T>(event, (e) => run(e.payload)).then((un) => {
+        if (cancelled) un();
+        else disposers.push(un);
+      });
+    };
+    bind<{ id: string }>("nav:artist", ({ id }) =>
+      navigate({ to: "/artist/$id", params: { id } }),
+    );
+    bind<{ id: string }>("nav:album", ({ id }) =>
+      navigate({ to: "/album/$id", params: { id } }),
+    );
     return () => {
       cancelled = true;
-      dispose?.();
+      for (const un of disposers) un();
     };
   }, [navigate]);
 
@@ -209,7 +215,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         style={
           {
             "--sidebar-width": `${sidebarWidth}px`,
-            "--sidebar-width-icon": "4rem",
+            "--sidebar-width-icon": "3.5rem",
             "--player-width": `${playerWidth}px`,
           } as React.CSSProperties
         }

@@ -1,29 +1,39 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
+// Tabler, per the design system. Every Browse row swaps to its filled
+// twin when active. The design draws Library as a bookshelf, which in
+// Tabler ships outline-only, so Library wears the bookmarks glyph — it
+// has the filled twin the active state needs, and it doesn't collide
+// with the compass above it or the playlist rows below.
 import {
-  HomeIcon,
-  CompassIcon,
-  SearchIcon,
-  LibraryIcon,
-  SettingsIcon,
-  HeartIcon,
-  ListMusicIcon,
-  PinIcon,
-  PinOffIcon,
-  EyeOffIcon,
-  UserPlusIcon,
-  UserCogIcon,
-  UsersRoundIcon,
-  CreditCardIcon,
-  LogInIcon,
-  LogOutIcon,
-  ExternalLinkIcon,
-  CheckIcon,
-} from "lucide-react";
+  IconHome,
+  IconHomeFilled,
+  IconBrandSafari,
+  IconSearch,
+  IconSearchFilled,
+  IconBookmarks,
+  IconBookmarksFilled,
+  IconSettings,
+  IconPlaylist,
+  IconPinFilled,
+  IconCreditCardFilled,
+  IconLogin,
+  IconLogout,
+  IconExternalLink,
+  IconCheck,
+} from "@tabler/icons-react";
+import {
+  IconBrandSafariFilled,
+  IconEyeOffFilled,
+  IconPinnedOffFilled,
+  IconUserCogFilled,
+  IconUserPlusFilled,
+  IconUsersGroupFilled,
+} from "@/components/shared/filled-icons";
 import {
   Sidebar,
   SidebarContent,
@@ -67,10 +77,7 @@ import type { ShelfItem } from "@/lib/innertube/types";
 import { resetInnertube } from "@/lib/innertube/client";
 import { accountSlot } from "@/lib/auth-presence";
 import { usePremiumStore } from "@/lib/store/premium";
-import {
-  accountInfoQuery,
-  authLoggedInQuery,
-} from "@/lib/store/auth-queries";
+import { accountInfoQuery, authLoggedInQuery } from "@/lib/store/auth-queries";
 import {
   removeAccount,
   switchAccount,
@@ -80,10 +87,25 @@ import {
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Home", icon: HomeIcon },
-  { to: "/explore", label: "Explore", icon: CompassIcon },
-  { to: "/search", label: "Search", icon: SearchIcon },
-  { to: "/library", label: "Library", icon: LibraryIcon },
+  { to: "/", label: "Home", icon: IconHome, iconOn: IconHomeFilled },
+  {
+    to: "/explore",
+    label: "Explore",
+    icon: IconBrandSafari,
+    iconOn: IconBrandSafariFilled,
+  },
+  {
+    to: "/search",
+    label: "Search",
+    icon: IconSearch,
+    iconOn: IconSearchFilled,
+  },
+  {
+    to: "/library",
+    label: "Library",
+    icon: IconBookmarks,
+    iconOn: IconBookmarksFilled,
+  },
 ] as const;
 
 // Liked Songs is the YTM magic playlist — browseId `VLLM` (wraps
@@ -91,38 +113,56 @@ const NAV_ITEMS = [
 // section, not user-removable.
 const LIKED_ID = "VLLM";
 
-const MENU_BTN_CLS = "group-data-[collapsible=icon]:mx-auto";
+// Artwork rows carry a 20px tile where the icon rows carry a 16px
+// glyph, so the menu button's fixed height would squeeze it. `h-auto`
+// hands the height back to the padding: 7px above and below puts the
+// row at 34px, a step over the 28px icon rows without opening the list
+// back up. Icon rows keep the fixed height.
+const ART_BTN_CLS = "h-auto py-[7px]";
 
 export function AppSidebar() {
   const { location } = useRouterState();
 
+  // The footer's divider only earns its keep when the playlist list is
+  // actually scrolling: then rows disappear under the footer and the
+  // hairline explains where the list ends. With a short list there's
+  // nothing to separate and the rule is just noise.
+  const [playlistsScroll, setPlaylistsScroll] = useState(false);
+
   const isOn = (to: string) => location.pathname === to;
-  const isPlaylistOn = (id: string) =>
-    location.pathname === `/playlist/${id}`;
+  const isPlaylistOn = (id: string) => location.pathname === `/playlist/${id}`;
 
   return (
     <Sidebar
       variant="floating"
       collapsible="icon"
-      className="px-2 pb-2 pt-0 duration-300 ease-out [&>[data-slot=sidebar-inner]]:rounded-[14px] [&>[data-slot=sidebar-inner]]:bg-surface [&>[data-slot=sidebar-inner]]:shadow-none"
+      // Panel chrome, per the design system: a 12px glass card with a
+      // `--w110` hairline and a shallow, wide-spread shadow. The blur is
+      // what makes `--glass1` read as frosted over the album-art wash
+      // behind it rather than as flat translucency.
+      className="px-2 pb-2 pt-0 duration-300 ease-out [&>[data-slot=sidebar-inner]]:rounded-[12px] [&>[data-slot=sidebar-inner]]:border [&>[data-slot=sidebar-inner]]:border-w110 [&>[data-slot=sidebar-inner]]:bg-glass1 [&>[data-slot=sidebar-inner]]:shadow-[0_6px_18px_-14px_var(--k550)] [&>[data-slot=sidebar-inner]]:backdrop-blur-[24px]"
     >
-      <SidebarHeader className="flex-row items-center gap-2 px-4 pt-[18px] pb-2 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2">
-        {/* Single round logo. In expanded mode it sits at px-4 to line
-         *  up with menu icons (which are at group-p-2 + button-p-2 =
-         *  16px). In collapsed mode the row centers it like the
-         *  centered menu icons below. */}
+      <SidebarHeader className="flex-row items-center gap-[9px] overflow-hidden px-4 pt-4 pb-2 group-data-[collapsible=icon]:ps-3.5 group-data-[collapsible=icon]:pe-2">
+        {/* Single round logo. Expanded it sits at px-4, in line with the
+         *  menu glyphs. On the rail the start inset puts its centre on the
+         *  rail's own axis (14 + 14 = 28), so it glides there instead of
+         *  hopping to a centered row. */}
         <img
           src="/ytubic-icon.svg"
           alt="YTubic"
-          className="size-7 shrink-0"
+          className="size-7 shrink-0 rounded-full"
         />
-        <span className="text-xl font-semibold leading-none tracking-tight transition-opacity duration-200 group-data-[collapsible=icon]:hidden">
+        <span
+          data-sidebar-label
+          className="shrink-0 text-[17px] font-semibold leading-none tracking-[-0.015em] text-t1"
+        >
           YTubic
         </span>
         {IS_BETA_PLATFORM && (
           <span
+            data-sidebar-label
             title="The build for this OS is in beta — report anything broken via ⋯ → Report an issue."
-            className="rounded-[4px] border border-border/60 bg-muted/40 px-1 pb-px pt-0.5 text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden"
+            className="shrink-0 rounded-[4px] border border-border/60 bg-muted/40 px-1 pb-px pt-0.5 text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground"
           >
             Beta
           </span>
@@ -133,42 +173,57 @@ export function AppSidebar() {
           (shrink-0) and only the Playlists list scrolls, so the top nav
           never slides out of view when the library is long. */}
       <SidebarContent className="gap-0 overflow-hidden">
-        <SidebarGroup className="shrink-0 py-1">
+        <SidebarGroup className="shrink-0 py-1 group-data-[collapsible=icon]:mt-1">
           <SidebarGroupLabel>Browse</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
-                <SidebarMenuItem key={to}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={isOn(to)}
-                    tooltip={label}
-                    className={MENU_BTN_CLS}
-                  >
-                    <Link to={to}>
-                      <Icon />
-                      <span>{label}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              {NAV_ITEMS.map(({ to, label, icon, iconOn }) => {
+                const on = isOn(to);
+                const Icon = on ? iconOn : icon;
+                return (
+                  <SidebarMenuItem key={to}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={on}
+                      tooltip={label}
+                    >
+                      <Link to={to}>
+                        <Icon />
+                        <span>{label}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarPlaylists isPlaylistOn={isPlaylistOn} />
+        <SidebarPlaylists
+          isPlaylistOn={isPlaylistOn}
+          onScrollableChange={setPlaylistsScroll}
+        />
       </SidebarContent>
 
-      <SidebarFooter>
+      {/* A `--w055` hairline fences the footer off from the playlist
+          list, but only while that list scrolls — see `playlistsScroll`.
+          The border stays declared either way so the row keeps its
+          height and nothing shifts when the list crosses the threshold. */}
+      <SidebarFooter
+        className={cn(
+          "gap-2 border-t pt-3",
+          playlistsScroll ? "border-w055" : "border-transparent",
+          "group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:pb-3",
+        )}
+      >
         <UpdateBanner />
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="Settings"
-              className={MENU_BTN_CLS}
               onClick={() => openSettings()}
             >
-              <SettingsIcon />
+              <IconSettings />
               <span>Settings</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -204,8 +259,10 @@ function pickThumb(item: ShelfItem): string | undefined {
  */
 function SidebarPlaylists({
   isPlaylistOn,
+  onScrollableChange,
 }: {
   isPlaylistOn: (id: string) => boolean;
+  onScrollableChange: (scrollable: boolean) => void;
 }) {
   const loggedIn = useQuery(authLoggedInQuery);
   const library = useQuery({
@@ -277,11 +334,17 @@ function SidebarPlaylists({
     const update = () => {
       const distTop = el.scrollTop;
       const distBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
-      el.style.setProperty("--fade-t", clamp(1 - distTop / FADE_RAMP).toFixed(3));
+      el.style.setProperty(
+        "--fade-t",
+        clamp(1 - distTop / FADE_RAMP).toFixed(3),
+      );
       el.style.setProperty(
         "--fade-b",
         clamp(1 - distBottom / FADE_RAMP).toFixed(3),
       );
+      // Sub-pixel layout can leave scrollHeight a hair over clientHeight
+      // on a list that doesn't actually scroll, so require a real gap.
+      onScrollableChange(el.scrollHeight - el.clientHeight > 1);
     };
     update();
     el.addEventListener("scroll", update, { passive: true });
@@ -295,16 +358,16 @@ function SidebarPlaylists({
       el.removeEventListener("scroll", update);
       ro.disconnect();
     };
-  }, []);
+  }, [onScrollableChange]);
 
   // `pe-0` drops the group's right padding so the scroll box reaches the
   // panel edge. `sidebar-list-scroll` (index.css) reserves a stable 8px
   // scrollbar gutter there, so the rows keep a constant right inset
   // (aligned with Browse) whether or not a scrollbar shows, and the
   // scrollbar — when it shows — sits flush at the border. Collapsed
-  // restores `pe-2` for a symmetric, centered rail.
+  // restores the rail's own 14px inset so the tiles stay centered.
   return (
-    <SidebarGroup className="flex min-h-0 flex-1 flex-col py-1 pe-0 group-data-[collapsible=icon]:pe-2">
+    <SidebarGroup className="mt-2 flex min-h-0 flex-1 flex-col py-1 pe-0 group-data-[collapsible=icon]:mt-4 group-data-[collapsible=icon]:pe-2.5">
       <SidebarGroupLabel>Playlists</SidebarGroupLabel>
       {/* The scroll lives here, not on SidebarContent, so the label above
           stays put and only the playlist rows move. `app-scroll` is the
@@ -322,10 +385,16 @@ function SidebarPlaylists({
               asChild
               isActive={isPlaylistOn(LIKED_ID)}
               tooltip="Liked songs"
-              className={MENU_BTN_CLS}
+              className={ART_BTN_CLS}
             >
               <Link to="/playlist/$id" params={{ id: LIKED_ID }}>
-                <HeartIcon className="fill-rose-500 text-rose-500" />
+                {/* Same tile geometry as a real playlist cover — see
+                    `.liked-cover` in index.css for the artwork. */}
+                <span
+                  aria-hidden
+                  data-slot="playlist-art"
+                  className="liked-cover size-5 shrink-0 rounded-[5px] outline outline-1 -outline-offset-1 outline-w140"
+                />
                 <span>Liked songs</span>
               </Link>
             </SidebarMenuButton>
@@ -339,27 +408,25 @@ function SidebarPlaylists({
                     asChild
                     isActive={isPlaylistOn(p.id)}
                     tooltip={p.title}
-                    className={MENU_BTN_CLS}
+                    className={ART_BTN_CLS}
                   >
                     <Link to="/playlist/$id" params={{ id: p.id }}>
                       {p.thumbnailUrl ? (
                         <img
                           src={p.thumbnailUrl}
                           alt=""
-                          className="size-4 shrink-0 rounded-sm object-cover"
+                          className="size-5 shrink-0 rounded-[5px] object-cover outline outline-1 -outline-offset-1 outline-w140"
                           loading="lazy"
                         />
                       ) : (
-                        <ListMusicIcon />
+                        <IconPlaylist />
                       )}
-                      <span className="min-w-0 flex-1 truncate">
-                        {p.title}
-                      </span>
+                      <span className="min-w-0 flex-1 truncate">{p.title}</span>
                       {/* Subtle marker so the pinned/unpinned boundary is
                           legible — pinning's only visible effect is the
                           reorder, this just explains it. */}
                       {p.pinned ? (
-                        <PinIcon className="size-3! shrink-0 text-muted-foreground/70 group-data-[collapsible=icon]:hidden" />
+                        <IconPinFilled className="size-3! shrink-0 text-t7 group-data-[collapsible=icon]:hidden" />
                       ) : null}
                     </Link>
                   </SidebarMenuButton>
@@ -367,7 +434,7 @@ function SidebarPlaylists({
                 <ContextMenuContent>
                   {p.pinned ? (
                     <ContextMenuItem onSelect={() => unpin(p.id)}>
-                      <PinOffIcon />
+                      <IconPinnedOffFilled />
                       Unpin from top
                     </ContextMenuItem>
                   ) : (
@@ -380,12 +447,12 @@ function SidebarPlaylists({
                         })
                       }
                     >
-                      <PinIcon />
+                      <IconPinFilled />
                       Pin to top
                     </ContextMenuItem>
                   )}
                   <ContextMenuItem onSelect={() => hide(p.id)}>
-                    <EyeOffIcon />
+                    <IconEyeOffFilled />
                     Hide from sidebar
                   </ContextMenuItem>
                 </ContextMenuContent>
@@ -402,8 +469,7 @@ function SidebarPlaylists({
 // Premium subscription. Kept here (not in a shared constants module)
 // because it's the only place that links out to it.
 const MANAGE_GOOGLE_URL = "https://myaccount.google.com/";
-const MANAGE_SUBSCRIPTION_URL =
-  "https://music.youtube.com/paid_memberships";
+const MANAGE_SUBSCRIPTION_URL = "https://music.youtube.com/paid_memberships";
 
 /**
  * The logged-out footer CTA: a full-width primary (brand red) button.
@@ -421,13 +487,12 @@ function SidebarSignInButton() {
               toast.error(`Sign-in failed: ${String(e)}`),
             );
           }}
-          // `flex` (not the Button's inline-flex) in collapsed mode:
-          // mx-auto only centers block-level boxes, so without it the
-          // icon button hugs the rail's left edge.
-          className="h-9 w-full gap-2 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:p-0"
+          className="grid h-9 w-full grid-cols-[32px_minmax(0,1fr)] items-center gap-0.5 overflow-hidden py-0 ps-0.5 pe-2.5 [&>svg]:justify-self-center"
         >
-          <LogInIcon />
-          <span className="group-data-[collapsible=icon]:hidden">Sign in</span>
+          <IconLogin stroke={2.3} />
+          <span data-sidebar-label className="truncate text-start">
+            Sign in
+          </span>
         </Button>
       </SidebarMenuItem>
     </SidebarMenu>
@@ -535,7 +600,6 @@ function UserProfile() {
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
               tooltip={email ? `${name} (${email})` : name}
-              className={MENU_BTN_CLS}
             >
               <Avatar className="size-4 shrink-0">
                 {photoUrl ? <AvatarImage src={photoUrl} alt={name} /> : null}
@@ -549,6 +613,7 @@ function UserProfile() {
                   "Free" about an account we can't actually see. */}
               {live ? (
                 <Badge
+                  data-sidebar-label
                   variant="outline"
                   className={cn(
                     "ms-auto h-4 px-1.5 text-[10px] font-semibold uppercase tracking-wide",
@@ -563,11 +628,7 @@ function UserProfile() {
               ) : null}
             </SidebarMenuButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent
-            side="top"
-            align="start"
-            className="min-w-64"
-          >
+          <DropdownMenuContent side="top" align="start" className="min-w-64">
             {email ? (
               <>
                 <DropdownMenuLabel className="truncate text-xs font-normal text-muted-foreground">
@@ -612,7 +673,7 @@ function UserProfile() {
                     // still wins on hover, which is what we want.
                     data-active={a.isActive ? "true" : undefined}
                     className={cn(
-                      "data-[active=true]:bg-accent/60 data-[active=true]:text-accent-foreground",
+                      "data-[active=true]:bg-w060 data-[active=true]:text-t1",
                     )}
                   >
                     <Avatar className="size-4 shrink-0">
@@ -637,7 +698,7 @@ function UserProfile() {
                       ) : null}
                     </div>
                     {a.isActive ? (
-                      <CheckIcon className="ms-auto text-emerald-500" />
+                      <IconCheck className="ms-auto text-acc1" />
                     ) : null}
                   </DropdownMenuItem>
                 ))}
@@ -645,28 +706,26 @@ function UserProfile() {
               </>
             ) : null}
             <DropdownMenuItem onSelect={() => openChannelPicker()}>
-              <UsersRoundIcon />
+              <IconUsersGroupFilled />
               Switch channel
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={addAccount}>
-              <UserPlusIcon />
+              <IconUserPlusFilled />
               Add another account
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={openExternal(MANAGE_GOOGLE_URL)}>
-              <UserCogIcon />
+              <IconUserCogFilled />
               Manage Google Account
-              <ExternalLinkIcon className="ms-auto" />
+              <IconExternalLink className="ms-auto" />
             </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={openExternal(MANAGE_SUBSCRIPTION_URL)}
-            >
-              <CreditCardIcon />
+            <DropdownMenuItem onSelect={openExternal(MANAGE_SUBSCRIPTION_URL)}>
+              <IconCreditCardFilled />
               Manage subscription
-              <ExternalLinkIcon className="ms-auto" />
+              <IconExternalLink className="ms-auto" />
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={signOut}>
-              <LogOutIcon />
+              <IconLogout stroke={2.3} />
               Sign out
             </DropdownMenuItem>
           </DropdownMenuContent>

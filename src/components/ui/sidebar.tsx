@@ -216,7 +216,7 @@ function Sidebar({
       <div
         data-slot="sidebar-gap"
         className={cn(
-          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-150 ease-linear",
+          "relative w-(--sidebar-width) bg-transparent",
           "group-data-[collapsible=offcanvas]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
@@ -227,7 +227,7 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         className={cn(
-          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-150 ease-linear md:flex",
+          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
           side === "left"
             ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
             : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -385,7 +385,11 @@ function SidebarGroup({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="sidebar-group"
       data-sidebar="group"
-      className={cn("relative flex w-full min-w-0 flex-col p-2", className)}
+      className={cn(
+        "relative flex w-full min-w-0 flex-col p-2",
+        "group-data-[collapsible=icon]:px-2.5",
+        className
+      )}
       {...props}
     />
   )
@@ -403,11 +407,14 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        "flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 ring-sidebar-ring outline-hidden transition-[margin,opacity] duration-150 ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
-        // Collapsed mode hides the label with opacity + a -mt-8 pull-up, which
-        // leaves an invisible 32px strip overlapping the row above it; without
-        // pointer-events-none that strip eats clicks (e.g. the last Browse item).
-        "group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0",
+        // Section label, per the design system: 10.5px, 600, uppercase
+        // on a 0.09em track, in `--t5`.
+        "flex h-6 shrink-0 items-center overflow-hidden rounded-md px-2 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-t5 ring-sidebar-ring outline-hidden focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        // On the rail the label squeezes to zero height instead of being
+        // pulled off-screen by a negative margin: the rows below slide up
+        // by exactly the label's height, in step with the panel's width.
+        // Timing lives in index.css with the rest of the choreography.
+        "group-data-[collapsible=icon]:pointer-events-none group-data-[collapsible=icon]:h-0 group-data-[collapsible=icon]:opacity-0",
         className
       )}
       {...props}
@@ -457,7 +464,9 @@ function SidebarMenu({ className, ...props }: React.ComponentProps<"ul">) {
     <ul
       data-slot="sidebar-menu"
       data-sidebar="menu"
-      className={cn("flex w-full min-w-0 flex-col gap-1", className)}
+      // 2px between rows, per the design — at 4px the fills read as
+      // separate chips rather than one list.
+      className={cn("flex w-full min-w-0 flex-col gap-0.5", className)}
       {...props}
     />
   )
@@ -474,17 +483,24 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
   )
 }
 
+// Nav row, per the design system: 13.5px label, resting `--t5` on
+// transparent, hover `--w050`/`--t3`, active `--w070`/`--t1` at weight
+// 600. The active row is marked by its fill and weight alone — no
+// accent rail, so every row keeps the same left inset.
 const sidebarMenuButtonVariants = cva(
-  "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+  "peer/menu-button relative grid w-full grid-cols-[32px_minmax(0,1fr)_auto] content-center items-center gap-0.5 overflow-hidden rounded-md py-2 ps-0.5 pe-2.5 text-left text-[13.5px] font-medium text-t5 ring-sidebar-ring outline-hidden group-has-data-[sidebar=menu-action]/menu-item:pr-8 [&>*:first-child]:justify-self-center hover:bg-w050 hover:text-t3 focus-visible:ring-2 active:bg-w070 active:text-t1 disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-w070 data-[active=true]:font-semibold data-[active=true]:text-t1 data-[state=open]:hover:bg-w050 data-[state=open]:hover:text-t3 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
   {
     variants: {
       variant: {
-        default: "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        default: "hover:bg-w050 hover:text-t3",
         outline:
           "bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
       },
       size: {
-        default: "h-8 text-sm",
+        // 28px, not 32: the caption-sized label and 16px icon don't need
+        // the extra 4px, and the list reads denser without losing the
+        // hit target.
+        default: "h-7",
         sm: "h-7 text-xs",
         lg: "h-12 text-sm group-data-[collapsible=icon]:p-0!",
       },
