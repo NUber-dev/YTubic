@@ -1,16 +1,14 @@
 import { useTheme } from "next-themes";
 import {
-  LayoutDashboardIcon,
-  PaletteIcon,
-  WallpaperIcon,
-} from "lucide-react";
+  IconLayoutFilled,
+  IconPaletteFilled,
+  IconPhotoFilled,
+} from "@tabler/icons-react";
 import { SegmentedControl } from "@/components/ui/segmented";
+import { Switch } from "@/components/ui/switch";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
 import { useLayoutStore, type LayoutMode } from "@/lib/store/layout";
-import {
-  useSettingsStore,
-  type BackgroundMode,
-} from "@/lib/store/settings";
+import { useSettingsStore } from "@/lib/store/settings";
 
 const THEME_OPTIONS = [
   { value: "light", label: "Light" },
@@ -24,11 +22,6 @@ const LAYOUT_OPTIONS: { value: LayoutMode; label: string }[] = [
   { value: "floating", label: "Floating" },
 ];
 
-const BACKGROUND_OPTIONS: { value: BackgroundMode; label: string }[] = [
-  { value: "ambient", label: "Ambient" },
-  { value: "plain", label: "Plain" },
-];
-
 export function AppearanceTab() {
   const { theme, setTheme } = useTheme();
   const layoutMode = useLayoutStore((s) => s.mode);
@@ -37,10 +30,10 @@ export function AppearanceTab() {
   const setBackground = useSettingsStore((s) => s.setBackground);
 
   return (
-    <TabPane tightTop>
+    <TabPane>
       <Group>
         <SettingRow
-          icon={PaletteIcon}
+          icon={IconPaletteFilled}
           title="Theme"
           description="Choose light or dark, or follow your OS preference."
           control={
@@ -55,7 +48,7 @@ export function AppearanceTab() {
           }
         />
         <SettingRow
-          icon={LayoutDashboardIcon}
+          icon={IconLayoutFilled}
           title="Player layout"
           description="Choose where the now-playing card lives."
           control={
@@ -66,15 +59,17 @@ export function AppearanceTab() {
             />
           }
         />
+        {/* Two values, so the design gives this one a switch rather
+            than a two-up segmented control. */}
         <SettingRow
-          icon={WallpaperIcon}
-          title="Background"
+          icon={IconPhotoFilled}
+          title="Ambient Background"
           description="Tint the window with the current album art, or keep it plain."
           control={
-            <SegmentedControl
-              value={background}
-              onChange={setBackground}
-              options={BACKGROUND_OPTIONS}
+            <Switch
+              checked={background === "ambient"}
+              onCheckedChange={(v) => setBackground(v ? "ambient" : "plain")}
+              aria-label="Ambient background"
             />
           }
         />

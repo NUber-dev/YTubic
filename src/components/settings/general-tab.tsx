@@ -2,14 +2,16 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+// Filled Tabler glyphs: the settings rows read as solid marks on their
+// tinted tiles, not as line art.
 import {
-  BellIcon,
-  Loader2Icon,
-  LogInIcon,
-  RocketIcon,
-  UserRoundIcon,
-  XIcon,
-} from "lucide-react";
+  IconBellFilled,
+  IconBoltFilled,
+  IconLoader2,
+  IconLogin,
+  IconSquareXFilled,
+  IconUserFilled,
+} from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -21,7 +23,7 @@ import { useSettingsStore } from "@/lib/store/settings";
 
 export function GeneralTab() {
   return (
-    <TabPane tightTop>
+    <TabPane>
       <AccountGroup />
       <BehaviorGroup />
     </TabPane>
@@ -77,23 +79,25 @@ function AccountGroup() {
 
   return (
     <Group>
-      <div className="flex items-center gap-3 py-4">
-        <Avatar className="size-9">
-          <AvatarFallback>
-            <UserRoundIcon className="size-[18px]" />
+      {/* Hand-rolled rather than a SettingRow: the avatar replaces the
+          icon tile, but the geometry has to match its siblings exactly. */}
+      <div className="flex items-center gap-3.5 py-4">
+        <Avatar className="size-8 rounded-[9px] border border-w070 bg-w050">
+          <AvatarFallback className="rounded-[9px] bg-transparent text-t5">
+            <IconUserFilled className="size-4" />
           </AvatarFallback>
         </Avatar>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-[15px] font-medium leading-none">
+        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+          <span className="text-sm font-semibold leading-none text-t2">
             Not signed in
           </span>
-          <span className="text-[13px] text-muted-foreground">
+          <span className="text-[12.5px] leading-snug text-t7">
             Sign in to unlock your library, liked songs, and Premium-quality
             streams. Cookies stay on this machine.
           </span>
         </div>
         <Button size="sm" onClick={signIn} disabled={signingIn}>
-          {signingIn ? <Loader2Icon className="animate-spin" /> : <LogInIcon />}
+          {signingIn ? <IconLoader2 className="animate-spin" /> : <IconLogin stroke={2.3} />}
           Sign in with Google
         </Button>
       </div>
@@ -137,7 +141,7 @@ function BehaviorGroup() {
   return (
     <Group>
       <SettingRow
-        icon={RocketIcon}
+        icon={IconBoltFilled}
         title="Launch at startup"
         description="Start YTubic automatically when you log in."
         control={
@@ -150,7 +154,7 @@ function BehaviorGroup() {
         }
       />
       <SettingRow
-        icon={BellIcon}
+        icon={IconBellFilled}
         title="Playback notifications"
         description="Show a system notification when the track changes in the background."
         control={
@@ -162,7 +166,7 @@ function BehaviorGroup() {
         }
       />
       <SettingRow
-        icon={XIcon}
+        icon={IconSquareXFilled}
         title={IS_MAC ? "Close to menu bar" : "Close to tray"}
         description={
           IS_MAC

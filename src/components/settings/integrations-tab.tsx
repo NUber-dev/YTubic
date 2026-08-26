@@ -8,7 +8,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toast } from "sonner";
-import { Loader2, Unplug } from "lucide-react";
+import { IconLoader2 } from "@tabler/icons-react";
+import { IconPlugConnectedXFilled } from "@/components/shared/filled-icons";
 
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -183,7 +184,7 @@ function LastfmSection() {
     } else if (phase === "awaiting") {
       control = (
         <div className="flex items-center gap-2">
-          <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          <IconLoader2 className="size-4 animate-spin text-t6" />
           <Button variant="ghost" size="sm" onClick={cancelConnect}>
             Cancel
           </Button>
@@ -212,7 +213,7 @@ function LastfmSection() {
               Disconnect action, matching the surface-panel language. The
               parent's pl-12 lines the whole block up with the row titles
               above (past the icon-chip column). */}
-          <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-surface px-3 py-2.5">
+          <div className="flex items-center gap-3 rounded-xl border border-w075 bg-w028 px-3 py-2.5">
             {avatar ? (
               <img
                 src={avatar}
@@ -220,33 +221,33 @@ function LastfmSection() {
                 className="size-10 shrink-0 rounded-full object-cover"
               />
             ) : (
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted">
-                <LastfmIcon className="size-5 text-muted-foreground" />
+              <div className="grid size-10 shrink-0 place-items-center rounded-full border border-w070 bg-w050">
+                <LastfmIcon className="size-5 text-t5" />
               </div>
             )}
             <div className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-sm font-semibold leading-tight">
+              <span className="truncate text-sm font-semibold leading-tight text-t2">
                 {username ?? "Last.fm"}
               </span>
               {username ? (
-                <span className="truncate text-xs text-muted-foreground">
+                <span className="truncate text-xs text-t7">
                   last.fm/user/{username}
                 </span>
               ) : null}
             </div>
             <Button variant="outline" size="sm" onClick={disconnect}>
-              <Unplug className="size-3.5" />
+              <IconPlugConnectedXFilled className="size-3.5" />
               Disconnect
             </Button>
           </div>
           {/* Sync liked songs: a sub-setting of the connection (no icon chip
               of its own); inherits the parent's pl-12. */}
           <div className="flex items-center gap-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <span className="text-[15px] font-medium leading-none">
+            <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+              <span className="text-sm font-semibold leading-none text-t2">
                 Sync liked songs
               </span>
-              <span className="text-[13px] text-muted-foreground">
+              <span className="text-[12.5px] leading-snug text-t7">
                 Also mark tracks you like in YouTube Music as Loved on Last.fm.
               </span>
             </div>
@@ -274,7 +275,7 @@ export function IntegrationsTab() {
   );
 
   return (
-    <TabPane tightTop>
+    <TabPane>
       <Group>
         <SettingRow
           icon={DiscordIcon}
