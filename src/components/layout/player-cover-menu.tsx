@@ -1,9 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { DownloadIcon, Loader2Icon } from "lucide-react";
+import { IconDownload, IconLoader2 } from "@tabler/icons-react";
 import { toast } from "sonner";
-import { useNavigate } from "@tanstack/react-router";
-import { emit } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -22,7 +19,6 @@ import {
   pickHighResThumbnail,
 } from "@/components/shared/thumbnail";
 import { downloadCover, lookupITunesCover } from "@/lib/cover-art";
-import { isFloatingPlayerWindow } from "@/lib/floating-player";
 import type { QueueTrack } from "@/lib/store/playback";
 import type { ShelfItem } from "@/lib/innertube/types";
 
@@ -36,49 +32,8 @@ type Props = {
  * `TrackMenuItems` block as track rows and the ⋯ player menu, so the
  * cover offers everything the overflow menu does, plus a
  * "Download cover" item that only makes sense on the artwork itself.
- *
- * Same main-window / floating-window split as `PlayerMoreMenu`: the
- * floating player window has no router, so `useNavigate` may only be
- * called on the main-window branch. The branch is fixed per window at
- * module-load time, so hook order stays stable.
  */
-export function PlayerCoverMenu(props: Props) {
-  return isFloatingPlayerWindow() ? (
-    <PlayerCoverMenuFloating {...props} />
-  ) : (
-    <PlayerCoverMenuMain {...props} />
-  );
-}
-
-function PlayerCoverMenuMain(props: Props) {
-  const navigate = useNavigate();
-  return (
-    <PlayerCoverMenuInner
-      {...props}
-      onGoToArtist={(id) => navigate({ to: "/artist/$id", params: { id } })}
-    />
-  );
-}
-
-function PlayerCoverMenuFloating(props: Props) {
-  return (
-    <PlayerCoverMenuInner
-      {...props}
-      onGoToArtist={(id) => {
-        void emit("nav:artist", { id });
-        void invoke("focus_main_window").catch(() => {
-          /* command might not be registered in older builds */
-        });
-      }}
-    />
-  );
-}
-
-function PlayerCoverMenuInner({
-  track,
-  children,
-  onGoToArtist,
-}: Props & { onGoToArtist: (artistId: string) => void }) {
+export function PlayerCoverMenu({ track, children }: Props) {
   // Same stub-item dance as `PlayerMoreMenu`: the controller owns React
   // Query hooks that can't be skipped when nothing is playing.
   const item: ShelfItem = track
@@ -132,7 +87,6 @@ function PlayerCoverMenuInner({
             item={item}
             controller={controller}
             primitives={ctxPrimitives}
-            onGoToArtist={onGoToArtist}
           />
           <ContextMenuSeparator />
           <ContextMenuItem
@@ -145,9 +99,9 @@ function PlayerCoverMenuInner({
             }}
           >
             {saving ? (
-              <Loader2Icon className="animate-spin" />
+              <IconLoader2 className="animate-spin" />
             ) : (
-              <DownloadIcon />
+              <IconDownload />
             )}
             Download cover
           </ContextMenuItem>

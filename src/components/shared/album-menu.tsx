@@ -1,16 +1,18 @@
 import type { ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
+import { MoreHorizontalIcon } from "lucide-react";
 import {
-  ListEndIcon,
-  ListPlusIcon,
-  MoreHorizontalIcon,
-  PlayIcon,
-  RadioIcon,
-  Share2Icon,
-  ShuffleIcon,
-  UserIcon,
-} from "lucide-react";
+  IconArrowsShuffle2,
+  IconPlayerPlayFilled,
+  IconPlayerTrackNextFilled,
+  IconUserFilled,
+} from "@tabler/icons-react";
+import {
+  IconPlaylistAddFilled,
+  IconRadioFilled,
+  IconShare3Filled,
+} from "@/components/shared/filled-icons";
 import { toast } from "sonner";
 import {
   ContextMenu,
@@ -166,30 +168,30 @@ export function AlbumMenuItems({
   return (
     <>
       <Item onSelect={() => void play(false)}>
-        <PlayIcon />
+        <IconPlayerPlayFilled />
         Play
       </Item>
       <Item onSelect={() => void play(true)}>
-        <ShuffleIcon />
+        <IconArrowsShuffle2 />
         Shuffle play
       </Item>
       <Item onSelect={() => void playNext()}>
-        <ListPlusIcon />
+        <IconPlayerTrackNextFilled />
         Play next
       </Item>
       <Item onSelect={() => void addToQueue()}>
-        <ListEndIcon />
+        <IconPlaylistAddFilled />
         Add to queue
       </Item>
       <Item onSelect={() => void startRadio()}>
-        <RadioIcon />
+        <IconRadioFilled />
         Start radio
       </Item>
 
       <Separator />
 
       <Item onSelect={() => void goToArtist()}>
-        <UserIcon />
+        <IconUserFilled />
         Go to artist
       </Item>
 
@@ -198,7 +200,7 @@ export function AlbumMenuItems({
       {/* One link for everyone: the share page opens the album in YTubic
           when it's installed and falls back to YouTube Music when it isn't. */}
       <Item onSelect={() => void share()}>
-        <Share2Icon />
+        <IconShare3Filled />
         Share
       </Item>
     </>

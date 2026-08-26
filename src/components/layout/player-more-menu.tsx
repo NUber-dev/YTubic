@@ -1,15 +1,10 @@
 import { useState } from "react";
-import {
-  CheckIcon,
-  Loader2Icon,
-  MoreVerticalIcon,
-  MusicIcon,
-  VideoIcon,
-} from "lucide-react";
+import { IconCheck } from "@tabler/icons-react";
+import { IconMusicFilled } from "@/components/shared/filled-icons";
+import { IconDotsVertical, IconLoader2, IconVideoFilled } from "@tabler/icons-react";
+import { playerIconButton } from "@/components/layout/player-chrome";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { useNavigate } from "@tanstack/react-router";
-import { emit } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -31,11 +26,7 @@ import {
   useTrackMenuController,
 } from "@/components/shared/track-context-menu";
 import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
-import { isFloatingPlayerWindow } from "@/lib/floating-player";
-import {
-  useTrackSourceStore,
-  type SourceKind,
-} from "@/lib/store/track-source";
+import { useTrackSourceStore, type SourceKind } from "@/lib/store/track-source";
 import type { QueueTrack } from "@/lib/store/playback";
 import type { ShelfItem } from "@/lib/innertube/types";
 
@@ -56,65 +47,25 @@ type Props = {
  * Triple-dot overflow menu for the player surfaces. Wraps the same
  * `TrackMenuItems` block used by the right-click context menu on
  * track rows, so the actions (Play next, Add to queue, Start radio,
- * Like / Remove from liked, Add to playlist, Go to artist, Share)
- * stay in sync between every entry point.
+ * Like / Remove from liked, Add to playlist, Share) stay in sync
+ * between every entry point.
  *
- * Splits into a main-window branch (uses `useNavigate` directly) and
- * a floating-window branch (emits a Tauri event so the main window
- * handles routing — the floating window has no router context, so
- * calling `useNavigate` there would throw). The branch is fixed at
- * module-load time per window so React's rules-of-hooks aren't
- * violated.
- */
-export function PlayerMoreMenu(props: Props) {
-  return isFloatingPlayerWindow() ? (
-    <PlayerMoreMenuFloating {...props} />
-  ) : (
-    <PlayerMoreMenuMain {...props} />
-  );
-}
-
-function PlayerMoreMenuMain(props: Props) {
-  const navigate = useNavigate();
-  return (
-    <PlayerMoreMenuInner
-      {...props}
-      onGoToArtist={(id) =>
-        navigate({ to: "/artist/$id", params: { id } })
-      }
-    />
-  );
-}
-
-function PlayerMoreMenuFloating(props: Props) {
-  return (
-    <PlayerMoreMenuInner
-      {...props}
-      onGoToArtist={(id) => {
-        void emit("nav:artist", { id });
-        // Bring the main window to the front so the user actually
-        // sees the page they just navigated to.
-        void invoke("focus_main_window").catch(() => {
-          /* command might not be registered in older builds */
-        });
-      }}
-    />
-  );
-}
-
+ * No main/floating split any more: nothing in the menu navigates, so
+ * the router is never touched and the floating window can render the
+ * same component.
+ *
 /**
  * `useTrackMenuController` runs unconditionally even when there's
  * no active track — it owns React Query queries we can't conditionally
  * skip without violating the rules of hooks. We feed it a stub
  * `ShelfItem` in that case and disable the trigger button instead.
  */
-function PlayerMoreMenuInner({
+export function PlayerMoreMenu({
   track,
   includeSource = true,
   align = "end",
   side = "top",
-  onGoToArtist,
-}: Props & { onGoToArtist: (artistId: string) => void }) {
+}: Props) {
   const item: ShelfItem = track
     ? {
         kind: "song",
@@ -140,8 +91,11 @@ function PlayerMoreMenuInner({
                 size="icon"
                 aria-label="More"
                 disabled={!track}
+                // The design draws this one a hair smaller than its
+                // neighbours — three dots read heavy at 17px.
+                className={cn(playerIconButton, "[&_svg]:size-4")}
               >
-                <MoreVerticalIcon />
+                <IconDotsVertical />
               </Button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
@@ -161,7 +115,6 @@ function PlayerMoreMenuInner({
                 item={item}
                 controller={controller}
                 primitives={dropPrimitives}
-                onGoToArtist={onGoToArtist}
               />
             </>
           ) : null}
@@ -230,12 +183,14 @@ function SourceMenuItems({ track }: { track: QueueTrack }) {
         disabled={busy !== null}
       >
         {busy === "song" ? (
-          <Loader2Icon className="size-4 animate-spin" />
+          <IconLoader2 className="size-4 animate-spin" />
         ) : (
-          <MusicIcon className="size-4" />
+          <IconMusicFilled className="size-4" />
         )}
         <span className="flex-1">Song</span>
-        {selected === "song" ? <CheckIcon className="size-4" /> : null}
+        {selected === "song" ? (
+          <IconCheck className="size-4" stroke={2.4} />
+        ) : null}
       </DropdownMenuItem>
       <DropdownMenuItem
         onSelect={(e) => {
@@ -245,12 +200,14 @@ function SourceMenuItems({ track }: { track: QueueTrack }) {
         disabled={busy !== null}
       >
         {busy === "video" ? (
-          <Loader2Icon className="size-4 animate-spin" />
+          <IconLoader2 className="size-4 animate-spin" />
         ) : (
-          <VideoIcon className="size-4" />
+          <IconVideoFilled className="size-4" />
         )}
         <span className="flex-1">Video</span>
-        {selected === "video" ? <CheckIcon className="size-4" /> : null}
+        {selected === "video" ? (
+          <IconCheck className="size-4" stroke={2.4} />
+        ) : null}
       </DropdownMenuItem>
     </>
   );
