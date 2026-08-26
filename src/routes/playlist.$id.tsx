@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { AlertCircleIcon, RefreshCwIcon } from "lucide-react";
 import {
-  AlertCircleIcon,
-  ArrowDownAZIcon,
-  CheckIcon,
-  Loader2Icon,
-  RefreshCwIcon,
-  SearchIcon,
-  Share2Icon,
-  XIcon,
-} from "lucide-react";
+  IconCheck,
+  IconLoader2,
+  IconSearch,
+  IconSortAZ,
+  IconX,
+} from "@tabler/icons-react";
+import { IconShare3Filled } from "@/components/shared/filled-icons";
 import { toast } from "sonner";
 import {
   fetchPlaylistContinuation,
@@ -341,43 +340,46 @@ function PlaylistPageView() {
                   )
                 }
               >
-                <Share2Icon />
+                <IconShare3Filled />
               </Button>
             </>
           )
         }
+        // Search and sort ride in the header's toolbar slot rather than
+        // in the page body, so they stay pinned under the compact header
+        // once the hero scrolls away. Top-songs has no sort mode.
         toolbar={
           isArtistTopSongs ? (
             <div className="flex items-center">
               <SearchInput value={searchQuery} onChange={setSearchQuery} />
             </div>
-          ) : undefined
+          ) : (
+            <div className="flex items-center gap-2">
+              <SearchInput value={searchQuery} onChange={setSearchQuery} />
+              <SortMenu
+                mode={sortMode}
+                onChange={(m) => setSortMode(id, m)}
+                isLikedSongs={isLikedSongs}
+              />
+            </div>
+          )
         }
       />
       {!isArtistTopSongs && header.description ? (
         <ExpandableText key={header.description} text={header.description} />
       ) : null}
 
-      <div className={isArtistTopSongs ? "contents" : "flex flex-col gap-2"}>
-        {!isArtistTopSongs ? (
-          <div className="flex items-center gap-2">
-            <SearchInput value={searchQuery} onChange={setSearchQuery} />
-            <SortMenu
-              mode={sortMode}
-              onChange={(m) => setSortMode(id, m)}
-              isLikedSongs={isLikedSongs}
-            />
-          </div>
-        ) : null}
-        {(sortMode !== "default" || normalizedQuery) && query.hasNextPage ? (
-          <span className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2Icon className="size-3 animate-spin" />
-            {normalizedQuery
-              ? "Loading full playlist for search…"
-              : "Loading full playlist for sort…"}
-          </span>
-        ) : null}
-      </div>
+      {/* Rendered bare, not inside a wrapper: an always-present wrapper
+          would be an empty flex child and still claim the column's
+          `gap-8` between the header toolbar and the track list. */}
+      {(sortMode !== "default" || normalizedQuery) && query.hasNextPage ? (
+        <span className="flex items-center gap-2 text-[12px] text-t6">
+          <IconLoader2 className="size-3 animate-spin" />
+          {normalizedQuery
+            ? "Loading full playlist for search…"
+            : "Loading full playlist for sort…"}
+        </span>
+      ) : null}
 
       <JumpToCurrentButton tracks={visibleTracks} />
 
@@ -400,7 +402,7 @@ function PlaylistPageView() {
         >
           {query.isFetchingNextPage ? (
             <>
-              <Loader2Icon className="mr-2 size-4 animate-spin" />
+              <IconLoader2 className="mr-2 size-4 animate-spin" />
               Loading more…
             </>
           ) : (
@@ -529,7 +531,7 @@ function SearchInput({
 }) {
   return (
     <div className="relative flex-1">
-      <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+      <IconSearch className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-t6" />
       {/* The shared Input carries the translucent fill and hairline that
           the sort button and the Search tab's field already use — only
           the compact height and the icon padding are local. */}
@@ -538,16 +540,16 @@ function SearchInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search in playlist"
-        className="h-8 pl-8 pr-7 text-sm"
+        className="h-8 pl-8 pr-7 text-[13.5px]"
       />
       {value ? (
         <button
           type="button"
           onClick={() => onChange("")}
           aria-label="Clear search"
-          className="absolute right-1.5 top-1/2 grid size-5 -translate-y-1/2 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="absolute right-1.5 top-1/2 grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded-md text-t6 transition-colors duration-[140ms] hover:bg-w090 hover:text-t1"
         >
-          <XIcon className="size-3.5" />
+          <IconX className="size-3.5" />
         </button>
       ) : null}
     </div>
@@ -581,7 +583,7 @@ function SortMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm">
-          <ArrowDownAZIcon />
+          <IconSortAZ />
           {labelFor(mode)}
         </Button>
       </DropdownMenuTrigger>
@@ -595,7 +597,7 @@ function SortMenu({
             className="justify-between"
           >
             <span>{labelFor(m)}</span>
-            {mode === m ? <CheckIcon className="size-4" /> : null}
+            {mode === m ? <IconCheck className="size-4" stroke={2.4} /> : null}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
