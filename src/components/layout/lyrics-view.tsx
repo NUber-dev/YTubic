@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon, MicVocalIcon, RotateCwIcon } from "lucide-react";
+import { IconCheck, IconRefresh } from "@tabler/icons-react";
+import { IconMicrophoneFilled } from "@tabler/icons-react";
+import { playerIconButton } from "@/components/layout/player-chrome";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -151,7 +153,7 @@ export function LyricsBody({ state }: { state: LyricsViewState }) {
             onClick={state.retryFailed}
             disabled={state.isRetrying}
           >
-            <RotateCwIcon className={state.isRetrying ? "animate-spin" : ""} />
+            <IconRefresh className={state.isRetrying ? "animate-spin" : ""} />
             {state.isRetrying ? "Trying…" : "Try again"}
           </Button>
         </div>
@@ -495,9 +497,9 @@ export function LyricsSourceButton({
               variant="ghost"
               size="icon"
               aria-label="Lyrics source"
-              className={className}
+              className={cn(playerIconButton, className)}
             >
-              <MicVocalIcon />
+              <IconMicrophoneFilled />
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
@@ -514,7 +516,7 @@ export function LyricsSourceButton({
               </span>
             ) : null}
           </span>
-          {pref === "auto" ? <CheckIcon className="size-4" /> : null}
+          {pref === "auto" ? <IconCheck className="size-4" stroke={2.4} /> : null}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {SOURCE_ORDER.map((s) => {
@@ -542,7 +544,7 @@ export function LyricsSourceButton({
                 className={cn("mr-2 size-1.5 shrink-0 rounded-full", dot)}
               />
               <span className="flex-1">{SOURCE_LABELS[s]}</span>
-              {pref === s ? <CheckIcon className="size-4" /> : null}
+              {pref === s ? <IconCheck className="size-4" stroke={2.4} /> : null}
             </DropdownMenuItem>
           );
         })}

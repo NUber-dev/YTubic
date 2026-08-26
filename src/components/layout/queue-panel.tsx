@@ -1,20 +1,25 @@
 import { useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+// Transport glyphs stay Lucide, as everywhere else in the player; the
+// chrome around them is Tabler.
+import { PlayIcon, PauseIcon } from "lucide-react";
 import {
-  ListMusicIcon,
-  PlayIcon,
-  PauseIcon,
-  Volume2Icon,
-  XIcon,
-  Trash2Icon,
-  RadioIcon,
-} from "lucide-react";
+  IconBroadcast,
+  IconPlaylist,
+  IconTrashFilled,
+  IconX,
+} from "@tabler/icons-react";
+import { IconVolumeFilled } from "@/components/shared/filled-icons";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import {
+  playerIconButton,
+  playerIconButtonOn,
+} from "@/components/layout/player-chrome";
 import {
   Tooltip,
   TooltipContent,
@@ -35,6 +40,25 @@ function formatDuration(seconds?: number): string {
 }
 
 type Tab = "queue" | "history";
+
+/**
+ * The scrolling list.
+ *
+ * The fade at the bottom edge is a mask on the viewport, not an overlay,
+ * so it works over the card's translucent glass without having to match
+ * a background colour. The list's own `pb-7` matches the fade height:
+ * scrolled all the way down the band lands on that padding instead of
+ * eating the last row.
+ *
+ * The scrollbar is slimmed down from the app-wide 10px — this list is
+ * narrow and the default bar took a visible bite out of the rows.
+ */
+const QUEUE_SCROLL = cn(
+  "min-h-0 flex-1",
+  "[&_[data-slot=scroll-area-viewport]]:[mask-image:linear-gradient(to_bottom,#000_calc(100%_-_28px),transparent)]",
+  "[&_[data-slot=scroll-area-scrollbar]]:w-1.5",
+  "[&_[data-slot=scroll-area-thumb]]:bg-w200",
+);
 
 /**
  * Pure queue contents — header (tabs + autoplay/clear/close actions)
@@ -74,16 +98,25 @@ export function QueueBody({ onClose }: { onClose?: () => void }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-hairline px-3 py-1">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-w055 px-2.5">
         {/* The tabs already provide a built-in underline; override its
             own border-b so it doesn't double up with the header's
-            bottom hairline. The header padding is also reduced
-            (`py-1`) to leave room for the tab labels. */}
+            bottom hairline. The header carries no vertical padding of
+            its own either — the tab buttons set its height, which is
+            what lands the moving underline on the hairline instead of
+            leaving it floating above. Labels drop to the menu's 13.5px
+            and onto the text ramp; the component's own
+            `text-foreground` pair predates the palette. */}
         <AnimatedTabs
           activeTab={tab}
           onChange={(id) => setTab(id as Tab)}
           variant="underline"
-          className="border-b-0 [&_button]:px-3 [&_button]:py-2 [&_button]:text-sm"
+          className={cn(
+            "border-b-0",
+            "[&_button]:px-2.5 [&_button]:py-3 [&_button]:text-[13.5px]",
+            "[&_button[aria-selected=false]]:text-t5 [&_button[aria-selected=false]]:hover:text-t3",
+            "[&_button[aria-selected=true]]:font-semibold [&_button[aria-selected=true]]:text-t1",
+          )}
           tabs={[
             { id: "queue", label: "Queue" },
             { id: "history", label: "History" },
@@ -98,9 +131,12 @@ export function QueueBody({ onClose }: { onClose?: () => void }) {
                 aria-label="Autoplay"
                 aria-pressed={autoRadio}
                 onClick={() => setAutoRadio(!autoRadio)}
-                className={cn(autoRadio && "text-brand")}
+                className={cn(
+                  playerIconButton,
+                  autoRadio && playerIconButtonOn,
+                )}
               >
-                <RadioIcon />
+                <IconBroadcast />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">Autoplay</TooltipContent>
@@ -113,8 +149,9 @@ export function QueueBody({ onClose }: { onClose?: () => void }) {
                 aria-label="Clear queue"
                 disabled={queue.length === 0}
                 onClick={clearQueue}
+                className={playerIconButton}
               >
-                <Trash2Icon />
+                <IconTrashFilled />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">Clear queue</TooltipContent>
@@ -127,8 +164,9 @@ export function QueueBody({ onClose }: { onClose?: () => void }) {
                   size="icon"
                   aria-label="Close queue"
                   onClick={onClose}
+                  className={playerIconButton}
                 >
-                  <XIcon />
+                  <IconX />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Close</TooltipContent>
@@ -137,8 +175,10 @@ export function QueueBody({ onClose }: { onClose?: () => void }) {
         </div>
       </header>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col p-2">
+      <ScrollArea className={QUEUE_SCROLL}>
+        {/* Sections space themselves; the old hard-coded spacer between
+            "Now playing" and "Up next" is this gap. */}
+        <div className="flex flex-col gap-3 p-2 pb-7">
           {tab === "queue" ? (
             <QueueTabBody
               active={active}
@@ -195,24 +235,24 @@ function QueueTabBody({
   onMoveTrack: (from: number, to: number) => void;
 }) {
   if (!active && upcoming.length === 0) {
-    return (
-      <p className="mt-4 px-2 text-sm text-muted-foreground">
-        Queue is empty.
-      </p>
-    );
+    return <p className="mt-3 px-2 text-[13.5px] text-t5">Queue is empty.</p>;
   }
 
   return (
     <>
       {active && (
         <QueueSection label="Now playing">
-          <QueueRow track={active} active playing={playing} onActivate={onToggle} />
+          <QueueRow
+            track={active}
+            active
+            playing={playing}
+            onActivate={onToggle}
+          />
         </QueueSection>
       )}
 
       {upcoming.length > 0 ? (
         <>
-          {active && <div className="h-4" aria-hidden="true" />}
           <QueueSection label="Up next">
             {upcoming.map((t, i) => {
               const queueIdx = index + 1 + i;
@@ -237,8 +277,7 @@ function QueueTabBody({
                       // the dragged item out first shifts the target down by
                       // one, so subtract one to land before the row, not
                       // after it (upward drags are already correct).
-                      const to =
-                        dragFrom < queueIdx ? queueIdx - 1 : queueIdx;
+                      const to = dragFrom < queueIdx ? queueIdx - 1 : queueIdx;
                       onMoveTrack(dragFrom, to);
                     }
                     setDragFrom(null);
@@ -254,7 +293,7 @@ function QueueTabBody({
           </QueueSection>
         </>
       ) : active ? (
-        <p className="mt-4 px-2 text-sm text-muted-foreground">
+        <p className="mt-3 px-2 text-[13.5px] text-t5">
           Nothing queued. Enable Autoplay to keep the music going.
         </p>
       ) : null}
@@ -272,11 +311,7 @@ function HistoryTabBody({
   onRemoveAt: (i: number) => void;
 }) {
   if (history.length === 0) {
-    return (
-      <p className="mt-4 px-2 text-sm text-muted-foreground">
-        No history yet.
-      </p>
-    );
+    return <p className="mt-3 px-2 text-[13.5px] text-t5">No history yet.</p>;
   }
   return (
     <QueueSection label="Previously played" muted>
@@ -313,9 +348,9 @@ export function QueueToggleButton({
           aria-label="Queue"
           aria-pressed={open}
           onClick={onToggle}
-          className={cn(open && "text-brand")}
+          className={cn(playerIconButton, open && playerIconButtonOn)}
         >
-          <ListMusicIcon />
+          <IconPlaylist />
         </Button>
       </TooltipTrigger>
       <TooltipContent>Queue</TooltipContent>
@@ -335,8 +370,13 @@ export function QueuePopover() {
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="Queue">
-              <ListMusicIcon />
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Queue"
+              className={playerIconButton}
+            >
+              <IconPlaylist />
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
@@ -367,8 +407,8 @@ function QueueSection({
     <section className="flex flex-col gap-1">
       <h3
         className={cn(
-          "px-2 py-1 text-xs font-semibold uppercase tracking-wide",
-          muted ? "text-muted-foreground/70" : "text-muted-foreground",
+          "px-2 py-1 text-[10.5px] font-semibold uppercase tracking-[0.09em]",
+          muted ? "text-t7" : "text-t5",
         )}
       >
         {label}
@@ -465,13 +505,13 @@ function QueueRow({
         onDragEnd?.();
       }}
       className={cn(
-        "group relative grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md px-2 py-1.5 outline-none",
-        "cursor-pointer select-none",
-        "focus-visible:ring-2 focus-visible:ring-ring",
-        active ? "bg-accent" : "hover:bg-accent/60",
+        "group relative grid grid-cols-[auto_1fr_auto] items-center gap-2.5 rounded-lg px-2 py-1.5 outline-none",
+        "cursor-pointer select-none transition-colors duration-[140ms]",
+        "focus-visible:ring-[3px] focus-visible:ring-[rgba(var(--acc1rgb),0.18)]",
+        active ? "bg-w070" : "hover:bg-w050",
         isDragging && "opacity-40",
         isDropTarget &&
-          "before:pointer-events-none before:absolute before:inset-x-1 before:-top-px before:h-0.5 before:rounded-full before:bg-brand",
+          "before:pointer-events-none before:absolute before:inset-x-1 before:-top-px before:h-0.5 before:rounded-full before:bg-acc1",
       )}
     >
       {/* `pointer-events-none` — the inner <img> is `draggable` by
@@ -480,11 +520,11 @@ function QueueRow({
           image-drag instead of our row reorder). Disabling pointer
           events on the wrapper makes the thumbnail transparent to
           mouse/drag events, so they bubble straight to the row. */}
-      <div className="pointer-events-none relative size-10 shrink-0 overflow-hidden rounded-md">
+      <div className="pointer-events-none relative size-9 shrink-0 overflow-hidden rounded-[7px]">
         <Thumbnail
           thumbnails={track.thumbnails}
           alt={track.title}
-          className="size-10"
+          className="size-9"
           targetSize={80}
         />
         <span
@@ -498,7 +538,7 @@ function QueueRow({
               make the click action obvious. */}
           {active && playing ? (
             <>
-              <Volume2Icon className="size-4 group-hover:hidden" />
+              <IconVolumeFilled className="size-4 group-hover:hidden" />
               <PauseIcon className="hidden size-4 fill-current group-hover:block" />
             </>
           ) : (
@@ -508,19 +548,19 @@ function QueueRow({
         {/* Last in DOM so the hairline stays on top of the hover overlay;
             the difference blend keeps it readable against both the cover
             and the bg-black/50 hover wash. */}
-        <ArtworkOutline className="rounded-md" />
+        <ArtworkOutline className="rounded-[7px]" />
       </div>
 
       <div className="flex min-w-0 flex-col text-left">
         <span
           className={cn(
-            "truncate text-sm font-medium",
-            active && "text-brand",
+            "truncate text-[13.5px]",
+            active ? "font-semibold text-acc1" : "font-medium text-t2",
           )}
         >
           {track.title}
         </span>
-        <span className="truncate text-xs text-muted-foreground">
+        <span className="truncate text-[12px] leading-snug text-t6">
           {subtitle}
         </span>
       </div>
@@ -531,7 +571,7 @@ function QueueRow({
           pushing the duration leftwards instead of being permanently
           reserved space that's just invisible. */}
       <div className="flex items-center">
-        <span className="text-xs tabular-nums text-muted-foreground">
+        <span className="text-[12px] tabular-nums text-t7">
           {formatDuration(track.duration)}
         </span>
         {onRemove && (
@@ -539,13 +579,13 @@ function QueueRow({
             variant="ghost"
             size="icon-xs"
             aria-label="Remove from queue"
-            className="w-0 overflow-hidden opacity-0 transition-[width,opacity,margin] duration-150 group-hover:ml-1 group-hover:w-6 group-hover:opacity-100"
+            className="w-0 overflow-hidden text-t6 opacity-0 transition-[width,opacity,margin] duration-150 hover:bg-w090 hover:text-t1 group-hover:ml-1 group-hover:w-6 group-hover:opacity-100"
             onClick={(e) => {
               e.stopPropagation();
               onRemove();
             }}
           >
-            <XIcon />
+            <IconX />
           </Button>
         )}
       </div>
