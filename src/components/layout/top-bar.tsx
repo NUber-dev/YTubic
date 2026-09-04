@@ -23,6 +23,7 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { useFullscreenStore } from "@/lib/store/fullscreen";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -82,6 +83,7 @@ const IS_TAURI =
  */
 export function TopBar() {
   const router = useRouter();
+  const fullscreen = useFullscreenStore((s) => s.open);
   const [maximized, setMaximized] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -122,7 +124,13 @@ export function TopBar() {
     <>
       <header
         data-tauri-drag-region
-        className="relative z-30 flex h-9 shrink-0 select-none items-center"
+        // Above the full-screen player (z-40) so the app menu stays
+        // reachable there; the bar itself is transparent, so the blurred
+        // cover runs up behind it.
+        className={cn(
+          "relative flex h-9 shrink-0 select-none items-center",
+          fullscreen ? "z-[45]" : "z-30",
+        )}
       >
         <div
           className={`flex items-center gap-1 ${IS_MAC ? "pl-[78px]" : "pl-2"}`}
@@ -171,25 +179,31 @@ export function TopBar() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <SidebarTrigger className={NAV_BTN_CLS} />
-          <Button
-            variant="ghost"
-            size="icon"
-            className={NAV_BTN_CLS}
-            onClick={() => router.history.back()}
-            aria-label="Back"
-          >
-            <ArrowLeftIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={NAV_BTN_CLS}
-            onClick={() => router.history.forward()}
-            aria-label="Forward"
-          >
-            <ArrowRightIcon />
-          </Button>
+          {/* No page and no sidebar to navigate while the full-screen
+              player is up, so the three go with it. */}
+          {fullscreen ? null : (
+            <>
+              <SidebarTrigger className={NAV_BTN_CLS} />
+              <Button
+                variant="ghost"
+                size="icon"
+                className={NAV_BTN_CLS}
+                onClick={() => router.history.back()}
+                aria-label="Back"
+              >
+                <ArrowLeftIcon />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={NAV_BTN_CLS}
+                onClick={() => router.history.forward()}
+                aria-label="Forward"
+              >
+                <ArrowRightIcon />
+              </Button>
+            </>
+          )}
         </div>
 
         {/* Drag spacer — fills remaining width so the user can grab

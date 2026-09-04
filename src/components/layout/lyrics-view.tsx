@@ -127,13 +127,18 @@ export function useLyricsView(track: QueueTrack | undefined): LyricsViewState {
   };
 }
 
-export function LyricsBody({ state }: { state: LyricsViewState }) {
+export function LyricsBody({
+  state,
+  large = false,
+}: {
+  state: LyricsViewState;
+  /** Full-screen sizing: bigger type, same motion. */
+  large?: boolean;
+}) {
   if (!state.hasTrack) return null;
   if (state.isLoading && !state.active) {
     return (
-      <p className="px-4 py-2 text-sm text-muted-foreground">
-        Loading lyrics…
-      </p>
+      <p className="px-4 py-2 text-sm text-muted-foreground">Loading lyrics…</p>
     );
   }
   if (!state.active) {
@@ -166,9 +171,9 @@ export function LyricsBody({ state }: { state: LyricsViewState }) {
     );
   }
   if (state.active.kind === "timed") {
-    return <TimedLyrics lines={state.active.lines} />;
+    return <TimedLyrics lines={state.active.lines} large={large} />;
   }
-  return <PlainLyrics text={state.active.text} />;
+  return <PlainLyrics text={state.active.text} large={large} />;
 }
 
 /** How long before a line's actual start time we flip it to active.
@@ -254,7 +259,13 @@ const SEEK_JUMP_S = 1.2;
  *  transition would. */
 const SEEK_SCROLL_DURATION_MS = 350;
 
-function TimedLyrics({ lines }: { lines: TimedLine[] }) {
+function TimedLyrics({
+  lines,
+  large = false,
+}: {
+  lines: TimedLine[];
+  large?: boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
   const seekHoldRef = useRef<number | null>(null);
@@ -287,9 +298,7 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
       container.scrollTop = 0;
       return;
     }
-    const el = container.querySelector<HTMLElement>(
-      `[data-line-idx="${idx}"]`,
-    );
+    const el = container.querySelector<HTMLElement>(`[data-line-idx="${idx}"]`);
     if (!el) {
       container.scrollTop = 0;
       return;
@@ -329,8 +338,7 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
     // visible. getBoundingClientRect avoids depending on offsetParent.
     const cRect = container.getBoundingClientRect();
     const eRect = el.getBoundingClientRect();
-    const elTopWithinContent =
-      eRect.top - cRect.top + container.scrollTop;
+    const elTopWithinContent = eRect.top - cRect.top + container.scrollTop;
     // The very first line is treated as a special case: we pin it to
     // the top of the viewport instead of the usual ~36% position. For
     // any later line, the active-line-above-center rule applies.
@@ -440,7 +448,10 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
                 // (not `transform`), so it's listed explicitly in the
                 // transition. Both branches set a `scale-*` so the
                 // browser has a defined start AND end to interpolate.
-                "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left text-lg font-[650] leading-snug transition-[scale,color] duration-[1260ms] ease-in-out hover:bg-black/10 dark:hover:bg-black/30",
+                "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left font-[650] leading-snug transition-[scale,color] duration-[1260ms] ease-in-out hover:bg-black/10 dark:hover:bg-black/30",
+                large
+                  ? "px-3 py-2 text-[31px] font-bold leading-[1.18] tracking-[-0.025em]"
+                  : "text-lg",
                 isActive
                   ? "scale-[1.06] text-foreground"
                   : isPast
@@ -467,13 +478,32 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
         className="lyrics-blur-overlay pointer-events-none absolute inset-x-0 top-0 h-[26%] transition-opacity duration-500 ease-in-out"
         style={{ opacity: activeIdx <= 0 ? 0 : 1 }}
       />
+      {/* Full screen shows the column as a band across the art, so the
+          bottom edge softens the same way as the top. */}
+      {large ? (
+        <div
+          aria-hidden
+          className="lyrics-blur-overlay-bottom pointer-events-none absolute inset-x-0 bottom-0 h-[26%]"
+        />
+      ) : null}
     </div>
   );
 }
 
-function PlainLyrics({ text }: { text: string }) {
+function PlainLyrics({
+  text,
+  large = false,
+}: {
+  text: string;
+  large?: boolean;
+}) {
   return (
-    <div className="lyrics-mask app-scroll h-full overflow-y-auto whitespace-pre-wrap px-2 pt-0 pb-12 text-lg font-medium leading-relaxed text-foreground/90">
+    <div
+      className={cn(
+        "lyrics-mask app-scroll h-full overflow-y-auto whitespace-pre-wrap px-2 pt-0 pb-12 font-medium leading-relaxed text-foreground/90",
+        large ? "text-[26px] leading-normal" : "text-lg",
+      )}
+    >
       {text}
     </div>
   );
@@ -516,7 +546,9 @@ export function LyricsSourceButton({
               </span>
             ) : null}
           </span>
-          {pref === "auto" ? <IconCheck className="size-4" stroke={2.4} /> : null}
+          {pref === "auto" ? (
+            <IconCheck className="size-4" stroke={2.4} />
+          ) : null}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {SOURCE_ORDER.map((s) => {
@@ -544,7 +576,9 @@ export function LyricsSourceButton({
                 className={cn("mr-2 size-1.5 shrink-0 rounded-full", dot)}
               />
               <span className="flex-1">{SOURCE_LABELS[s]}</span>
-              {pref === s ? <IconCheck className="size-4" stroke={2.4} /> : null}
+              {pref === s ? (
+                <IconCheck className="size-4" stroke={2.4} />
+              ) : null}
             </DropdownMenuItem>
           );
         })}

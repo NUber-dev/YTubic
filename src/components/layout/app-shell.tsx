@@ -25,6 +25,7 @@ import { WhatsNewDialog } from "@/components/layout/whats-new-dialog";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAudioEngine } from "@/lib/audio-engine";
+import { FullscreenPlayer } from "@/components/layout/fullscreen-player";
 import { useCacheAutoClean } from "@/lib/cache-cleanup";
 import { usePlaybackNotifications } from "@/lib/playback-notifications";
 import { useLastfmScrobbler } from "@/lib/lastfm-scrobbler";
@@ -266,6 +267,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {mode === "floating" && hasTrack && <FloatingPlayerSync />}
           </div>
           <DragSnapOverlay />
+          <FullscreenPlayer />
           <WindowResizeHandles disabled={IS_MAC} />
           <SettingsDialog />
           <PremiumGateDialog />

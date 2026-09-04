@@ -41,6 +41,8 @@ type Props = {
   includeSource?: boolean;
   align?: "start" | "end";
   side?: "top" | "right" | "bottom" | "left";
+  /** Extra classes for the trigger (the full-screen chip). */
+  className?: string;
 };
 
 /**
@@ -65,6 +67,7 @@ export function PlayerMoreMenu({
   includeSource = true,
   align = "end",
   side = "top",
+  className,
 }: Props) {
   const item: ShelfItem = track
     ? {
@@ -93,7 +96,7 @@ export function PlayerMoreMenu({
                 disabled={!track}
                 // The design draws this one a hair smaller than its
                 // neighbours — three dots read heavy at 17px.
-                className={cn(playerIconButton, "[&_svg]:size-4")}
+                className={cn(playerIconButton, "[&_svg]:size-4", className)}
               >
                 <IconDotsVertical />
               </Button>

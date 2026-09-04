@@ -12,6 +12,7 @@ import {
   Loader2Icon,
 } from "lucide-react";
 import {
+  IconArrowsMaximize,
   IconLoader2,
   IconVideoFilled,
 } from "@tabler/icons-react";
@@ -51,6 +52,7 @@ import {
 } from "@/components/layout/player-chrome";
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
+import { openFullscreen } from "@/lib/store/fullscreen";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useScrubStore } from "@/lib/store/scrub";
 import {
@@ -304,9 +306,12 @@ export function ProgressSlider({
 export function VolumeControl({
   direction = "horizontal",
   compact = false,
+  className,
 }: {
   direction?: "horizontal" | "vertical";
   compact?: boolean;
+  /** Extra classes for the speaker button (the full-screen chip). */
+  className?: string;
 }) {
   const { volume, muted } = usePlaybackStore(
     useShallow((s) => ({ volume: s.volume, muted: s.muted })),
@@ -364,7 +369,7 @@ export function VolumeControl({
         size="icon"
         aria-label={muted ? "Unmute" : "Mute"}
         onClick={toggleMute}
-        className={playerIconButton}
+        className={cn(playerIconButton, className)}
       >
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.span
@@ -591,7 +596,7 @@ export function PlayerBar({
               // it that group is the motion.div wrapping cover AND lyrics, so
               // the lyrics' backdrop-blur strip loses the card and the app
               // background from its backdrop and paints as a dark band.
-              <div className="relative isolate aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
+              <div className="group/cover relative isolate aspect-square w-full rounded-md shadow-[0_1px_14px_rgb(0_0_0/0.12)]">
                 <Thumbnail
                   thumbnails={track.thumbnails}
                   alt={track.title}
@@ -601,6 +606,24 @@ export function PlayerBar({
                   overrideHighRes={iTunesCover}
                 />
                 <ArtworkOutline className="rounded-md" />
+                {/* Hover pad with the Full screen chip, per the design.
+                    Only the chip is clickable, and it stops the pointer
+                    from reaching the cover's drag handle: the handle
+                    captures the pointer, which would swallow the click.
+                    The floating window has its own surface for this. */}
+                {variant !== "floating" ? (
+                  <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-(--g6a) opacity-0 transition-opacity duration-[160ms] group-hover/cover:opacity-100 has-[button:focus-visible]:opacity-100">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={openFullscreen}
+                      className="pointer-events-auto flex cursor-pointer items-center gap-2 rounded-[10px] bg-w160 px-3.5 py-[9px] text-[13px] font-semibold text-white backdrop-blur-[8px] transition-colors hover:bg-w200"
+                    >
+                      <IconArrowsMaximize className="size-[17px]" stroke={1.9} />
+                      Full screen
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="aspect-square w-full rounded-md border border-hairline bg-muted" />

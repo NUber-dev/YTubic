@@ -10,6 +10,9 @@ export type BackgroundMode = "ambient" | "plain";
 export type InterfaceFont = "system" | "gsans" | "inter" | "roboto" | "plex";
 /** One heart, or a thumbs-up / thumbs-down pair. */
 export type RatingButtons = "heart" | "both";
+/** How the full-screen now-playing view fills the window
+ *  (see `components/layout/fullscreen-player.tsx`). */
+export type FullscreenLayout = "cover" | "lyrics" | "immersive";
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
@@ -27,6 +30,9 @@ type State = {
   /** How tracks are rated: a single heart, or like + dislike thumbs.
    *  Dislikes are remembered locally in `store/dislikes.ts`. */
   ratingButtons: RatingButtons;
+  /** Body of the full-screen player: cover centred, cover with the
+   *  lyrics beside it, or the art itself behind the title. */
+  fullscreenLayout: FullscreenLayout;
   /** System toast on track change while the app is in the background
    *  (see `lib/playback-notifications.ts`). */
   playbackNotifications: boolean;
@@ -58,6 +64,7 @@ type State = {
   setBackground: (v: BackgroundMode) => void;
   setInterfaceFont: (v: InterfaceFont) => void;
   setRatingButtons: (v: RatingButtons) => void;
+  setFullscreenLayout: (v: FullscreenLayout) => void;
   setPlaybackNotifications: (v: boolean) => void;
   setDiscordRichPresence: (v: boolean) => void;
   setLastfmEnabled: (v: boolean) => void;
@@ -84,6 +91,7 @@ export const useSettingsStore = create<State>()(
       background: "ambient",
       interfaceFont: "system",
       ratingButtons: "heart",
+      fullscreenLayout: "cover",
       playbackNotifications: false,
       discordRichPresence: false,
       lastfmEnabled: false,
@@ -97,6 +105,7 @@ export const useSettingsStore = create<State>()(
       setBackground: (background) => set({ background }),
       setInterfaceFont: (interfaceFont) => set({ interfaceFont }),
       setRatingButtons: (ratingButtons) => set({ ratingButtons }),
+      setFullscreenLayout: (fullscreenLayout) => set({ fullscreenLayout }),
       setPlaybackNotifications: (playbackNotifications) =>
         set({ playbackNotifications }),
       setDiscordRichPresence: (discordRichPresence) =>

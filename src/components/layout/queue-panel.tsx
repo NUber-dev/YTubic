@@ -364,7 +364,7 @@ export function QueueToggleButton({
  * symmetrically around it (Radix's collision detection slides it left
  * if the right edge would overflow the viewport). Fixed 28rem×28rem.
  */
-export function QueuePopover() {
+export function QueuePopover({ className }: { className?: string }) {
   return (
     <Popover>
       <Tooltip>
@@ -374,7 +374,7 @@ export function QueuePopover() {
               variant="ghost"
               size="icon"
               aria-label="Queue"
-              className={playerIconButton}
+              className={cn(playerIconButton, className)}
             >
               <IconPlaylist />
             </Button>

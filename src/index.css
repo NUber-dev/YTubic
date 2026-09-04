@@ -145,6 +145,16 @@
   --glass5: rgba(252, 252, 253, 0.88);
   --glass6: rgba(252, 252, 253, 0.9);
 
+  /* Text on the full-screen player's blurred cover (fullscreen-player.tsx). */
+  --fs-title: #18181b;
+  --fs-sub: #52525b;
+  --fs-label: #74747d;
+  --fs-txt: #27272a;
+  --fs-txt2: #3f3f46;
+  --fs-txt3: #52525b;
+  --fs-time: #6b6b74;
+  --fs-seg: #74747d;
+
   --g6a: rgba(255, 255, 255, 0.6);
   --g6b: rgba(255, 255, 255, 0.65);
   --g9a: rgba(255, 255, 255, 0.55);
@@ -299,6 +309,15 @@
   --glass4: rgba(27, 27, 31, 0.82);
   --glass5: rgba(24, 24, 28, 0.86);
   --glass6: rgba(20, 20, 23, 0.88);
+
+  --fs-title: #ffffff;
+  --fs-sub: rgba(255, 255, 255, 0.62);
+  --fs-label: rgba(255, 255, 255, 0.5);
+  --fs-txt: rgba(255, 255, 255, 0.86);
+  --fs-txt2: rgba(255, 255, 255, 0.78);
+  --fs-txt3: rgba(255, 255, 255, 0.62);
+  --fs-time: rgba(255, 255, 255, 0.6);
+  --fs-seg: rgba(255, 255, 255, 0.55);
 
   --g6a: rgba(6, 6, 8, 0.5);
   --g6b: rgba(6, 6, 8, 0.55);
@@ -827,6 +846,24 @@
     );
     -webkit-mask-image: linear-gradient(
       to bottom,
+      black 0%,
+      black 20%,
+      transparent 80%
+    );
+  }
+  /* The same strip mirrored for the bottom of the column, used by the
+     full-screen lyrics so both ends soften alike. */
+  .lyrics-blur-overlay-bottom {
+    backdrop-filter: blur(1.5px);
+    -webkit-backdrop-filter: blur(1.5px);
+    mask-image: linear-gradient(
+      to top,
+      black 0%,
+      black 20%,
+      transparent 80%
+    );
+    -webkit-mask-image: linear-gradient(
+      to top,
       black 0%,
       black 20%,
       transparent 80%

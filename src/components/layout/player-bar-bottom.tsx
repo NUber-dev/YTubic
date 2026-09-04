@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import {
   PlayIcon,
   PauseIcon,
@@ -7,7 +8,11 @@ import {
   RepeatIcon,
   Repeat1Icon,
 } from "lucide-react";
-import { IconLoader2, IconMicrophoneFilled } from "@tabler/icons-react";
+import {
+  IconArrowsMaximize,
+  IconLoader2,
+  IconMicrophoneFilled,
+} from "@tabler/icons-react";
 import { useShallow } from "zustand/react/shallow";
 import {
   Popover,
@@ -26,6 +31,7 @@ import { Thumbnail } from "@/components/shared/thumbnail";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
 import { ArtistLinks } from "@/components/shared/artist-links";
 import { QueuePopover } from "@/components/layout/queue-panel";
+import { openFullscreen } from "@/lib/store/fullscreen";
 import {
   LyricsBody,
   LyricsSourceButton,
@@ -86,6 +92,7 @@ export function PlayerBarBottom() {
   const { onPointerDown: onCoverPointerDown } = usePlayerCoverDrag();
 
   const hasTrack = !!track;
+  const coverDownRef = useRef<{ x: number; y: number } | null>(null);
   // See player-bar.tsx — spinner only while the user has actually
   // requested playback, otherwise eager stream preloading shows a
   // loader where a Play icon should be.
@@ -127,9 +134,23 @@ export function PlayerBarBottom() {
             instead of pushing the transport cluster off-center. */}
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <PlayerCoverMenu track={track}>
+            {/* A plain click on the cover opens the full-screen view; a
+                drag (the layout switch) must not. The drag handle keeps
+                pointer capture, so `click` still fires after a drag and
+                the pointer's travel since pointerdown is what tells the
+                two apart. */}
             <div
-              onPointerDown={onCoverPointerDown}
-              className="shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
+              onPointerDown={(e) => {
+                coverDownRef.current = { x: e.clientX, y: e.clientY };
+                onCoverPointerDown(e);
+              }}
+              onClick={(e) => {
+                const d = coverDownRef.current;
+                if (!track || !d) return;
+                if (Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 6) return;
+                openFullscreen();
+              }}
+              className="group/cover shrink-0 touch-none select-none cursor-grab active:cursor-grabbing"
             >
               {track ? (
                 <div className="relative isolate size-14 shrink-0">
@@ -142,6 +163,15 @@ export function PlayerBarBottom() {
                     overrideHighRes={iTunesCover}
                   />
                   <ArtworkOutline className="rounded-md" />
+                  {/* Hover hint for the click-to-open above: the same
+                      pad as the side card's, at a size where only the
+                      glyph fits. */}
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-(--g6a) text-white opacity-0 transition-opacity duration-[160ms] group-hover/cover:opacity-100"
+                  >
+                    <IconArrowsMaximize className="size-5" stroke={1.9} />
+                  </div>
                 </div>
               ) : (
                 <div className="size-14 shrink-0 rounded-md border border-hairline bg-muted" />
