@@ -361,8 +361,19 @@ function BackgroundCover() {
     }
   }, [url, active, slotA, slotB]);
 
+  // The wash is tuned per theme, as in the prototype: on a dark ground
+  // the art is saturated and left dark, on a light one it is brightened
+  // and desaturated, or it settles as a grey haze over the white page.
   const baseClass =
-    "pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover blur-3xl saturate-150 transition-opacity duration-700 ease-out";
+    "pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover blur-3xl " +
+    "saturate-[0.9] brightness-[1.4] dark:saturate-150 dark:brightness-100 " +
+    "transition-opacity duration-700 ease-out";
+
+  // Held on the element rather than inline, so the visible slot can carry
+  // a different value per theme. On a light page the wash reads much
+  // louder at the same alpha: it tints white, where on a dark one it only
+  // lifts an already dark ground.
+  const shown = "opacity-[0.15] dark:opacity-30";
 
   return (
     <>
@@ -371,8 +382,7 @@ function BackgroundCover() {
           src={slotA}
           alt=""
           aria-hidden
-          className={baseClass}
-          style={{ opacity: active === "A" ? 0.3 : 0 }}
+          className={`${baseClass} ${active === "A" ? shown : "opacity-0"}`}
         />
       )}
       {slotB && (
@@ -380,8 +390,7 @@ function BackgroundCover() {
           src={slotB}
           alt=""
           aria-hidden
-          className={baseClass}
-          style={{ opacity: active === "B" ? 0.3 : 0 }}
+          className={`${baseClass} ${active === "B" ? shown : "opacity-0"}`}
         />
       )}
       {(slotA || slotB) && (

@@ -469,7 +469,7 @@ function TopResultHero({
     );
 
   const card = (
-    <div className="relative flex items-center gap-3 rounded-xl border bg-card/40 p-4 pr-5 transition-colors hover:bg-white/[0.06]">
+    <div className="relative flex items-center gap-3 rounded-xl border bg-card/40 p-4 pr-5 transition-colors hover:bg-w060">
       {overlay}
 
       <div className="pointer-events-none relative flex min-w-0 flex-1 items-center gap-5">
@@ -508,7 +508,7 @@ function TopResultHero({
           onClick={runAction}
           disabled={pending}
           aria-label={action.label}
-          className="pointer-events-auto relative z-10 inline-flex shrink-0 items-center gap-2 rounded-full border border-input bg-white/5 px-5 py-2.5 text-sm font-semibold transition-colors hover:bg-white/10 disabled:opacity-60"
+          className="pointer-events-auto relative z-10 inline-flex shrink-0 items-center gap-2 rounded-full border border-input bg-w050 px-5 py-2.5 text-sm font-semibold transition-colors hover:bg-w100 disabled:opacity-60"
         >
           {pending ? (
             <Loader2Icon className="size-4 animate-spin" />

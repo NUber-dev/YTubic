@@ -26,4 +26,4 @@ export const frostedSurface =
  * 0.4) so more of the cover art's colour survives into the panel's
  * backdrop-blur.
  */
-export const frostedOverlay = "bg-black/40";
+export const frostedOverlay = "bg-scrim dark:bg-black/40";

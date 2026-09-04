@@ -113,7 +113,7 @@ function FloatingTitleBar() {
         aria-label={pinned ? "Unpin from top" : "Pin on top"}
         aria-pressed={pinned}
         className={cn(
-          "flex h-full w-11 items-center justify-center transition-colors hover:bg-white/10",
+          "flex h-full w-11 items-center justify-center transition-colors hover:bg-titlebar-hover",
           pinned ? "text-brand" : "text-foreground/85",
         )}
       >

@@ -440,7 +440,7 @@ function TimedLyrics({ lines }: { lines: TimedLine[] }) {
                 // (not `transform`), so it's listed explicitly in the
                 // transition. Both branches set a `scale-*` so the
                 // browser has a defined start AND end to interpolate.
-                "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left text-lg font-[650] leading-snug transition-[scale,color] duration-[1260ms] ease-in-out hover:bg-black/30",
+                "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left text-lg font-[650] leading-snug transition-[scale,color] duration-[1260ms] ease-in-out hover:bg-black/10 dark:hover:bg-black/30",
                 isActive
                   ? "scale-[1.06] text-foreground"
                   : isPast

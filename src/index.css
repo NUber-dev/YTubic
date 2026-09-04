@@ -26,7 +26,7 @@
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
+  --accent: oklch(0 0 0 / 7%);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
@@ -39,7 +39,7 @@
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: var(--brand);
   --sidebar-primary-foreground: var(--brand-foreground);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0 0 0 / 7%);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: var(--brand);
@@ -60,9 +60,8 @@
      pinned to white: near-black here, near-white in dark mode. */
   --slider-track: oklch(0 0 0 / 20%);
   --slider-thumb: oklch(0.205 0 0);
-  --slider-thumb-glow: 0 0 3px oklch(0 0 0 / 30%), 0 0 8px oklch(0 0 0 / 15%);
-  --slider-thumb-glow-strong: 0 0 5px oklch(0 0 0 / 40%),
-    0 0 12px oklch(0 0 0 / 22%);
+  --slider-thumb-glow: none;
+  --slider-thumb-glow-strong: 0 0 0 3px oklch(0 0 0 / 10%);
 
   /* ------------------------------------------------------------------
      Design-system palette (Claude Design handoff, 2026-08).
@@ -529,18 +528,18 @@
   /* Thin, subtle scrollbars (used in main content area and carousels). */
   .app-scroll {
     scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-color: var(--w160) transparent;
   }
   .shelf-scroll {
     scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-color: var(--w160) transparent;
   }
   .shelf-hover-scrollbar .shelf-scroll {
     scrollbar-color: transparent transparent;
   }
   .shelf-hover-scrollbar:hover .shelf-scroll,
   .shelf-hover-scrollbar:focus-within .shelf-scroll {
-    scrollbar-color: var(--border) transparent;
+    scrollbar-color: var(--w160) transparent;
   }
   .shelf-scroll::-webkit-scrollbar,
   .app-scroll::-webkit-scrollbar {
@@ -552,11 +551,11 @@
     background: transparent;
   }
   .app-scroll::-webkit-scrollbar-thumb {
-    background: var(--border);
+    background: var(--w160);
     border-radius: 9999px;
   }
   .shelf-scroll::-webkit-scrollbar-thumb {
-    background: var(--border);
+    background: var(--w160);
     border-radius: 9999px;
     transition: background-color 150ms ease;
   }
@@ -565,13 +564,13 @@
   }
   .shelf-hover-scrollbar:hover .shelf-scroll::-webkit-scrollbar-thumb,
   .shelf-hover-scrollbar:focus-within .shelf-scroll::-webkit-scrollbar-thumb {
-    background: var(--border);
+    background: var(--w160);
   }
   .shelf-hover-scrollbar:hover .shelf-scroll::-webkit-scrollbar-thumb:hover,
   .shelf-hover-scrollbar:focus-within
     .shelf-scroll::-webkit-scrollbar-thumb:hover,
   .app-scroll::-webkit-scrollbar-thumb:hover {
-    background: var(--muted-foreground);
+    background: var(--w280);
   }
 
   /* The one main content scroller. `scrollbar-gutter: stable` keeps the
