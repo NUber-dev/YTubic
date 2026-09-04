@@ -108,6 +108,9 @@ windows = { version = "0.61", features = [
 # default-features off drops text/font handling (fontdb, system-fonts, raster
 # image formats); these icons are pure paths. See src/thumbbar.rs.
 resvg = { version = "0.48.1", default-features = false }
+# PermissionRequested handler on the main webview (src/webview_permissions.rs).
+# Same version tauri/wry already compile.
+webview2-com = "0.38"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # Cookie jars remain files in app data, but their random AES key lives in the
