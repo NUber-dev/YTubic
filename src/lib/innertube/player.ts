@@ -74,7 +74,7 @@ export async function resolveStream(videoId: string): Promise<ResolvedStream> {
   try {
     stdout = await invoke<string>("resolve_stream_ytdlp", { videoId });
   } catch (e) {
-    throw new Error(`yt-dlp: ${String(e)}`);
+    throw new Error(`yt-dlp: ${String(e)}`, { cause: e });
   }
 
   let json: YtDlpJson;
@@ -83,6 +83,7 @@ export async function resolveStream(videoId: string): Promise<ResolvedStream> {
   } catch (e) {
     throw new Error(
       `yt-dlp: invalid JSON (${(e as Error).message}): ${stdout.slice(0, 200)}`,
+      { cause: e },
     );
   }
 

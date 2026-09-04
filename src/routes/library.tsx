@@ -138,22 +138,30 @@ function LikedSongsView() {
     getNextPageParam: (lastPage) => lastPage.continuationToken,
   });
 
-  const pages = query.data?.pages ?? [];
-  const tracks = useMemo(() => pages.flatMap((p) => p.tracks), [pages]);
+  const pages = query.data?.pages;
+  const tracks = useMemo(() => pages?.flatMap((p) => p.tracks) ?? [], [pages]);
 
+  // Pulled out so the effect's closure and its dependency list name the
+  // same values (the query result object itself is new on every render).
+  const {
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    error: queryError,
+  } = query;
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
-    if (!query.hasNextPage) return;
+    if (!hasNextPage) return;
     // Stop auto-loading once a continuation errored (avoids an unbounded
     // retry loop while the sentinel stays visible).
-    if (query.error) return;
+    if (queryError) return;
     const obs = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
-          if (e.isIntersecting && !query.isFetchingNextPage) {
-            query.fetchNextPage();
+          if (e.isIntersecting && !isFetchingNextPage) {
+            fetchNextPage();
           }
         }
       },
@@ -161,7 +169,7 @@ function LikedSongsView() {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage, query.error]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, queryError]);
 
   // Only show the full error card before any tracks load; a failed
   // continuation must not wipe the already-loaded liked-songs list.
@@ -177,9 +185,7 @@ function LikedSongsView() {
     );
   }
   if (tracks.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">No liked songs yet.</p>
-    );
+    return <p className="text-sm text-muted-foreground">No liked songs yet.</p>;
   }
 
   return (

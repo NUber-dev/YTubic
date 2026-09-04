@@ -51,7 +51,7 @@ export function AnimatedTabs({
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent, currentIndex: number) => {
-      let newIndex = currentIndex;
+      let newIndex: number;
 
       if (event.key === "ArrowRight") {
         event.preventDefault();

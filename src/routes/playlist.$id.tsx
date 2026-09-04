@@ -95,8 +95,8 @@ function PlaylistPageView() {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
-  const pages = query.data?.pages ?? [];
-  const header = pages[0] as PlaylistFirstPage | undefined;
+  const pages = query.data?.pages;
+  const header = pages?.[0] as PlaylistFirstPage | undefined;
 
   // Suggestions live in local state (seeded from the first page) so the
   // Refresh button can swap in a new batch without touching the
@@ -130,7 +130,7 @@ function PlaylistPageView() {
       setSuggestionsBusy(false);
     }
   };
-  const tracks = useMemo(() => pages.flatMap((p) => p.tracks), [pages]);
+  const tracks = useMemo(() => pages?.flatMap((p) => p.tracks) ?? [], [pages]);
   const sortedTracks = useMemo(
     () =>
       isArtistTopSongs
@@ -157,19 +157,27 @@ function PlaylistPageView() {
   // Load more whenever the sentinel enters the viewport. `rootMargin`
   // fires ~a screen early so the next page is usually in hand by the
   // time the user actually reaches the end of the current batch.
+  // Pulled out so the effects' closures and their dependency lists name
+  // the same values (the query result object itself is new every render).
+  const {
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    error: queryError,
+  } = query;
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
-    if (!query.hasNextPage) return;
+    if (!hasNextPage) return;
     // Stop auto-loading once a continuation has errored, otherwise the
     // still-visible sentinel re-fires fetchNextPage in an unbounded loop.
-    if (query.error) return;
+    if (queryError) return;
     const obs = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
-          if (e.isIntersecting && !query.isFetchingNextPage) {
-            query.fetchNextPage();
+          if (e.isIntersecting && !isFetchingNextPage) {
+            fetchNextPage();
           }
         }
       },
@@ -177,12 +185,7 @@ function PlaylistPageView() {
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [
-    query.hasNextPage,
-    query.isFetchingNextPage,
-    query.fetchNextPage,
-    query.error,
-  ]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, queryError]);
 
   // When the user picks any non-default sort, eagerly drain all
   // continuations so the sort applies to the whole playlist, not just
@@ -194,19 +197,19 @@ function PlaylistPageView() {
   // hammers the InnerTube edge synchronously.
   useEffect(() => {
     if (sortMode === "default" && !normalizedQuery) return;
-    if (!query.hasNextPage) return;
-    if (query.isFetchingNextPage) return;
+    if (!hasNextPage) return;
+    if (isFetchingNextPage) return;
     // Don't keep draining after an error — it would retry every 250 ms.
-    if (query.error) return;
-    const t = setTimeout(() => query.fetchNextPage(), 250);
+    if (queryError) return;
+    const t = setTimeout(() => fetchNextPage(), 250);
     return () => clearTimeout(t);
   }, [
     sortMode,
     normalizedQuery,
-    query.hasNextPage,
-    query.isFetchingNextPage,
-    query.fetchNextPage,
-    query.error,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+    queryError,
   ]);
 
   // Only take over the whole view on error when nothing is loaded yet.
@@ -325,9 +328,7 @@ function PlaylistPageView() {
                 }
               }
         }
-        onShuffle={
-          openedFromArtist ? undefined : () => void shufflePlaylist()
-        }
+        onShuffle={openedFromArtist ? undefined : () => void shufflePlaylist()}
         actions={
           isArtistTopSongs || openedFromArtist ? null : isLikedSongs ? null : (
             <>
@@ -424,7 +425,10 @@ function PlaylistPageView() {
       {/* Suggested additions — YTM only ships this shelf on playlists the
           user owns. Kept out of the main list (its rows are NOT playlist
           members) and hidden while a search filter is active. */}
-      {removal && suggestions && suggestions.tracks.length > 0 && !normalizedQuery ? (
+      {removal &&
+      suggestions &&
+      suggestions.tracks.length > 0 &&
+      !normalizedQuery ? (
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-semibold tracking-tight">

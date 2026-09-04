@@ -15,6 +15,9 @@ export default tseslint.config(
       "src/routeTree.gen.ts",
       "node_modules",
       "scripts",
+      // Detached worktrees checked out by Claude Code: copies of the
+      // same files, which would double every finding.
+      ".claude",
     ],
   },
   js.configs.recommended,
