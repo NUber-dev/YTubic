@@ -7,6 +7,8 @@ type Props = {
   subtitle?: ReactNode;
   metadata?: string;
   thumbnails: YtThumbnail[];
+  /** Artwork the route draws itself, instead of a fetched thumbnail. */
+  cover?: ReactNode;
   round?: boolean;
   onPlay?: () => void;
   onShuffle?: () => void;
@@ -32,6 +34,7 @@ export function EntityHeader({
   subtitle,
   metadata,
   thumbnails,
+  cover,
   round = false,
   onPlay,
   onShuffle,
@@ -49,6 +52,7 @@ export function EntityHeader({
       subtitle,
       metadata,
       thumbnails,
+      cover,
       round,
       onPlay,
       onShuffle,
@@ -58,6 +62,7 @@ export function EntityHeader({
     });
   }, [
     actions,
+    cover,
     metadata,
     keepSubtitleInCompact,
     onPlay,

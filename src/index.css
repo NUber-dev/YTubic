@@ -63,6 +63,16 @@
   --slider-thumb-glow: none;
   --slider-thumb-glow-strong: 0 0 0 3px oklch(0 0 0 / 10%);
 
+  /* The heart on the two glass covers of Liked songs. Those tiles are a
+     translucent overlay, so they take the page's own tone: a white heart
+     on them disappears on a light ground the same way a dark one would
+     in the dark theme. The two opaque gradient covers keep their white
+     heart in both themes. */
+  --liked-heart-glass: rgba(0, 0, 0, 0.46);
+  /* Glow is the one built out of the accent, so on a light ground its
+     heart takes the accent too rather than going flat grey. */
+  --liked-heart-glow: rgba(var(--acc1rgb), 0.92);
+
   /* ------------------------------------------------------------------
      Design-system palette (Claude Design handoff, 2026-08).
 
@@ -244,6 +254,9 @@
   --slider-thumb-glow: 0 0 3px oklch(1 0 0 / 35%), 0 0 8px oklch(1 0 0 / 15%);
   --slider-thumb-glow-strong: 0 0 5px oklch(1 0 0 / 50%),
     0 0 12px oklch(1 0 0 / 25%);
+
+  --liked-heart-glass: rgba(255, 255, 255, 0.92);
+  --liked-heart-glow: rgba(255, 255, 255, 0.92);
 
   /* Dark half of the design-system palette; see the block in :root for
      what the names mean. --acc1 deliberately does not flip -- the accent
@@ -757,26 +770,6 @@
   .bg-cover-noise {
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
     opacity: 0.05;
-  }
-
-  /* Liked songs has no artwork of its own, so it wears a generated
-     cover: the design system's red radial wash with a white heart
-     centred at 52% of the tile. Used at playlist-row size in the
-     sidebar. The hero-sized tile in the design breathes (`likedGlow`),
-     but the mini one is deliberately static — the prototype leaves its
-     animation unset. */
-  .liked-cover {
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white' fill-opacity='0.94'><path d='M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z'/></svg>"),
-      radial-gradient(
-        130% 110% at 22% 12%,
-        #ff5f79,
-        #e8214c 34%,
-        #8e1230 68%,
-        #2a0913
-      );
-    background-position: center, center;
-    background-repeat: no-repeat, no-repeat;
-    background-size: 52% 52%, 140% 118%;
   }
 
   /* Entrance for a release in the What's New window. Keyed on the

@@ -72,6 +72,7 @@ import { IS_BETA_PLATFORM } from "@/lib/platform";
 import { openChannelPicker } from "@/lib/store/channel-picker";
 import { openSettings } from "@/lib/store/settings-dialog";
 import { UpdateBanner } from "@/components/layout/update-banner";
+import { LikedCover } from "@/components/shared/liked-cover";
 import { fetchLibraryPlaylists } from "@/lib/innertube/library";
 import type { ShelfItem } from "@/lib/innertube/types";
 import { pickThumbnail } from "@/components/shared/thumbnail";
@@ -416,12 +417,13 @@ function SidebarPlaylists({
               className={ART_BTN_CLS}
             >
               <Link to="/playlist/$id" params={{ id: LIKED_ID }}>
-                {/* Same tile geometry as a real playlist cover — see
-                    `.liked-cover` in index.css for the artwork. */}
-                <span
-                  aria-hidden
+                {/* Same tile geometry as a real playlist cover; the
+                    artwork itself is whatever the user picked on the
+                    playlist page. */}
+                <LikedCover
                   data-slot="playlist-art"
-                  className="liked-cover size-5 shrink-0 rounded-[5px] outline outline-1 -outline-offset-1 outline-w140"
+                  className="size-5 shrink-0 rounded-[5px]"
+                  heart={52}
                 />
                 <span>Liked songs</span>
               </Link>

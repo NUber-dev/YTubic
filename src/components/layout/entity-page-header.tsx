@@ -127,6 +127,10 @@ export function EntityPageHeader() {
         : infoY + 46 * (titleScale - 1) - 8 * progress;
 
       cover.style.transform = `translate3d(0, ${(compactCoverTop - COVER_TOP) * progress}px, 0) scale(${coverScale})`;
+      // Anything drawn on top of the artwork (the Liked cover picker) is
+      // scaled with it, so it steps aside once the morph is under way
+      // rather than riding along at a third of its size.
+      cover.dataset.compact = progress > 0.2 ? "true" : "false";
       if (!useLargeCompactAvatar) {
         const radius =
           COVER_RADIUS + (COMPACT_COVER_RADIUS - COVER_RADIUS) * progress;
@@ -214,23 +218,25 @@ export function EntityPageHeader() {
     >
       <div
         ref={coverRef}
-        className="pointer-events-auto absolute left-6 top-[18px] size-[148px] origin-top-left"
+        className="group/cover pointer-events-auto absolute left-6 top-[18px] size-[148px] origin-top-left"
         style={{
           willChange: "transform",
           borderRadius: config.round ? undefined : COVER_RADIUS,
         }}
       >
-        <Thumbnail
-          thumbnails={config.thumbnails}
-          alt={config.title}
-          round={config.round}
-          className={cn(
-            "size-full",
-            !config.round && "rounded-[inherit] shadow-lg",
-          )}
-          targetSize={512}
-          highRes
-        />
+        {config.cover ?? (
+          <Thumbnail
+            thumbnails={config.thumbnails}
+            alt={config.title}
+            round={config.round}
+            className={cn(
+              "size-full",
+              !config.round && "rounded-[inherit] shadow-lg",
+            )}
+            targetSize={512}
+            highRes
+          />
+        )}
         <ArtworkOutline
           ref={coverOutlineRef}
           className={config.round ? "rounded-full" : "rounded-[inherit]"}

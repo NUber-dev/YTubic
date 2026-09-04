@@ -13,6 +13,9 @@ export type EntityHeaderConfig = {
   subtitle?: ReactNode;
   metadata?: string;
   thumbnails: YtThumbnail[];
+  /** Rendered in place of the thumbnail, for artwork the app draws
+   *  itself (Liked songs). */
+  cover?: ReactNode;
   round: boolean;
   onPlay?: () => void;
   onShuffle?: () => void;
