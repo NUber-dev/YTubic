@@ -149,6 +149,11 @@ export function SettingsDialog() {
             data-settings-pinned-slot
             className="shrink-0 pl-5 pr-7"
           />
+          {/* scrollbar-gutter stable: the scrollbar's column is reserved
+              even while the tab is short, so a tab growing past the
+              viewport (opening the equaliser) doesn't shift every row
+              left by the scrollbar's width. It also makes the slot's
+              pr-7 above hold for tabs with no pin. */}
           {/* overflow-anchor off: the pinned-toolbar swap removes the
               toolbar's height from this scroller's content while
               adding the same height to the slot above — geometry-
@@ -156,8 +161,9 @@ export function SettingsDialog() {
               the removal and "compensates" scrollTop, which unpins the
               toolbar and loops (scroll-down felt like being thrown
               back up). */}
-          <div className="app-scroll min-w-0 flex-1 overflow-y-auto px-5 pb-[22px] pt-1 [overflow-anchor:none]">
+          <div className="app-scroll min-w-0 flex-1 overflow-y-auto px-5 pb-[22px] pt-1 [overflow-anchor:none] [scrollbar-gutter:stable]">
             {tab === "general" && <GeneralTab />}
+            {tab === "playback" && <PlaybackTab />}
             {tab === "appearance" && <AppearanceTab />}
             {tab === "storage" && <StorageTab />}
             {tab === "integrations" && <IntegrationsTab />}
