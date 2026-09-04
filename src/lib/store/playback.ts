@@ -7,6 +7,7 @@ import {
 import { emit } from "@tauri-apps/api/event";
 import type { ShelfItem, Thumbnail } from "@/lib/innertube/types";
 import { isFloatingPlayerWindow } from "@/lib/floating-player";
+import { usePlaybackSettings } from "./playback-settings";
 import { safeLocalStorage } from "./safe-storage";
 
 export type QueueTrack = {
@@ -399,10 +400,16 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   prev: () => {
     const { queue, index, position } = get();
     if (queue.length === 0) return;
-    // If >3s in OR already on the first track, just rewind. Without the
-    // index===0 guard the old code would set status=loading and re-resolve
-    // the same stream, flashing the loader spinner for no reason.
-    if (index <= 0 || position > 3) {
+    // The Playback tab's "Back button" rule: always step back, always
+    // restart, or (smart) restart once more than N seconds have played.
+    // The first track can only ever rewind. Rewinding goes through
+    // pendingSeek rather than status=loading so the same stream isn't
+    // re-resolved and the loader doesn't flash for no reason.
+    const { backButton, smartBackSeconds } = usePlaybackSettings.getState();
+    const restart =
+      backButton === "restart" ||
+      (backButton === "smart" && position > smartBackSeconds);
+    if (index <= 0 || restart) {
       if (index >= 0) set({ position: 0, pendingSeek: 0 });
       return;
     }
@@ -475,9 +482,11 @@ export const usePlaybackStore = isFloatingPlayerWindow()
         name: "ytm-playback",
         version: 1,
         // Only the user-facing settings + the queue itself are saved.
-        // Volatile fields (position, status, streamUrl, error,
-        // pendingSeek) and `playing` are reset on rehydrate so a fresh
-        // launch never auto-blasts audio at you.
+        // Volatile fields (status, streamUrl, error, pendingSeek) and
+        // `playing` are reset on rehydrate so a fresh launch never
+        // auto-blasts audio at you. `position` is saved too, and kept on
+        // rehydrate only when "Resume where you left off" is on; the audio
+        // engine seeks there once the track's metadata has loaded.
         storage: createJSONStorage(() => createDebouncedStorage()),
         partialize: (s) => ({
           queue: compactPersistedQueue(s.queue, s.index),
@@ -488,11 +497,18 @@ export const usePlaybackStore = isFloatingPlayerWindow()
           queueContinuation: s.queueContinuation,
           volume: s.volume,
           muted: s.muted,
+          position: s.position,
         }),
         onRehydrateStorage: () => (state) => {
           if (!state) return;
           state.playing = false;
-          state.position = 0;
+          const keepPosition =
+            usePlaybackSettings.getState().resumePlayback &&
+            state.index >= 0 &&
+            state.index < state.queue.length &&
+            Number.isFinite(state.position) &&
+            state.position > 0;
+          if (!keepPosition) state.position = 0;
           state.duration = state.queue[state.index]?.duration ?? 0;
           state.status = "idle";
           state.streamUrl = undefined;

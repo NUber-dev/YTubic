@@ -428,7 +428,7 @@ const YT_WEBVIEW_ARGS: &str = "--disable-features=HardwareMediaKeyHandling,Media
 /// mismatch makes `open_player_window` fail and the floating player never
 /// appears. (The first three disabled features are wry's own defaults,
 /// which the conf.json value extends.)
-const APP_WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling,MediaSessionService";
+const APP_WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling,MediaSessionService --autoplay-policy=no-user-gesture-required";
 
 /// Legacy single-account path — kept only for migration. New code
 /// should resolve cookies via `active_cookies_path`.

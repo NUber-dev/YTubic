@@ -69,6 +69,37 @@ Sign out / sign in оставлены контурными: дверь зада�
 - Пикер обложки Liked songs из прототипа (4 пресета + свой URL) не
   переносили — взяли его дефолт «YTubic» как статичный `.liked-cover`.
 
+## Вкладка Playback: подключена к звуку
+
+Все строки вкладки читаются движком (`src/lib/audio-engine.ts`):
+
+- Эквалайзер, моно и нормализация: граф WebAudio в `src/lib/audio-graph.ts`
+  (`createMediaElementSource` -> 9 `BiquadFilter` -> моно-гейн ->
+  компрессор). Строится лениво при первом включении любой из них и
+  остаётся на сессию; пока всё выключено, играет голый `<audio>`.
+  Элементы грузят стрим с `crossOrigin="anonymous"`, CORS на роутере
+  axum уже стоял (`CorsLayer::permissive()`).
+- Кроссфейд: второй `<audio>`; следующий трек подгружается за 8 с до
+  начала перекрытия, дальше equal-power ramp через `volume` обоих
+  элементов. Стор переходит на следующий трек в момент старта фейда.
+- Устройство вывода: `setSinkId` на элементах, а после сборки графа на
+  `AudioContext`. Chromium называет устройства только после доступа к
+  микрофону, поэтому открытие списка один раз просит `getUserMedia` и
+  сразу отпускает поток. На Windows запрос для наших же страниц
+  разрешает Rust (`src-tauri/src/webview_permissions.rs`, обработчик
+  `PermissionRequested`), диалога WebView2 нет.
+- Кнопка «назад»: `prev()` в `store/playback.ts` читает `backButton` и
+  `smartBackSeconds`.
+- Resume: позиция в `partialize`, на rehydrate сохраняется при
+  включённом флаге, движок докручивает `currentTime` на `loadedmetadata`.
+- Главному окну и плавающему плееру добавлен
+  `--autoplay-policy=no-user-gesture-required`, иначе `AudioContext`,
+  созданный до первого клика (эквалайзер включён с прошлой сессии, старт
+  с медиаклавиши), остаётся suspended и молчит.
+- «Duck on short notifications» из вкладки убран: веб-API нет, а со
+  стороны Rust пришлось бы искать аудиосессию дочернего процесса WebView2
+  (IAudioSessionControl2 по PID). Если понадобится, это отдельная задача.
+
 ## Дальше по хендоффу
 
 - [ ] Switch / radio / segmented control и чипы пресетов.

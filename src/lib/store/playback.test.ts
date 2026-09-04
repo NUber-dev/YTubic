@@ -7,11 +7,20 @@ import type { PlaybackState, QueueTrack } from "@/lib/store/playback";
 // persist + localStorage (which isn't available under the node test
 // env). `next()` — the reducer under test — is identical in both
 // variants, so this only sidesteps the storage plumbing.
+// The Playback settings store (read by prev()) persists through
+// localStorage regardless, so give it an in-memory one.
+const mem = new Map<string, string>();
 (globalThis as unknown as { window: unknown }).window = {
   location: { search: "?floating-player" },
+  localStorage: {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, v),
+    removeItem: (k: string) => void mem.delete(k),
+  },
 };
 
 const { usePlaybackStore } = await import("@/lib/store/playback");
+const { usePlaybackSettings } = await import("@/lib/store/playback-settings");
 
 function track(videoId: string): QueueTrack {
   return { videoId, title: videoId, thumbnails: [] };
@@ -164,5 +173,60 @@ describe("album 'Play next' ordering", () => {
       "a3",
       "later",
     ]);
+  });
+});
+
+describe("playback prev()", () => {
+  const rule = (
+    backButton: "previous" | "restart" | "smart",
+    smartBackSeconds = 3,
+  ) => usePlaybackSettings.setState({ backButton, smartBackSeconds });
+
+  const mid = (position: number, index = 1) =>
+    setup({ queue: [track("a"), track("b"), track("c")], index, position });
+
+  it("smart: rewinds once more than the threshold has played", () => {
+    rule("smart", 3);
+    mid(10);
+    usePlaybackStore.getState().prev();
+    expect(usePlaybackStore.getState().index).toBe(1);
+    expect(usePlaybackStore.getState().pendingSeek).toBe(0);
+  });
+
+  it("smart: steps back early in the track", () => {
+    rule("smart", 3);
+    mid(2);
+    usePlaybackStore.getState().prev();
+    expect(usePlaybackStore.getState().index).toBe(0);
+  });
+
+  it("smart: honours the chosen threshold", () => {
+    rule("smart", 5);
+    mid(4);
+    usePlaybackStore.getState().prev();
+    expect(usePlaybackStore.getState().index).toBe(0);
+  });
+
+  it("previous: always steps back, however far in", () => {
+    rule("previous");
+    mid(120);
+    usePlaybackStore.getState().prev();
+    expect(usePlaybackStore.getState().index).toBe(0);
+  });
+
+  it("restart: always rewinds, even at the very start", () => {
+    rule("restart");
+    mid(0.5);
+    usePlaybackStore.getState().prev();
+    expect(usePlaybackStore.getState().index).toBe(1);
+    expect(usePlaybackStore.getState().pendingSeek).toBe(0);
+  });
+
+  it("the first track can only rewind", () => {
+    rule("previous");
+    mid(1, 0);
+    usePlaybackStore.getState().prev();
+    expect(usePlaybackStore.getState().index).toBe(0);
+    expect(usePlaybackStore.getState().pendingSeek).toBe(0);
   });
 });

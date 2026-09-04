@@ -4,6 +4,7 @@ import {
   IconAdjustmentsFilled,
   IconContrastFilled,
   IconDatabaseFilled,
+  IconPlayerPlayFilled,
   IconPuzzleFilled,
   IconX,
 } from "@tabler/icons-react";
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { useUpdateStore } from "@/lib/store/update";
 import { GeneralTab } from "@/components/settings/general-tab";
+import { PlaybackTab } from "@/components/settings/playback-tab";
 import { AppearanceTab } from "@/components/settings/appearance-tab";
 import { StorageTab } from "@/components/settings/storage-tab";
 import { IntegrationsTab } from "@/components/settings/integrations-tab";
@@ -31,6 +33,7 @@ const TABS: {
   icon: ComponentType<{ className?: string }>;
 }[] = [
   { id: "general", label: "General", icon: IconAdjustmentsFilled },
+  { id: "playback", label: "Playback", icon: IconPlayerPlayFilled },
   { id: "appearance", label: "Appearance", icon: IconContrastFilled },
   { id: "storage", label: "Storage", icon: IconDatabaseFilled },
   { id: "integrations", label: "Integrations", icon: IconPuzzleFilled },

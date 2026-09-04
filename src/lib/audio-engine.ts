@@ -10,7 +10,9 @@ import { getLikedIdsSet } from "@/components/shared/like-buttons";
 import { toggleLiked } from "@/lib/like-actions";
 import { fetchRadio, fetchWatchQueueContinuation } from "@/lib/innertube/radio";
 import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
+import { AudioGraph, canSelectOutputDevice } from "@/lib/audio-graph";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
+import { eqGains, usePlaybackSettings } from "@/lib/store/playback-settings";
 import { usePremiumStore } from "@/lib/store/premium";
 import { useSettingsStore } from "@/lib/store/settings";
 import { openPremiumGate } from "@/lib/store/premium-gate";
@@ -30,10 +32,62 @@ import { IS_MAC } from "@/lib/platform";
  * through `navigator.mediaSession` and skip souvlaki entirely — without that, a
  * bare <audio> element leaves next/previous unhandled and the keys do nothing.
  *
- * Mount this hook once, near the root. It owns the <audio> element's lifecycle.
+ * Two <audio> elements exist, one active and one standby. Crossfade
+ * preloads the next track on the standby element a few seconds before the
+ * end, then ramps the two against each other and swaps roles; the store
+ * moves to the next track the moment the fade starts, so everything
+ * downstream (SMTC, scrobbling, prefetch) sees an ordinary track change.
+ * The equaliser, mono and normalisation live in an AudioGraph built on
+ * first use (see src/lib/audio-graph.ts).
+ *
+ * Mount this hook once, near the root. It owns the <audio> elements' lifecycle.
  */
+
+/** Start loading the next track this long before the crossfade begins. */
+const CROSSFADE_PRELOAD_LEAD_SEC = 8;
+/** Fade ramp resolution. */
+const CROSSFADE_TICK_MS = 40;
+
+/** The next track, loading or loaded on the standby element. */
+type PendingNext = {
+  index: number;
+  streamVideoId: string;
+  el: HTMLAudioElement;
+  src?: string;
+};
+
+/** The in-progress ramp between the outgoing and the incoming element. */
+type Fade = {
+  from: HTMLAudioElement;
+  to: HTMLAudioElement;
+  timer: number;
+};
+
+/** Perceived-loudness curve for the volume slider (see the volume effect). */
+const elementVolume = (volume: number) => Math.max(0, Math.min(1, volume)) ** 3;
+
 export function useAudioEngine() {
+  // The element currently owning playback; `audioRef` keeps the name the
+  // effects below were written against.
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const standbyRef = useRef<HTMLAudioElement | null>(null);
+  const graphRef = useRef<AudioGraph | null>(null);
+  const pendingRef = useRef<PendingNext | null>(null);
+  const fadeRef = useRef<Fade | null>(null);
+  // Set when a crossfade moves the store to the next track: the resolve
+  // effect then adopts the already-playing element instead of reloading.
+  const adoptRef = useRef<{
+    index: number;
+    streamVideoId: string;
+    src: string;
+  } | null>(null);
+  // "Resume where you left off": the position the store kept from the
+  // last session, applied once to the matching track's first load.
+  const resumeRef = useRef<{
+    videoId: string;
+    index: number;
+    seconds: number;
+  } | null>(null);
   // Guard against stale stream resolutions when the user skips mid-fetch.
   const resolveTokenRef = useRef(0);
   // Counts how many tracks have failed in a row without a successful
@@ -53,39 +107,235 @@ export function useAudioEngine() {
   // thumbnail toolbar's heart, and written when that heart is clicked.
   const queryClient = useQueryClient();
 
-  // Ensure a single <audio> element exists.
+  // Ensure the pair of <audio> elements exists.
   useEffect(() => {
     if (audioRef.current) return;
-    const el = new Audio();
-    el.preload = "auto";
-    // Note: do NOT set crossOrigin — googlevideo.com doesn't return CORS
-    // headers, and setting it makes the media fail to load in the webview.
-    audioRef.current = el;
+    const make = () => {
+      const el = new Audio();
+      el.preload = "auto";
+      // Streams come from our own axum server (streamUrlFor), which
+      // answers with CORS headers, so the element can be read by the
+      // WebAudio graph. Without this the graph would play silence.
+      el.crossOrigin = "anonymous";
+      return el;
+    };
+    const a = make();
+    const b = make();
+    audioRef.current = a;
+    standbyRef.current = b;
+    {
+      const s = usePlaybackStore.getState();
+      const t = s.index >= 0 ? s.queue[s.index] : undefined;
+      if (
+        t &&
+        s.position > 0 &&
+        usePlaybackSettings.getState().resumePlayback
+      ) {
+        resumeRef.current = {
+          videoId: t.videoId,
+          index: s.index,
+          seconds: s.position,
+        };
+      }
+    }
     return () => {
-      el.pause();
-      el.src = "";
+      for (const el of [a, b]) {
+        el.pause();
+        el.src = "";
+      }
       audioRef.current = null;
+      standbyRef.current = null;
     };
   }, []);
 
-  // Wire element → store events.
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    const store = usePlaybackStore.getState;
+  /** Drop whatever the standby element was preloading. */
+  const clearPending = () => {
+    const p = pendingRef.current;
+    if (!p) return;
+    pendingRef.current = null;
+    p.el.removeAttribute("src");
+    p.el.load();
+  };
 
-    const onTimeUpdate = () => {
-      store().setPosition(el.currentTime);
+  /** Stop a running fade: silence the outgoing element, restore the
+   *  incoming one to full volume. */
+  const cancelFade = () => {
+    const f = fadeRef.current;
+    if (!f) return;
+    fadeRef.current = null;
+    window.clearInterval(f.timer);
+    f.from.pause();
+    f.from.removeAttribute("src");
+    f.from.load();
+    f.to.volume = elementVolume(usePlaybackStore.getState().volume);
+  };
+
+  /** Build the WebAudio graph on first need and route both elements
+   *  through it. One-way: elements cannot be detached again. */
+  const ensureGraph = (): AudioGraph | null => {
+    if (graphRef.current) return graphRef.current;
+    if (typeof AudioContext === "undefined") return null;
+    try {
+      const g = new AudioGraph();
+      graphRef.current = g;
+      for (const el of [audioRef.current, standbyRef.current]) {
+        if (el) g.attach(el);
+      }
+      return g;
+    } catch (e) {
+      if (import.meta.env.DEV) console.error("[audio] graph failed:", e);
+      return null;
+    }
+  };
+
+  // Wire element → store events. Both elements are listened to; events
+  // from the one that isn't active belong to a crossfade preload (or the
+  // tail of a track fading out) and are handled separately.
+  useEffect(() => {
+    const a = audioRef.current;
+    const b = standbyRef.current;
+    if (!a || !b) return;
+    const store = usePlaybackStore.getState;
+    const isActive = (e: Event) => e.currentTarget === audioRef.current;
+
+    /**
+     * Crossfade driver, run on every timeupdate of the active element.
+     * Two thresholds: preload the next track on the standby element a
+     * little ahead, then, once it has buffered, start the ramp.
+     */
+    const maybeCrossfade = (el: HTMLAudioElement) => {
+      const cf = usePlaybackSettings.getState().crossfadeSec;
+      if (cf <= 0 || fadeRef.current) return;
+      const s = store();
+      const nextIndex = s.index + 1;
+      // Only a plain step to the next queued track is crossfaded; repeat
+      // wraps and single-track loops go through `ended` as before.
+      if (!s.playing || s.repeat === "one" || nextIndex >= s.queue.length) {
+        return;
+      }
+      const dur = el.duration;
+      if (!Number.isFinite(dur) || dur <= 0) return;
+      const remaining = dur - el.currentTime;
+      const nextTrack = s.queue[nextIndex];
+      const nextStreamId = resolveStreamId(
+        nextTrack.videoId,
+        useTrackSourceStore.getState().byVideoId,
+      );
+
+      const pending = pendingRef.current;
+      if (
+        pending &&
+        (pending.index !== nextIndex || pending.streamVideoId !== nextStreamId)
+      ) {
+        clearPending();
+      }
+
+      if (!pendingRef.current && remaining <= cf + CROSSFADE_PRELOAD_LEAD_SEC) {
+        const standby = standbyRef.current;
+        // Same gate as the resolve effect: no stream without Premium.
+        if (!standby || usePremiumStore.getState().status !== "premium") {
+          return;
+        }
+        const p: PendingNext = {
+          index: nextIndex,
+          streamVideoId: nextStreamId,
+          el: standby,
+        };
+        pendingRef.current = p;
+        streamUrlFor(nextStreamId)
+          .then((src) => {
+            if (pendingRef.current !== p) return;
+            p.src = src;
+            standby.src = src;
+            standby.load();
+          })
+          .catch(() => {
+            if (pendingRef.current === p) pendingRef.current = null;
+          });
+        return;
+      }
+
+      const ready = pendingRef.current;
+      if (
+        ready?.src &&
+        remaining <= cf &&
+        ready.el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
+      ) {
+        startCrossfade(el, ready, cf);
+      }
     };
-    const onDurationChange = () => {
+
+    const startCrossfade = (
+      from: HTMLAudioElement,
+      next: PendingNext,
+      seconds: number,
+    ) => {
+      const to = next.el;
+      pendingRef.current = null;
+      to.muted = store().muted;
+      to.volume = 0;
+      // Swap roles first so the incoming element's `playing` counts as
+      // the active one, then tell the store, whose track change the
+      // resolve effect below recognises via adoptRef and leaves alone.
+      audioRef.current = to;
+      standbyRef.current = from;
+      adoptRef.current = {
+        index: next.index,
+        streamVideoId: next.streamVideoId,
+        src: next.src ?? "",
+      };
+      store().next();
+      graphRef.current?.resume();
+      void to.play().catch(() => {});
+
+      const started = performance.now();
+      const ms = seconds * 1000;
+      const timer = window.setInterval(() => {
+        const base = elementVolume(store().volume);
+        const t = Math.min(1, (performance.now() - started) / ms);
+        // Equal-power ramp: the sum of the two stays at a steady loudness.
+        from.volume = base * Math.cos((t * Math.PI) / 2);
+        to.volume = base * Math.sin((t * Math.PI) / 2);
+        if (t >= 1) cancelFade();
+      }, CROSSFADE_TICK_MS);
+      fadeRef.current = { from, to, timer };
+    };
+
+    const onTimeUpdate = (e: Event) => {
+      if (!isActive(e)) return;
+      const el = e.currentTarget as HTMLAudioElement;
+      store().setPosition(el.currentTime);
+      maybeCrossfade(el);
+    };
+    const onDurationChange = (e: Event) => {
+      if (!isActive(e)) return;
+      const el = e.currentTarget as HTMLAudioElement;
       if (Number.isFinite(el.duration) && el.duration > 0) {
         store().setDuration(el.duration);
       }
     };
-    const onEnded = () => {
+    const onEnded = (e: Event) => {
+      // The outgoing half of a crossfade ends on its own; the store has
+      // already moved on.
+      if (!isActive(e)) return;
       store().next();
     };
-    const onError = () => {
+    const onError = (e: Event) => {
+      const el = e.currentTarget as HTMLAudioElement;
+      if (!isActive(e)) {
+        // A preload that failed just means no crossfade for this
+        // transition: the track is resolved afresh when it's due.
+        if (pendingRef.current?.el === el) {
+          pendingRef.current = null;
+          if (import.meta.env.DEV) {
+            console.warn(
+              "[audio] crossfade preload failed:",
+              el.error?.message,
+            );
+          }
+        }
+        return;
+      }
       const mediaErr = el.error;
       const codeLabels: Record<number, string> = {
         1: "MEDIA_ERR_ABORTED",
@@ -140,7 +390,8 @@ export function useAudioEngine() {
         s.setPlaying(false);
       }
     };
-    const onPlaying = () => {
+    const onPlaying = (e: Event) => {
+      if (!isActive(e)) return;
       consecutiveErrorsRef.current = 0;
       // Track played successfully — allow a fresh auto-retry if it later
       // fails again (e.g. a mid-stream drop on a much later replay).
@@ -151,19 +402,23 @@ export function useAudioEngine() {
       // buffering — keep status as ready; don't flip to loading on every gap.
     };
 
-    el.addEventListener("timeupdate", onTimeUpdate);
-    el.addEventListener("durationchange", onDurationChange);
-    el.addEventListener("ended", onEnded);
-    el.addEventListener("error", onError);
-    el.addEventListener("playing", onPlaying);
-    el.addEventListener("waiting", onWaiting);
+    for (const el of [a, b]) {
+      el.addEventListener("timeupdate", onTimeUpdate);
+      el.addEventListener("durationchange", onDurationChange);
+      el.addEventListener("ended", onEnded);
+      el.addEventListener("error", onError);
+      el.addEventListener("playing", onPlaying);
+      el.addEventListener("waiting", onWaiting);
+    }
     return () => {
-      el.removeEventListener("timeupdate", onTimeUpdate);
-      el.removeEventListener("durationchange", onDurationChange);
-      el.removeEventListener("ended", onEnded);
-      el.removeEventListener("error", onError);
-      el.removeEventListener("playing", onPlaying);
-      el.removeEventListener("waiting", onWaiting);
+      for (const el of [a, b]) {
+        el.removeEventListener("timeupdate", onTimeUpdate);
+        el.removeEventListener("durationchange", onDurationChange);
+        el.removeEventListener("ended", onEnded);
+        el.removeEventListener("error", onError);
+        el.removeEventListener("playing", onPlaying);
+        el.removeEventListener("waiting", onWaiting);
+      }
     };
   }, []);
 
@@ -193,6 +448,32 @@ export function useAudioEngine() {
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
+    // A crossfade already has this track playing on the (now active)
+    // element: adopt it rather than reloading. The outgoing element keeps
+    // fading in the background.
+    const adopt = adoptRef.current;
+    adoptRef.current = null;
+    if (
+      adopt &&
+      streamVideoId &&
+      adopt.index === index &&
+      adopt.streamVideoId === streamVideoId
+    ) {
+      const st = usePlaybackStore.getState();
+      st.setStreamUrl(adopt.src);
+      st.setStatus("ready");
+      if (Number.isFinite(el.duration) && el.duration > 0) {
+        st.setDuration(el.duration);
+      }
+      void saveTrackMeta(
+        streamVideoId,
+        st.index >= 0 ? st.queue[st.index] : undefined,
+      );
+      return;
+    }
+    // Any other track change ends a fade and discards the preload.
+    cancelFade();
+    clearPending();
     // Stop the previous track immediately. Without this the old src keeps
     // playing through the streamUrlFor() round-trip (~50–500 ms), so the
     // user hears the tail of track A bleed into the start of track B.
@@ -256,7 +537,25 @@ export function useAudioEngine() {
         el.src = src;
         usePlaybackStore.getState().setStreamUrl(src);
         el.load();
+        // First load of the track the last session ended on: pick up
+        // where it left off once the element knows its duration.
+        const resume = resumeRef.current;
+        resumeRef.current = null;
+        if (resume && resume.videoId === videoId && resume.index === index) {
+          el.addEventListener(
+            "loadedmetadata",
+            () => {
+              if (token !== resolveTokenRef.current) return;
+              const dur = el.duration;
+              if (Number.isFinite(dur) && resume.seconds < dur - 1) {
+                el.currentTime = resume.seconds;
+              }
+            },
+            { once: true },
+          );
+        }
         if (usePlaybackStore.getState().playing) {
+          graphRef.current?.resume();
           void el.play().catch((e) => {
             // AbortError is what we get when a pending play() is
             // interrupted by a new load (e.g. user clicked the next
@@ -304,11 +603,15 @@ export function useAudioEngine() {
     }
     if (!el.src) return;
     if (playing) {
+      graphRef.current?.resume();
       void el.play().catch((e) => {
         if (e?.name === "AbortError") return;
         usePlaybackStore.getState().setStatus("error", e?.message ?? String(e));
       });
     } else {
+      // Pausing mid-fade cuts the outgoing track rather than leaving it
+      // to keep playing on its own.
+      cancelFade();
       el.pause();
     }
   }, [playing, premiumOk]);
@@ -323,10 +626,66 @@ export function useAudioEngine() {
     // is logarithmic — a linear slider crams almost all the perceivable
     // change into the bottom ~20% and 20–100% sounds nearly identical.
     // Apply a cubic curve so the slider tracks perceived loudness.
-    const clamped = Math.max(0, Math.min(1, volume));
-    el.volume = clamped ** 3;
+    // During a crossfade the ramp owns both elements' volumes and reads
+    // the store's value on every tick, so only mute is applied here.
+    if (!fadeRef.current) el.volume = elementVolume(volume);
     el.muted = muted;
+    const standby = standbyRef.current;
+    if (standby) standby.muted = muted;
   }, [volume, muted]);
+
+  // Equaliser, mono and normalisation follow the Playback settings. The
+  // graph is built the first time any of them is switched on (or an output
+  // device is chosen) and stays for the session; while all are off it is
+  // never built, so a plain <audio> path remains the default.
+  const { eqEnabled, eqPreset, eqCustomGains, monoAudio, normalizeVolume } =
+    usePlaybackSettings(
+      useShallow((s) => ({
+        eqEnabled: s.eqEnabled,
+        eqPreset: s.eqPreset,
+        eqCustomGains: s.eqCustomGains,
+        monoAudio: s.monoAudio,
+        normalizeVolume: s.normalizeVolume,
+      })),
+    );
+  const outputDeviceId = usePlaybackSettings((s) => s.outputDeviceId);
+  const wantsGraph =
+    eqEnabled || monoAudio || normalizeVolume || outputDeviceId !== "";
+  useEffect(() => {
+    const g = wantsGraph ? ensureGraph() : graphRef.current;
+    if (!g) return;
+    g.setEq(eqEnabled, eqGains({ eqPreset, eqCustomGains }));
+    g.setMono(monoAudio);
+    g.setNormalize(normalizeVolume);
+    if (usePlaybackStore.getState().playing) g.resume();
+  }, [
+    wantsGraph,
+    eqEnabled,
+    eqPreset,
+    eqCustomGains,
+    monoAudio,
+    normalizeVolume,
+  ]);
+
+  // Output device. Once the graph exists the context is what renders, so
+  // the sink is set there; before that, on the elements themselves. A
+  // device that has gone away rejects and playback stays on the default.
+  useEffect(() => {
+    if (!canSelectOutputDevice()) return;
+    const g = graphRef.current;
+    const apply = g
+      ? g.setSinkId(outputDeviceId)
+      : Promise.all(
+          [audioRef.current, standbyRef.current].map((el) =>
+            el ? el.setSinkId(outputDeviceId) : Promise.resolve(),
+          ),
+        );
+    void apply.catch((e) => {
+      if (import.meta.env.DEV) console.warn("[audio] setSinkId failed:", e);
+    });
+    // `wantsGraph` so the sink is re-applied on the context the moment the
+    // graph takes over rendering from the elements.
+  }, [outputDeviceId, wantsGraph]);
 
   // Handle seek requests.
   const pendingSeek = usePlaybackStore((s) => s.pendingSeek);
@@ -345,6 +704,7 @@ export function useAudioEngine() {
     // the element is paused, so seeking to 0 alone leaves it silent. Resume
     // here when the store wants playback but the element is paused.
     if (usePlaybackStore.getState().playing && el.paused && el.src) {
+      graphRef.current?.resume();
       void el.play().catch((e) => {
         if (e?.name === "AbortError") return;
         usePlaybackStore.getState().setStatus("error", e?.message ?? String(e));
