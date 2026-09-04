@@ -86,18 +86,6 @@ export function AppearanceTab() {
             />
           }
         />
-        <SettingRow
-          icon={IconLayoutFilled}
-          title="Player layout"
-          description="Choose where the now-playing card lives."
-          control={
-            <SegmentedControl
-              value={layoutMode}
-              onChange={setLayoutMode}
-              options={LAYOUT_OPTIONS}
-            />
-          }
-        />
         <InterfaceFontRow />
         {/* Two values, so the design gives this one a switch rather
             than a two-up segmented control. */}
@@ -122,6 +110,18 @@ export function AppearanceTab() {
               value={rating}
               onChange={setRating}
               options={RATING_OPTIONS}
+            />
+          }
+        />
+        <SettingRow
+          icon={IconLayoutFilled}
+          title="Player layout"
+          description="Choose where the now-playing card lives."
+          control={
+            <SegmentedControl
+              value={layoutMode}
+              onChange={setLayoutMode}
+              options={LAYOUT_OPTIONS}
             />
           }
         />
