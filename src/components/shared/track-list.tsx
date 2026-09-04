@@ -10,6 +10,7 @@ import {
   type PlaylistRemovalContext,
 } from "@/components/shared/track-context-menu";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
+import { useSettingsStore } from "@/lib/store/settings";
 import { cn } from "@/lib/utils";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useTrackSourceStore } from "@/lib/store/track-source";
@@ -143,6 +144,8 @@ export function TrackList({
   });
 
   const showAlbum = !hideAlbum && tracks.some((t) => t.album);
+  // Thumbs up + thumbs down + more is three buttons, the heart two.
+  const wideActions = useSettingsStore((s) => s.ratingButtons === "both");
 
   // Grid template shared by the header row and every track row so the
   // columns line up in a real "table" layout.
@@ -156,7 +159,7 @@ export function TrackList({
     "minmax(0,1fr)", // ARTIST
     showAlbum ? "minmax(0,1fr)" : null, // ALBUM
     showPlays ? "5rem" : "3.5rem", // DURATION or PLAYS — plays is wider
-    "4rem", // ACTIONS (heart + more)
+    wideActions ? "5.75rem" : "4rem", // ACTIONS (rating buttons + more)
   ]
     .filter(Boolean)
     .join(" ");

@@ -63,15 +63,14 @@ import { fetchLikedSongs } from "@/lib/innertube/library";
 import {
   addToPlaylist,
   createPlaylistWithTrack,
-  dislikeTrack,
   fetchUserPlaylists,
   removeFromPlaylist,
   type UserPlaylist,
 } from "@/lib/innertube/mutations";
-import { toggleLiked } from "@/lib/like-actions";
+import { toggleDisliked, toggleLiked } from "@/lib/like-actions";
+import { useSettingsStore } from "@/lib/store/settings";
 import { usePlaybackStore } from "@/lib/store/playback";
 import type { ShelfItem } from "@/lib/innertube/types";
-import { syncLastfmLove } from "@/lib/lastfm";
 
 type TrackContext = { tracks: ShelfItem[]; index: number };
 
@@ -165,12 +164,13 @@ export function useTrackMenuController(item: ShelfItem) {
   };
   const runDislike = async () => {
     try {
-      await dislikeTrack(item.id);
-      qc.setQueryData<ShelfItem[]>(["liked-songs"], (old) =>
-        (old ?? []).filter((t) => t.id !== item.id),
-      );
-      toast.success("Marked as not interested");
-      syncLastfmLove(item, false);
+      await toggleDisliked({
+        queryClient: qc,
+        videoId: item.id,
+        wasDisliked: false,
+        wasLiked: isLiked,
+        track: item,
+      });
     } catch (e) {
       toast.error(`Failed: ${String(e)}`);
     }
@@ -257,6 +257,8 @@ export function TrackMenuItems({
 }) {
   const store = usePlaybackStore.getState;
   const { Item, Separator, Sub, SubTrigger, SubContent } = primitives;
+  // With thumbs on every row the rating items would only repeat them.
+  const thumbs = useSettingsStore((s) => s.ratingButtons === "both");
   const {
     isLiked,
     playlists,
@@ -307,21 +309,25 @@ export function TrackMenuItems({
 
       <Separator />
 
-      {isLiked ? (
-        <Item variant="destructive" onSelect={runRemoveRating}>
-          <IconHeartOffFilled />
-          Remove from liked
-        </Item>
-      ) : (
-        <Item onSelect={runLike}>
-          <IconHeartFilled />
-          Add to liked
-        </Item>
+      {thumbs ? null : (
+        <>
+          {isLiked ? (
+            <Item variant="destructive" onSelect={runRemoveRating}>
+              <IconHeartOffFilled />
+              Remove from liked
+            </Item>
+          ) : (
+            <Item onSelect={runLike}>
+              <IconHeartFilled />
+              Add to liked
+            </Item>
+          )}
+          <Item onSelect={runDislike}>
+            <IconThumbDownFilled />
+            Not interested
+          </Item>
+        </>
       )}
-      <Item onSelect={runDislike}>
-        <IconThumbDownFilled />
-        Not interested
-      </Item>
 
       <Sub>
         <SubTrigger

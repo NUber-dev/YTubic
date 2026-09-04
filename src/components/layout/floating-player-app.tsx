@@ -3,6 +3,7 @@ import { ThemeProvider } from "next-themes";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { persistQueryClientRestore } from "@tanstack/react-query-persist-client";
 import { PinIcon } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
@@ -15,13 +16,11 @@ import {
   currentTrack,
   initFloatingPlaybackBridge,
 } from "@/lib/store/playback";
-import {
-  initFloatingTrackSourceBridge,
-} from "@/lib/store/track-source";
+import { initFloatingTrackSourceBridge } from "@/lib/store/track-source";
 import { useLayoutStore } from "@/lib/store/layout";
 import { useSettingsStore } from "@/lib/store/settings";
 import { cn } from "@/lib/utils";
-import { queryClient } from "@/lib/query-client";
+import { PERSIST_MAX_AGE, persister, queryClient } from "@/lib/query-client";
 
 // Wire the store's user-facing actions to emit Tauri events instead of
 // mutating local state directly — only the main window's audio engine
@@ -43,6 +42,27 @@ export default function FloatingPlayerApp() {
   // cross-window `storage` listener in the settings store keeps it
   // live when toggled over there.
   const background = useSettingsStore((s) => s.background);
+  // Read the main window's persisted query cache once, so the liked
+  // list (7+ continuation round-trips when fetched cold) is there
+  // before the heart first renders. Restore only: subscribing would
+  // write this window's tiny cache over the main window's.
+  const [restored, setRestored] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    persistQueryClientRestore({
+      queryClient,
+      persister,
+      maxAge: PERSIST_MAX_AGE,
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setRestored(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!restored) return null;
   return (
     <ThemeProvider
       attribute="class"
@@ -54,8 +74,8 @@ export default function FloatingPlayerApp() {
       {/* Plain (non-persisting) provider: the floating window is a separate
           JS context that would otherwise write its own cache into the shared
           `ytubic-query-cache` key — clobbering the main window and
-          resurrecting a previous account's data after a switch. It only
-          mirrors live playback via events, so it needs no cold-start cache. */}
+          resurrecting a previous account's data after a switch. The cache
+          is hydrated from disk once above, read-only. */}
       <QueryClientProvider client={queryClient}>
         <TooltipProvider delayDuration={800} skipDelayDuration={0}>
           <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-background">
