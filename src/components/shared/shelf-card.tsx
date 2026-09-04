@@ -49,6 +49,7 @@ import {
   useIsPinned,
   usePinnedPlaylistsStore,
 } from "@/lib/store/pinned-playlists";
+import { ExplicitBadge } from "@/components/shared/explicit-badge";
 import type { ShelfItem } from "@/lib/innertube/types";
 
 type Props = {
@@ -205,15 +206,7 @@ export function ShelfCard({ item, className }: Props) {
           )}
         >
           <span className="truncate text-sm font-medium">{item.title}</span>
-          {item.explicit ? (
-            <span
-              title="Explicit"
-              aria-label="Explicit"
-              className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] font-bold leading-none text-muted-foreground"
-            >
-              E
-            </span>
-          ) : null}
+          {item.explicit ? <ExplicitBadge /> : null}
         </div>
         {subtitle ? (
           <span
@@ -241,7 +234,7 @@ export function ShelfCard({ item, className }: Props) {
         params={{ id: item.id }}
         search={{ p: item.categoryParams ?? "", t: item.title }}
         className={cn(
-          "group relative flex h-14 w-full items-center gap-3 overflow-hidden rounded-lg border-l-4 bg-white/5 px-3 transition-transform hover:scale-[1.01] active:scale-[0.99]",
+          "group relative flex h-14 w-full items-center gap-3 overflow-hidden rounded-lg border-l-4 bg-w050 px-3 transition-transform hover:scale-[1.01] active:scale-[0.99]",
           className,
         )}
         style={{ borderLeftColor: tint }}
@@ -257,10 +250,10 @@ export function ShelfCard({ item, className }: Props) {
           className="relative z-10 size-5 shrink-0"
           style={{ color: tint }}
         />
-        <span className="relative z-10 min-w-0 flex-1 truncate text-sm font-medium text-white">
+        <span className="relative z-10 min-w-0 flex-1 truncate text-sm font-medium text-t1">
           {item.title}
         </span>
-        <ChevronRightIcon className="relative z-10 size-4 shrink-0 text-white/40" />
+        <ChevronRightIcon className="relative z-10 size-4 shrink-0 text-t7" />
         <ArtworkOutline className="rounded-lg" />
       </Link>
     );

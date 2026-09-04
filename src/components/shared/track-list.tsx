@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useTrackSourceStore } from "@/lib/store/track-source";
 import type { ShelfItem } from "@/lib/innertube/types";
+import { ExplicitBadge } from "@/components/shared/explicit-badge";
 
 type Props = {
   tracks: ShelfItem[];
@@ -70,18 +71,6 @@ function formatPlays(text?: string): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
-}
-
-function ExplicitBadge() {
-  return (
-    <span
-      title="Explicit"
-      aria-label="Explicit"
-      className="inline-flex size-4 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] font-bold leading-none text-muted-foreground"
-    >
-      E
-    </span>
-  );
 }
 
 function VideoSourceBadge() {
@@ -311,7 +300,7 @@ const TrackRow = memo(function TrackRow({
       style={{ gridTemplateColumns: gridTemplate }}
       className={cn(
         "group grid cursor-pointer items-center gap-3 rounded-lg p-2 transition-colors",
-        isActive ? "bg-black/25" : "hover:bg-accent/60",
+        isActive ? "bg-black/10 dark:bg-black/25" : "hover:bg-accent/60",
       )}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest("a")) return;
