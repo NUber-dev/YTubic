@@ -74,6 +74,7 @@ import { openSettings } from "@/lib/store/settings-dialog";
 import { UpdateBanner } from "@/components/layout/update-banner";
 import { fetchLibraryPlaylists } from "@/lib/innertube/library";
 import type { ShelfItem } from "@/lib/innertube/types";
+import { pickThumbnail } from "@/components/shared/thumbnail";
 import { resetInnertube } from "@/lib/innertube/client";
 import { accountSlot } from "@/lib/auth-presence";
 import { usePremiumStore } from "@/lib/store/premium";
@@ -241,10 +242,37 @@ type PlaylistRow = {
   pinned: boolean;
 };
 
-// Sidebar thumbnails render at 16px, so the largest source (last in the
-// list) is fine — the browser downscales it.
+// Sidebar thumbnails render at 20px. Ask for the smallest source that
+// still covers a retina row instead of the largest one the API shipped:
+// a 1000px cover for a 20px square is pure waste, and the extra weight
+// is what pushes the Google CDNs into rate-limiting the row.
 function pickThumb(item: ShelfItem): string | undefined {
-  return item.thumbnails[item.thumbnails.length - 1]?.url;
+  return pickThumbnail(item.thumbnails, 48) ?? undefined;
+}
+
+/**
+ * Sidebar playlist art. Falls back to the generic playlist glyph when
+ * the CDN refuses the image, so a throttled cover leaves an icon rather
+ * than an empty square. `no-referrer` is required: with the webview's
+ * `Referer: http://localhost:1420/` attached, lh3/yt3 intermittently
+ * answer with an HTML error page that Chromium then CORB-blocks, and
+ * the row silently loses its cover. Same reasoning as `Thumbnail`.
+ */
+function PlaylistArt({ src }: { src?: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  if (!src || failed) return <IconPlaylist />;
+  return (
+    <img
+      src={src}
+      alt=""
+      className="size-5 shrink-0 rounded-[5px] object-cover outline outline-1 -outline-offset-1 outline-w140"
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 /**
@@ -411,16 +439,7 @@ function SidebarPlaylists({
                     className={ART_BTN_CLS}
                   >
                     <Link to="/playlist/$id" params={{ id: p.id }}>
-                      {p.thumbnailUrl ? (
-                        <img
-                          src={p.thumbnailUrl}
-                          alt=""
-                          className="size-5 shrink-0 rounded-[5px] object-cover outline outline-1 -outline-offset-1 outline-w140"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <IconPlaylist />
-                      )}
+                      <PlaylistArt src={p.thumbnailUrl} />
                       <span className="min-w-0 flex-1 truncate">{p.title}</span>
                       {/* Subtle marker so the pinned/unpinned boundary is
                           legible — pinning's only visible effect is the
