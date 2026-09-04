@@ -1,8 +1,13 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { likeTrack, removeRating } from "@/lib/innertube/mutations";
+import {
+  dislikeTrack,
+  likeTrack,
+  removeRating,
+} from "@/lib/innertube/mutations";
 import type { ShelfItem } from "@/lib/innertube/types";
 import { syncLastfmLove, type LastfmTrackMeta } from "@/lib/lastfm";
+import { useDislikesStore } from "@/lib/store/dislikes";
 
 // Patch the cached liked-songs list optimistically. The server is the
 // source of truth, but `["liked-songs"]` is `enabled: false` in the
@@ -38,6 +43,8 @@ export async function toggleLiked({
     await removeRating(videoId);
   } else {
     await likeTrack(videoId);
+    // A like replaces a dislike on the server; mirror that locally.
+    useDislikesStore.getState().remove(videoId);
   }
 
   // A cold-start membership fetch may have captured the list before this
@@ -86,4 +93,45 @@ export async function toggleLiked({
       typeof q.queryKey[1] === "string" &&
       (q.queryKey[1] as string).includes("LM"),
   });
+}
+
+/**
+ * Dislike a track, or clear the dislike again. The server treats a
+ * dislike as replacing any like, so the liked-list cache is patched the
+ * same way an unlike is; the dislike itself is remembered in
+ * `store/dislikes.ts` (see there for why it's local).
+ */
+export async function toggleDisliked({
+  queryClient,
+  videoId,
+  wasDisliked,
+  wasLiked,
+  track,
+}: {
+  queryClient: QueryClient;
+  videoId: string;
+  wasDisliked: boolean;
+  wasLiked: boolean;
+  track?: LastfmTrackMeta;
+}): Promise<void> {
+  const dislikes = useDislikesStore.getState();
+  if (wasDisliked) {
+    await removeRating(videoId);
+    dislikes.remove(videoId);
+    toast.success("Dislike removed");
+    return;
+  }
+  await dislikeTrack(videoId);
+  dislikes.add(videoId);
+  if (wasLiked) {
+    await queryClient.cancelQueries({ queryKey: ["liked-songs"], exact: true });
+    queryClient.setQueryData<ShelfItem[]>(["liked-songs"], (old) =>
+      (old ?? []).filter((t) => t.id !== videoId),
+    );
+    syncLastfmLove(track, false);
+    void queryClient.invalidateQueries({
+      queryKey: ["library", "liked-songs-pages"],
+    });
+  }
+  toast.success("Disliked");
 }

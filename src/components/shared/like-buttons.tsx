@@ -1,12 +1,14 @@
 import { useState, type MouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { HeartIcon } from "lucide-react";
+import { HeartIcon, ThumbsDownIcon, ThumbsUpIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { fetchLikedSongs } from "@/lib/innertube/library";
 import type { ShelfItem } from "@/lib/innertube/types";
-import { toggleLiked } from "@/lib/like-actions";
+import { toggleDisliked, toggleLiked } from "@/lib/like-actions";
 import { type LastfmTrackMeta } from "@/lib/lastfm";
+import { useDislikesStore } from "@/lib/store/dislikes";
+import { useSettingsStore } from "@/lib/store/settings";
 import { cn } from "@/lib/utils";
 
 // Module-level memo of the liked-id Set. With ~5k liked tracks and ~100
@@ -48,7 +50,10 @@ export function LikeDislikeButtons({
   hideUnlessLiked,
 }: Props) {
   const qc = useQueryClient();
-  const [busy, setBusy] = useState<"like" | null>(null);
+  const [busy, setBusy] = useState<"like" | "dislike" | null>(null);
+  // Appearance -> Rating buttons: a heart, or thumbs up + thumbs down.
+  const both = useSettingsStore((s) => s.ratingButtons === "both");
+  const isDisliked = useDislikesStore((s) => !!s.ids[videoId]);
 
   // Fetched lazily on first observer (e.g. when the player bar mounts
   // with a track or a track list renders). Tanstack-query dedupes
@@ -85,9 +90,32 @@ export function LikeDislikeButtons({
     }
   };
 
-  const hoverVisibility = hideUnlessLiked && !isLiked
-    ? "opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
-    : "";
+  const onDislike = async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;
+    setBusy("dislike");
+    try {
+      await toggleDisliked({
+        queryClient: qc,
+        videoId,
+        wasDisliked: isDisliked,
+        wasLiked: isLiked,
+        track,
+      });
+    } catch (err) {
+      toast.error(String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const rated = isLiked || (both && isDisliked);
+  const hoverVisibility =
+    hideUnlessLiked && !rated
+      ? "opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+      : "";
+
+  const LikeIcon = both ? ThumbsUpIcon : HeartIcon;
 
   return (
     <div className={cn("flex items-center", hoverVisibility, className)}>
@@ -100,10 +128,25 @@ export function LikeDislikeButtons({
         aria-label={isLiked ? "Remove from liked" : "Add to liked"}
         aria-pressed={isLiked}
       >
-        <HeartIcon
+        <LikeIcon
           className={cn(iconSize, isLiked && "fill-current text-brand")}
         />
       </Button>
+      {both ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={btnSize}
+          onClick={onDislike}
+          disabled={busy !== null}
+          aria-label={isDisliked ? "Remove dislike" : "Dislike"}
+          aria-pressed={isDisliked}
+        >
+          <ThumbsDownIcon
+            className={cn(iconSize, isDisliked && "fill-current text-t3")}
+          />
+        </Button>
+      ) : null}
     </div>
   );
 }
