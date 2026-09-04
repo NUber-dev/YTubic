@@ -6,6 +6,10 @@ import { persist } from "zustand/middleware";
 export type CloseButtonAction = "tray" | "quit";
 export type CacheAutoCleanPeriod = "off" | "daily" | "weekly" | "monthly";
 export type BackgroundMode = "ambient" | "plain";
+/** Typeface for the whole UI. Stacks live in `lib/interface-font.ts`. */
+export type InterfaceFont = "system" | "gsans" | "inter" | "roboto" | "plex";
+/** One heart, or a thumbs-up / thumbs-down pair. */
+export type RatingButtons = "heart" | "both";
 
 type State = {
   /** What the title-bar ✕ does: hide to tray (default) or quit. */
@@ -18,6 +22,11 @@ type State = {
   /** Window backdrop: "ambient" tints with blurred album art,
    *  "plain" keeps the flat theme background. */
   background: BackgroundMode;
+  /** Typeface applied to the document root (see `lib/interface-font.ts`). */
+  interfaceFont: InterfaceFont;
+  /** How tracks are rated: a single heart, or like + dislike thumbs.
+   *  Dislikes are remembered locally in `store/dislikes.ts`. */
+  ratingButtons: RatingButtons;
   /** System toast on track change while the app is in the background
    *  (see `lib/playback-notifications.ts`). */
   playbackNotifications: boolean;
@@ -47,6 +56,8 @@ type State = {
   setCacheAutoClean: (v: CacheAutoCleanPeriod) => void;
   markCacheCleaned: () => void;
   setBackground: (v: BackgroundMode) => void;
+  setInterfaceFont: (v: InterfaceFont) => void;
+  setRatingButtons: (v: RatingButtons) => void;
   setPlaybackNotifications: (v: boolean) => void;
   setDiscordRichPresence: (v: boolean) => void;
   setLastfmEnabled: (v: boolean) => void;
@@ -71,6 +82,8 @@ export const useSettingsStore = create<State>()(
       cacheAutoClean: "off",
       lastCacheCleanAt: 0,
       background: "ambient",
+      interfaceFont: "system",
+      ratingButtons: "heart",
       playbackNotifications: false,
       discordRichPresence: false,
       lastfmEnabled: false,
@@ -82,6 +95,8 @@ export const useSettingsStore = create<State>()(
       setCacheAutoClean: (cacheAutoClean) => set({ cacheAutoClean }),
       markCacheCleaned: () => set({ lastCacheCleanAt: Date.now() }),
       setBackground: (background) => set({ background }),
+      setInterfaceFont: (interfaceFont) => set({ interfaceFont }),
+      setRatingButtons: (ratingButtons) => set({ ratingButtons }),
       setPlaybackNotifications: (playbackNotifications) =>
         set({ playbackNotifications }),
       setDiscordRichPresence: (discordRichPresence) =>

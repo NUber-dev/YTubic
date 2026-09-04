@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
+// Applies the Interface font setting to <html> in both windows.
+import "./lib/interface-font";
 
 // Suppress the WebView2 / Chromium native right-click menu (Back,
 // Refresh, Save as, Inspect, …). Our Radix ContextMenu triggers run

@@ -252,8 +252,8 @@
   --slider-track: oklch(1 0 0 / 20%);
   --slider-thumb: oklch(1 0 0);
   --slider-thumb-glow: 0 0 3px oklch(1 0 0 / 35%), 0 0 8px oklch(1 0 0 / 15%);
-  --slider-thumb-glow-strong: 0 0 5px oklch(1 0 0 / 50%),
-    0 0 12px oklch(1 0 0 / 25%);
+  --slider-thumb-glow-strong:
+    0 0 5px oklch(1 0 0 / 50%), 0 0 12px oklch(1 0 0 / 25%);
 
   --liked-heart-glass: rgba(255, 255, 255, 0.92);
   --liked-heart-glow: rgba(255, 255, 255, 0.92);
@@ -500,9 +500,21 @@
   body,
   #root {
     @apply h-full bg-background text-foreground;
-    font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
-      Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+    /* --app-font is set on <html> from the Interface font setting
+       (lib/interface-font.ts); the fallback is the system stack. */
+    font-family: var(
+      --app-font,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      Roboto,
+      Oxygen,
+      Ubuntu,
+      Cantarell,
+      "Open Sans",
+      "Helvetica Neue",
+      sans-serif
+    );
     overscroll-behavior: none;
     -webkit-font-smoothing: antialiased;
   }
@@ -866,8 +878,7 @@
   [data-slot="sidebar-menu-button"] {
     transition-property: padding, background-color, color;
     transition-duration: 220ms, 140ms, 140ms;
-    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1), linear,
-      linear;
+    transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1), linear, linear;
   }
 
   /* The section label squeezes its own height shut, so the rows below
@@ -892,7 +903,9 @@
     transition-timing-function: linear;
     transition-delay: 110ms;
   }
-  [data-collapsible="icon"] [data-slot="sidebar-menu-button"] > span:not([data-slot]),
+  [data-collapsible="icon"]
+    [data-slot="sidebar-menu-button"]
+    > span:not([data-slot]),
   [data-collapsible="icon"] [data-sidebar-label] {
     opacity: 0;
     transition-duration: 90ms;
@@ -913,5 +926,4 @@
       transition-delay: 0ms;
     }
   }
-
 }

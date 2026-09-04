@@ -18,6 +18,10 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@fontsource-variable/google-sans-flex": "^5.3.1",
+    "@fontsource-variable/ibm-plex-sans": "^5.3.0",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/roboto": "^5.3.0",
     "@tabler/icons-react": "^3.46.0",
     "@tanstack/query-async-storage-persister": "^5.101.2",
     "@tanstack/react-query": "^5.99.2",
