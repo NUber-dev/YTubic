@@ -57,8 +57,9 @@ export type WhatsNewEntry = {
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
     version: "0.5.0",
-    date: "September 5, 2026",
+    date: "September 6, 2026",
     summary: "New look, full-screen player and more settings",
+    image: "/whats-new/0.5.0.jpg",
     changes: [
       {
         type: "new",
