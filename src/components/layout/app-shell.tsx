@@ -254,6 +254,16 @@ export function AppShell({ children }: { children: ReactNode }) {
                   across the padding box, under the player card. */}
               <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
                 <EntityPageHeader />
+                {/* Slot for a route's own pinned header (Home portals
+                    its title row here). Outside the scroller for the
+                    same reason the entity header is: the route masks
+                    the scroller's top edge so content dissolves under
+                    the header, and a header inside the scroller would
+                    dissolve with it. */}
+                <div
+                  data-route-header-slot
+                  className="pointer-events-none absolute inset-x-0 top-0 z-20 [&>*]:pointer-events-auto"
+                />
                 {/* Plain scroller — NOT Radix ScrollArea. Radix wraps the
                     content in `display: table; min-width: 100%` which grows
                     to intrinsic width and defeats any nested `overflow-x`

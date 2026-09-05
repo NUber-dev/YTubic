@@ -1,6 +1,10 @@
-import type { ReactNode } from "react";
+import { useState, type MouseEvent, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
+  Loader2Icon,
+  PlayIcon,
   PinIcon,
   PinOffIcon,
   EyeIcon,
@@ -41,8 +45,13 @@ import {
 import { cn } from "@/lib/utils";
 import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
+import { LikedCover } from "@/components/shared/liked-cover";
 import { TrackContextMenu } from "@/components/shared/track-context-menu";
-import { AlbumContextMenu } from "@/components/shared/album-menu";
+import {
+  AlbumContextMenu,
+  useAlbumMenuController,
+} from "@/components/shared/album-menu";
+import { playPlaylistNow } from "@/lib/play-playlist";
 import { usePlaybackStore } from "@/lib/store/playback";
 import {
   useIsHidden,
@@ -155,6 +164,20 @@ export function ShelfCard({ item, className }: Props) {
   // ever changes on an explicit hide/show.
   const hidden = useIsHidden(item.id);
 
+  // Liked songs wears the cover the user picked on its page, not the
+  // heart YouTube ships for it.
+  const isLiked =
+    item.kind === "playlist" && (item.id === "VLLM" || item.id === "LM");
+
+  // Albums and real playlists get a play button on hover: the card
+  // itself still opens the page, the button starts playback in place.
+  const hoverPlay =
+    item.kind === "album" ? (
+      <AlbumPlayButton albumId={item.id} />
+    ) : item.kind === "playlist" && !item.playableVideoId ? (
+      <PlaylistPlayButton playlistId={item.id} />
+    ) : null;
+
   const body = (
     <>
       <div
@@ -163,14 +186,18 @@ export function ShelfCard({ item, className }: Props) {
           isVideo ? "aspect-video" : "aspect-square",
         )}
       >
-        <Thumbnail
-          thumbnails={item.thumbnails}
-          alt={item.title}
-          round={item.round}
-          className={cn("size-full", radiusClass)}
-          targetSize={isVideo ? 480 : 256}
-          highRes
-        />
+        {isLiked ? (
+          <LikedCover className={cn("size-full", radiusClass)} />
+        ) : (
+          <Thumbnail
+            thumbnails={item.thumbnails}
+            alt={item.title}
+            round={item.round}
+            className={cn("size-full", radiusClass)}
+            targetSize={isVideo ? 480 : 256}
+            highRes
+          />
+        )}
         <div
           aria-hidden="true"
           className={cn(
@@ -178,6 +205,12 @@ export function ShelfCard({ item, className }: Props) {
             radiusClass,
           )}
         />
+        {isVideo && item.duration ? (
+          <span className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-md bg-black/65 px-1.5 py-1 text-[11px] font-medium leading-none text-white backdrop-blur-sm">
+            {formatDuration(item.duration)}
+          </span>
+        ) : null}
+        {hoverPlay}
         {hidden ? (
           <>
             {/* Mute the cover and stamp a crossed-out eye so a
@@ -330,6 +363,83 @@ export function ShelfCard({ item, className }: Props) {
         {body}
       </button>
     </TrackContextMenu>
+  );
+}
+
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return h > 0 ? `${h}:${m.toString().padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
+/**
+ * The accent play disc in a card's corner. Hidden until the card is
+ * hovered or the button itself is focused; stays up while its fetch
+ * runs so the spinner has somewhere to be. Sits inside the card's
+ * link, so it swallows the click before the link can navigate.
+ */
+function HoverPlayButton({
+  label,
+  onPlay,
+}: {
+  label: string;
+  onPlay: () => Promise<unknown>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const handle = async (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onPlay();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={(e) => void handle(e)}
+      className={cn(
+        "absolute bottom-2 right-2 grid size-9 cursor-pointer place-items-center rounded-full bg-acc1 text-white shadow-[0_6px_16px_-4px_rgba(0,0,0,0.6)] outline-none transition-[opacity,transform,filter] duration-150 hover:brightness-110 focus-visible:opacity-100 focus-visible:ring-[3px] focus-visible:ring-[rgba(var(--acc1rgb),0.35)]",
+        busy
+          ? "opacity-100"
+          : "translate-y-1 opacity-0 group-hover:translate-y-0 group-hover:opacity-100",
+      )}
+    >
+      {busy ? (
+        <Loader2Icon className="size-4 animate-spin" />
+      ) : (
+        <PlayIcon className="ml-0.5 size-4 fill-current" />
+      )}
+    </button>
+  );
+}
+
+function AlbumPlayButton({ albumId }: { albumId: string }) {
+  const { play } = useAlbumMenuController(albumId);
+  return <HoverPlayButton label="Play album" onPlay={() => play(false)} />;
+}
+
+function PlaylistPlayButton({ playlistId }: { playlistId: string }) {
+  const qc = useQueryClient();
+  return (
+    <HoverPlayButton
+      label="Play playlist"
+      onPlay={async () => {
+        try {
+          const started = await playPlaylistNow(playlistId, qc);
+          if (!started) toast.error("This playlist is empty");
+        } catch (e) {
+          toast.error(`Couldn't load playlist: ${String(e)}`);
+        }
+      }}
+    />
   );
 }
 

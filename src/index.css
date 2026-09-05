@@ -668,6 +668,46 @@
     contain: paint;
   }
 
+  /* Set on the main scroller by a route that pins its own header in
+     the slot above it (see app-shell.tsx). Content dissolves over the
+     header's lower edge instead of running under it. The second layer
+     keeps the reserved scrollbar column unmasked, so the thumb is not
+     clipped when it sits at the top. `--route-header-fade` is the
+     content-space edge the fade ends on; the route sets it. */
+  .route-header-fade {
+    --route-header-fade: 76px;
+    mask-image:
+      linear-gradient(
+        to bottom,
+        transparent calc(var(--route-header-fade) - 32px),
+        black var(--route-header-fade)
+      ),
+      linear-gradient(black, black);
+    -webkit-mask-image:
+      linear-gradient(
+        to bottom,
+        transparent calc(var(--route-header-fade) - 32px),
+        black var(--route-header-fade)
+      ),
+      linear-gradient(black, black);
+    mask-size:
+      100% 100%,
+      var(--scroller-gutter, 0px) 100%;
+    -webkit-mask-size:
+      100% 100%,
+      var(--scroller-gutter, 0px) 100%;
+    mask-position:
+      0 0,
+      100% 0;
+    -webkit-mask-position:
+      0 0,
+      100% 0;
+    mask-repeat: no-repeat;
+    -webkit-mask-repeat: no-repeat;
+    mask-composite: add;
+    -webkit-mask-composite: source-over;
+  }
+
   /* Vertical sibling of `shelf-edge-fade` for the sidebar playlist
      list: softens the top/bottom edges so rows dissolve into
      transparency as they scroll out of view instead of being clipped
