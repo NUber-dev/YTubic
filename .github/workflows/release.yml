@@ -1,5 +1,5 @@
-# Builds Windows, Linux, and a universal macOS installer, then publishes a
-# single draft GitHub Release
+# Builds Windows (x64 and ARM64), Linux, and a universal macOS installer,
+# then publishes a single draft GitHub Release
 # whenever a `v*` tag is pushed. Publish flow:
 #   git tag v0.1.0 && git push origin v0.1.0
 # → wait for this workflow → review the draft on the Releases page → publish.
@@ -28,6 +28,13 @@ jobs:
             os: windows-latest
             args: ""
             rust_targets: ""
+          # Cross-compiled on the x64 runner: the MSVC ARM64 toolchain ships
+          # with Visual Studio there, and NSIS bundles ARM64 fine. yt-dlp has
+          # no ARM64 build, but its x64 binary runs under Windows' emulation.
+          - name: Windows ARM64
+            os: windows-latest
+            args: "--target aarch64-pc-windows-msvc"
+            rust_targets: "aarch64-pc-windows-msvc"
           - name: macOS Universal
             os: macos-latest
             args: "--target universal-apple-darwin"
@@ -124,6 +131,8 @@ jobs:
           while read -r id name; do
             case "$name" in
               latest.json)                 continue ;;
+              *_arm64-setup.exe)           new="YTubic_${version}_Windows_arm64_Setup.exe" ;;
+              *_arm64-setup.exe.sig)       new="YTubic_${version}_Windows_arm64_Setup.exe.sig" ;;
               *-setup.exe)                 new="YTubic_${version}_Windows_x64_Setup.exe" ;;
               *-setup.exe.sig)             new="YTubic_${version}_Windows_x64_Setup.exe.sig" ;;
               *.app.tar.gz)                new="YTubic_${version}_macOS_Universal.app.tar.gz" ;;

@@ -46,7 +46,8 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 
 Download the latest installer from the [Releases](../../releases) page and run it.
 
-- **Windows 10/11:** run the `.exe` NSIS installer.
+- **Windows 10/11:** run the `.exe` NSIS installer. Pick the `x64` build, or
+  the `arm64` one on a Windows on ARM device.
 - **macOS 10.15+ (beta):** open the universal `.dmg`; the same build supports
   Apple Silicon and Intel. Login cookies are encrypted with a Keychain-backed
   key.
