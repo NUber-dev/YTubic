@@ -142,26 +142,26 @@ function BehaviorGroup() {
     <Group>
       <SettingRow
         icon={IconBoltFilled}
-        title="Launch at startup"
+        title="Launch at Startup"
         description="Start YTubic automatically when you log in."
         control={
           <Switch
             checked={!!autostart.data}
             onCheckedChange={(v) => void toggleAutostart(v)}
             disabled={autostart.isLoading}
-            aria-label="Launch at startup"
+            aria-label="Launch at Startup"
           />
         }
       />
       <SettingRow
         icon={IconBellFilled}
-        title="Playback notifications"
+        title="Playback Notifications"
         description="Show a system notification when the track changes in the background."
         control={
           <Switch
             checked={playbackNotifications}
             onCheckedChange={setPlaybackNotifications}
-            aria-label="Playback notifications"
+            aria-label="Playback Notifications"
           />
         }
       />

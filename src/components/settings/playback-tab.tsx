@@ -161,7 +161,7 @@ function NormalizeRow() {
   return (
     <SettingRow
       icon={IconDeviceSpeakerFilled}
-      title="Volume normalization"
+      title="Volume Normalization"
       description="Keep every track at a similar loudness."
       control={<Switch checked={on} onCheckedChange={set} />}
     />
@@ -174,7 +174,7 @@ function MonoRow() {
   return (
     <SettingRow
       icon={IconCircleFilled}
-      title="Mono audio"
+      title="Mono Audio"
       description="Play the same audio in both channels."
       control={<Switch checked={on} onCheckedChange={set} />}
     />
@@ -187,7 +187,7 @@ function ResumeRow() {
   return (
     <SettingRow
       icon={IconPlayerPlayFilled}
-      title="Resume where you left off"
+      title="Resume Where You Left Off"
       description="Remember the track and position after a restart."
       control={<Switch checked={on} onCheckedChange={set} />}
     />
@@ -200,10 +200,10 @@ function ResumeRow() {
 
 const PRESET_LABELS: { value: EqPreset; label: string }[] = [
   { value: "flat", label: "Flat" },
-  { value: "bass", label: "Bass boost" },
+  { value: "bass", label: "Bass Boost" },
   { value: "vocal", label: "Vocal" },
   { value: "treble", label: "Treble" },
-  { value: "late", label: "Late night" },
+  { value: "late", label: "Late Night" },
   { value: "custom", label: "Custom" },
 ];
 
@@ -438,7 +438,7 @@ function OutputDeviceRow() {
   return (
     <SettingRow
       icon={IconHeadphonesFilled}
-      title="Output device"
+      title="Output Device"
       description="Where audio is sent when YTubic starts playing."
       control={
         <DropdownMenu
@@ -486,8 +486,8 @@ function OutputDeviceRow() {
 /* ------------------------------------------------------------------ */
 
 const BACK_OPTIONS: { value: BackButtonMode; label: string }[] = [
-  { value: "previous", label: "Previous track" },
-  { value: "restart", label: "Restart track" },
+  { value: "previous", label: "Previous Track" },
+  { value: "restart", label: "Restart Track" },
   { value: "smart", label: "Smart" },
 ];
 
@@ -502,7 +502,7 @@ function BackButtonGroup() {
       <div className="flex flex-col">
         <SettingRow
           icon={IconCircleFilled}
-          title="Back button"
+          title="Back Button"
           description="What happens when you press previous mid-track."
           control={
             <SegmentedControl

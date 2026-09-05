@@ -178,7 +178,7 @@ function LastfmSection() {
         <Switch
           checked={enabled}
           onCheckedChange={setEnabled}
-          aria-label="Last.fm scrobbling"
+          aria-label="Last.fm Scrobbling"
         />
       );
     } else if (phase === "awaiting") {
@@ -254,7 +254,7 @@ function LastfmSection() {
             <Switch
               checked={loveSync}
               onCheckedChange={setLoveSync}
-              aria-label="Sync liked songs to Last.fm"
+              aria-label="Sync Liked Songs to Last.fm"
             />
           </div>
         </div>

@@ -33,8 +33,8 @@ const TABS: {
   icon: ComponentType<{ className?: string }>;
 }[] = [
   { id: "general", label: "General", icon: IconAdjustmentsFilled },
-  { id: "playback", label: "Playback", icon: IconPlayerPlayFilled },
   { id: "appearance", label: "Appearance", icon: IconContrastFilled },
+  { id: "playback", label: "Playback", icon: IconPlayerPlayFilled },
   { id: "storage", label: "Storage", icon: IconDatabaseFilled },
   { id: "integrations", label: "Integrations", icon: IconPuzzleFilled },
 ];

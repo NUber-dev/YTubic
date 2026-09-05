@@ -130,17 +130,17 @@ function StorageStats() {
     <div className="grid grid-cols-3 gap-3 py-4">
       <StatCard
         icon={IconDiscFilled}
-        label="Cached tracks"
+        label="Cached Tracks"
         value={cache.data ? String(cache.data.length) : "…"}
       />
       <StatCard
         icon={IconChartPieFilled}
-        label="Used by tracks"
+        label="Used by Tracks"
         value={cache.data ? formatBytes(trackBytes) : "…"}
       />
       <StatCard
         icon={IconPhotoFilled}
-        label="Used by covers"
+        label="Used by Covers"
         value={covers.data ? formatBytes(covers.data.bytes) : "…"}
       />
     </div>
@@ -173,7 +173,7 @@ function CacheFolderGroup() {
       toast.success("Cache folder updated", {
         description:
           "Existing files stay where they are; new downloads use the new folder after a restart.",
-        action: { label: "Restart now", onClick: () => void relaunch() },
+        action: { label: "Restart Now", onClick: () => void relaunch() },
       });
     } catch (e) {
       toast.error(String(e));
@@ -192,7 +192,7 @@ function CacheFolderGroup() {
     <Group>
       <SettingRow
         icon={IconFolderFilled}
-        title="Cache folder"
+        title="Cache Folder"
         description={
           info.data ? (
             <span className="break-all">
@@ -249,7 +249,7 @@ function PremiumGatedCacheGroup({ loggedIn }: { loggedIn: boolean }) {
       <SettingRow
         icon={IconLockFilled}
         iconClassName="text-amber-600 dark:text-amber-400"
-        title="Track caching is Premium-only"
+        title="Track Caching Is Premium-Only"
         description={
           loggedIn
             ? "No active Premium subscription found on this account. Detection reads YT Music's account menu; if it got you wrong, re-check after a moment."
@@ -323,7 +323,7 @@ function AutoCleanRow({ loggedIn }: { loggedIn: boolean }) {
   return (
     <SettingRow
       icon={IconClockFilled}
-      title="Auto-clean tracks not in library"
+      title="Auto-Clean Tracks Not in Library"
       description={description}
       control={
         <SegmentedControl
@@ -730,8 +730,8 @@ function CacheRow({
               {inLibrary && (
                 <Badge
                   variant="secondary"
-                  title="In library"
-                  aria-label="In library"
+                  title="In Library"
+                  aria-label="In Library"
                   // Icon-only chip; px-1 tightens the now text-less pill so
                   // it isn't mostly padding. Meaning is carried by the
                   // title/aria-label instead of a visible caption.
@@ -810,7 +810,7 @@ function CoverCacheGroup() {
     <Group>
       <SettingRow
         icon={IconPhotoFilled}
-        title="Cover art cache"
+        title="Cover Art Cache"
         control={
           // Counts live in the stat cards up top — the row keeps just
           // the action.
