@@ -131,19 +131,19 @@ jobs:
           while read -r id name; do
             case "$name" in
               latest.json)                 continue ;;
+              # The updater reads each signature from latest.json itself,
+              # so the loose .sig files only clutter the asset list.
+              *.sig)
+                gh api --method DELETE "repos/$REPO/releases/assets/$id" < /dev/null
+                echo "removed $name"
+                continue ;;
               *_arm64-setup.exe)           new="YTubic_${version}_Windows_arm64_Setup.exe" ;;
-              *_arm64-setup.exe.sig)       new="YTubic_${version}_Windows_arm64_Setup.exe.sig" ;;
               *-setup.exe)                 new="YTubic_${version}_Windows_x64_Setup.exe" ;;
-              *-setup.exe.sig)             new="YTubic_${version}_Windows_x64_Setup.exe.sig" ;;
               *.app.tar.gz)                new="YTubic_${version}_macOS_Universal.app.tar.gz" ;;
-              *.app.tar.gz.sig)            new="YTubic_${version}_macOS_Universal.app.tar.gz.sig" ;;
               *.dmg)                       new="YTubic_${version}_macOS_Universal.dmg" ;;
               *.AppImage)                  new="YTubic_${version}_Linux_x86_64.AppImage" ;;
-              *.AppImage.sig)              new="YTubic_${version}_Linux_x86_64.AppImage.sig" ;;
               *.deb)                       new="YTubic_${version}_Linux_x86_64.deb" ;;
-              *.deb.sig)                   new="YTubic_${version}_Linux_x86_64.deb.sig" ;;
               *.rpm)                       new="YTubic_${version}_Linux_x86_64.rpm" ;;
-              *.rpm.sig)                   new="YTubic_${version}_Linux_x86_64.rpm.sig" ;;
               *)                           echo "skipping unrecognized asset: $name"; continue ;;
             esac
             # `[ ... ] && continue` would abort the whole step under `set -e`
