@@ -141,7 +141,36 @@ fn push(client: &mut DiscordIpcClient, p: &Presence) -> Result<(), Box<dyn std::
         activity = activity.timestamps(Timestamps::new().start(start).end(end));
     }
 
-    client.set_activity(activity)
+    set_activity_showing_details(client, activity)
+}
+
+/// Discord's `status_display_type` for an activity: which field the member
+/// list and the status line show after "Listening to". 0 is the app name
+/// (the default, "Listening to YTubic"), 1 the state, 2 the details.
+const STATUS_DISPLAY_DETAILS: u8 = 2;
+
+/// `set_activity`, with the song title shown where the app name would be.
+/// The crate's builder predates `status_display_type`, so the activity is
+/// serialised here and the field added before the frame goes out; the
+/// envelope is the same one the crate's own `set_activity` builds.
+fn set_activity_showing_details(
+    client: &mut DiscordIpcClient,
+    activity: Activity,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut activity = serde_json::to_value(activity)?;
+    activity["status_display_type"] = serde_json::json!(STATUS_DISPLAY_DETAILS);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    client.send(
+        serde_json::json!({
+            "cmd": "SET_ACTIVITY",
+            "args": { "pid": std::process::id(), "activity": activity },
+            "nonce": nonce.to_string(),
+        }),
+        1,
+    )
 }
 
 // Discord rate-limits presence updates (roughly 5 per 20s) and silently drops
