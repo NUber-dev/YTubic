@@ -95,6 +95,11 @@ export const WHATS_NEW: WhatsNewEntry[] = [
         title: "Discord shows the song",
         text: "Your status now reads \"Listening to\" the song title instead of the app name.",
       },
+      {
+        type: "new",
+        title: "Windows on ARM",
+        text: "A native arm64 installer sits next to the x64 one.",
+      },
     ],
   },
   {
