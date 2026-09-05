@@ -56,6 +56,48 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.5.0",
+    date: "September 5, 2026",
+    summary: "New look, full-screen player and more settings",
+    changes: [
+      {
+        type: "new",
+        title: "A refreshed interface",
+        text: "Every screen was redrawn on one design system, from the player card and sidebar to menus, dialogs, settings and the light theme.",
+      },
+      {
+        type: "new",
+        title: "Full-screen player",
+        text: "Click the cover to open it, with a centered, lyrics or immersive art layout picked in Appearance.",
+      },
+      {
+        type: "new",
+        title: "Playback settings that do something",
+        text: "Crossfade, volume normalization, an equalizer, output device and more.",
+      },
+      {
+        type: "new",
+        title: "Select several tracks at once",
+        text: "Shift-click rows in any list, then save them to a playlist or queue them from the bar that appears.",
+      },
+      {
+        type: "new",
+        title: "Home is yours to arrange",
+        text: "Refresh the feed, reorder or hide its sections, and play any album or playlist straight from its card.",
+      },
+      {
+        type: "improved",
+        title: "Appearance settings",
+        text: "Pick the interface font, like and dislike buttons instead of the heart, and a cover for Liked songs.",
+      },
+      {
+        type: "improved",
+        title: "Discord shows the song",
+        text: "Your status now reads \"Listening to\" the song title instead of the app name.",
+      },
+    ],
+  },
+  {
     version: "0.4.7",
     date: "August 22, 2026",
     summary: "Share links that open YTubic",
