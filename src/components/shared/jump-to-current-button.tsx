@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useLayoutStore } from "@/lib/store/layout";
+import { useSelectionStore } from "@/lib/store/selection";
 import type { ShelfItem } from "@/lib/innertube/types";
 
 type Props = {
@@ -31,6 +32,8 @@ export function JumpToCurrentButton({ tracks }: Props) {
   const active = usePlaybackStore(currentTrack);
   const { state } = useSidebar();
   const mode = useLayoutStore((s) => s.mode);
+  // The selection toolbar takes the same spot; step aside while it is up.
+  const selecting = useSelectionStore((s) => s.active);
   const [activeOnScreen, setActiveOnScreen] = useState(false);
   const [activeAbove, setActiveAbove] = useState(false);
 
@@ -87,7 +90,7 @@ export function JumpToCurrentButton({ tracks }: Props) {
     };
   }, [activeVideoId, inList]);
 
-  if (!active || !inList || activeOnScreen) return null;
+  if (!active || !inList || activeOnScreen || selecting) return null;
 
   // Match the sidebar's own width values from SidebarProvider (app-shell)
   // so the pill stays horizontally centered in the visible content area.

@@ -151,13 +151,24 @@ function readRun(node: YtNode | undefined): string {
   return runs.map((r) => r.text ?? "").join("");
 }
 
-export async function addToPlaylist(
+export function addToPlaylist(
   playlistId: string,
   videoId: string,
 ): Promise<void> {
+  return addManyToPlaylist(playlistId, [videoId]);
+}
+
+/** One edit_playlist call for the lot; the order given is kept. */
+export async function addManyToPlaylist(
+  playlistId: string,
+  videoIds: string[],
+): Promise<void> {
   const json = await innertubePost("browse/edit_playlist", {
     playlistId,
-    actions: [{ action: "ACTION_ADD_VIDEO", addedVideoId: videoId }],
+    actions: videoIds.map((addedVideoId) => ({
+      action: "ACTION_ADD_VIDEO",
+      addedVideoId,
+    })),
   });
   // edit_playlist returns HTTP 200 even when it rejects the edit (not the
   // owner, stale cookies, …) — surface the envelope status so the
@@ -200,13 +211,20 @@ export async function removeFromPlaylist(
  * its first entry. Returns the new playlistId so callers can navigate
  * or show it in toasts.
  */
-export async function createPlaylistWithTrack(
+export function createPlaylistWithTrack(
   title: string,
   videoId: string,
 ): Promise<string> {
+  return createPlaylistWithTracks(title, [videoId]);
+}
+
+export async function createPlaylistWithTracks(
+  title: string,
+  videoIds: string[],
+): Promise<string> {
   const json = await innertubePost("playlist/create", {
     title,
-    videoIds: [videoId],
+    videoIds,
     privacyStatus: "PRIVATE",
   });
   const id: string | undefined =

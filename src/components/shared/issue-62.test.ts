@@ -40,6 +40,8 @@ vi.mock("@/lib/innertube/mutations", () => ({
   fetchUserPlaylists: vi.fn(async () => []),
   addToPlaylist: vi.fn(async () => undefined),
   createPlaylistWithTrack: vi.fn(async () => undefined),
+  createPlaylistWithTracks: vi.fn(async () => undefined),
+  addManyToPlaylist: vi.fn(async () => undefined),
   removeFromPlaylist: vi.fn(async () => undefined),
 }));
 

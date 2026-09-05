@@ -1,6 +1,13 @@
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { PlayIcon, PauseIcon, Volume2Icon } from "lucide-react";
+import { CheckIcon, PlayIcon, PauseIcon, Volume2Icon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { ArtworkOutline } from "@/components/shared/artwork-outline";
 import { Thumbnail } from "@/components/shared/thumbnail";
@@ -10,6 +17,8 @@ import {
   type PlaylistRemovalContext,
 } from "@/components/shared/track-context-menu";
 import { LikeDislikeButtons } from "@/components/shared/like-buttons";
+import { SelectionToolbar } from "@/components/shared/selection-toolbar";
+import { useSelectionStore } from "@/lib/store/selection";
 import { useSettingsStore } from "@/lib/store/settings";
 import { cn } from "@/lib/utils";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
@@ -99,6 +108,109 @@ export function TrackList({
   const playing = usePlaybackStore((s) => s.playing);
   const sourcePrefs = useTrackSourceStore((s) => s.byVideoId);
 
+  // Multi-select, by row index. Shift- or Ctrl/Cmd-click toggles a row;
+  // holding Shift (or Ctrl) and sweeping the pointer across rows selects
+  // every row it crosses until the button is released. A plain click
+  // plays as before and drops the selection, as does a click anywhere
+  // outside the rows and the toolbar, and Escape. Indices stay valid
+  // while the list only grows (continuations); a re-sort or a shrink
+  // resets it.
+  const [selected, setSelected] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
+  const prevRef = useRef<{ head?: string; length: number }>({
+    head: tracks[0]?.id,
+    length: tracks.length,
+  });
+  useEffect(() => {
+    const prev = prevRef.current;
+    const head = tracks[0]?.id;
+    if (head !== prev.head || tracks.length < prev.length) {
+      setSelected(new Set());
+    }
+    prevRef.current = { head, length: tracks.length };
+  }, [tracks]);
+  const clearSelection = useCallback(() => {
+    setSelected((prev) => (prev.size === 0 ? prev : new Set()));
+  }, []);
+  const onPlainClick = clearSelection;
+
+  // A sweep starts on a modifier pointerdown over a row and ends on the
+  // next pointerup anywhere. The row it started on is only added once
+  // the pointer reaches a second row; a sweep that never moves is a
+  // click, and toggles its row at release instead. Everything happens
+  // on pointer events: a click after a sweep lands on whatever the
+  // press and the release have in common, not on a row, so it cannot
+  // be trusted to arrive.
+  const sweepRef = useRef<{ start: number; moved: boolean } | null>(null);
+  const onSweepStart = useCallback((idx: number) => {
+    sweepRef.current = { start: idx, moved: false };
+  }, []);
+  const onSweepEnter = useCallback((idx: number) => {
+    const sweep = sweepRef.current;
+    if (!sweep || idx === sweep.start) return;
+    // Read before the updater runs: it is deferred, and `moved` flips
+    // right here.
+    const first = !sweep.moved;
+    sweep.moved = true;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (first) next.add(sweep.start);
+      next.add(idx);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    const onUp = () => {
+      const sweep = sweepRef.current;
+      if (!sweep) return;
+      sweepRef.current = null;
+      if (sweep.moved) return;
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(sweep.start)) next.delete(sweep.start);
+        else next.add(sweep.start);
+        return next;
+      });
+    };
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
+
+  // Pressing anywhere that is not a row, the toolbar, or something the
+  // toolbar opened (its menu, the new-playlist dialog) drops the
+  // selection.
+  const hasSelection = selected.size > 0;
+  // Lets the jump-to-current pill step aside for the toolbar.
+  const setSelectionActive = useSelectionStore((s) => s.setActive);
+  useEffect(() => {
+    setSelectionActive(hasSelection);
+    return () => setSelectionActive(false);
+  }, [hasSelection, setSelectionActive]);
+  useEffect(() => {
+    if (!hasSelection) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Element | null;
+      if (
+        target?.closest(
+          '[data-videoid], [data-selection-ui], [role="menu"], [role="dialog"]',
+        )
+      )
+        return;
+      clearSelection();
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [hasSelection, clearSelection]);
+  const selectedTracks = [...selected]
+    .sort((a, b) => a - b)
+    .map((i) => tracks[i])
+    .filter((t): t is ShelfItem => !!t);
+
   // Resolve the app's scroll container (`<main class="app-scroll">`) so
   // the virtualizer can listen to its scroll events. Done in an effect
   // because the element doesn't exist during the very first render of
@@ -170,9 +282,13 @@ export function TrackList({
     );
   }
 
+  const toolbar = (
+    <SelectionToolbar tracks={selectedTracks} onClear={clearSelection} />
+  );
+
   if (!virtualize) {
     return (
-      <div className={cn("flex flex-col", className)}>
+      <div className={cn("flex select-none flex-col", className)}>
         {tracks.map((t, idx) => (
           <div key={`${t.id}:${idx}`} style={{ paddingBottom: 2 }}>
             <TrackRow
@@ -187,9 +303,14 @@ export function TrackList({
               playing={playing}
               videoSourceSelected={sourcePrefs[t.id]?.selected === "video"}
               removal={removal}
+              selected={selected.has(idx)}
+              onSweepStart={onSweepStart}
+              onSweepEnter={onSweepEnter}
+              onPlainClick={onPlainClick}
             />
           </div>
         ))}
+        {toolbar}
       </div>
     );
   }
@@ -208,7 +329,7 @@ export function TrackList({
     activeIndex >= 0 && items.some((vi) => vi.index === activeIndex);
 
   return (
-    <div className={cn("flex flex-col", className)}>
+    <div className={cn("flex select-none flex-col", className)}>
       <div
         ref={listRef}
         style={{
@@ -261,11 +382,16 @@ export function TrackList({
                 playing={playing}
                 videoSourceSelected={sourcePrefs[t.id]?.selected === "video"}
                 removal={removal}
+                selected={selected.has(idx)}
+                onSweepStart={onSweepStart}
+                onSweepEnter={onSweepEnter}
+                onPlainClick={onPlainClick}
               />
             </div>
           );
         })}
       </div>
+      {toolbar}
     </div>
   );
 }
@@ -282,7 +408,20 @@ type RowProps = {
   playing: boolean;
   videoSourceSelected: boolean;
   removal?: PlaylistRemovalContext;
+  selected: boolean;
+  onSweepStart: (idx: number) => void;
+  onSweepEnter: (idx: number) => void;
+  onPlainClick: (idx: number) => void;
 };
+
+/** The accent disc with a check that marks a selected row. */
+function SelectedCheck() {
+  return (
+    <span className="grid size-[22px] place-items-center rounded-full bg-acc1 text-white">
+      <CheckIcon className="size-3" strokeWidth={3.2} />
+    </span>
+  );
+}
 
 const TrackRow = memo(function TrackRow({
   track: t,
@@ -296,17 +435,41 @@ const TrackRow = memo(function TrackRow({
   playing,
   videoSourceSelected,
   removal,
+  selected,
+  onSweepStart,
+  onSweepEnter,
+  onPlainClick,
 }: RowProps) {
   const row = (
     <li
       data-videoid={t.id}
+      data-selected={selected || undefined}
       style={{ gridTemplateColumns: gridTemplate }}
       className={cn(
-        "group grid cursor-pointer items-center gap-3 rounded-lg p-2 transition-colors",
-        isActive ? "bg-black/10 dark:bg-black/25" : "hover:bg-accent/60",
+        // outline-none: a Shift held down counts as keyboard input to
+        // the focus-visible heuristic, so a Shift-click would otherwise
+        // draw the UA focus ring on the row it pressed.
+        "group grid cursor-pointer items-center gap-3 rounded-lg p-2 outline-none transition-colors",
+        // Selected: a neutral wash on the row, and the cover (or the
+        // index) carries an accent check, the way photo pickers mark
+        // a selection. No accent on the row itself, so the playing
+        // row's tint still reads.
+        selected
+          ? "bg-w080 hover:bg-w100"
+          : isActive
+            ? "bg-black/10 dark:bg-black/25"
+            : "hover:bg-accent/60",
       )}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        if (e.shiftKey || e.ctrlKey || e.metaKey) onSweepStart(idx);
+      }}
+      onPointerEnter={() => onSweepEnter(idx)}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest("a")) return;
+        // Selection is handled on the pointer events above.
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        onPlainClick(idx);
         const store = usePlaybackStore.getState();
         if (isActive) store.toggle();
         else store.playShelfItems(tracks, idx);
@@ -324,7 +487,9 @@ const TrackRow = memo(function TrackRow({
     >
       <div className="flex min-w-0 items-center gap-3">
         <div className="flex size-10 shrink-0 items-center justify-center">
-          {hideThumbnails ? (
+          {hideThumbnails && selected ? (
+            <SelectedCheck />
+          ) : hideThumbnails ? (
             <>
               <span
                 className={cn(
@@ -359,9 +524,20 @@ const TrackRow = memo(function TrackRow({
                 targetSize={80}
               />
               <ArtworkOutline className="rounded-sm" />
+              {selected ? (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-sm bg-black/55"
+                >
+                  <SelectedCheck />
+                </div>
+              ) : null}
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-sm bg-black/55 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+                className={cn(
+                  "pointer-events-none absolute inset-0 flex items-center justify-center rounded-sm bg-black/55 opacity-0 transition-opacity duration-150",
+                  !selected && "group-hover:opacity-100",
+                )}
               >
                 {isActive && playing ? (
                   <PauseIcon className="size-5 fill-current text-white" />

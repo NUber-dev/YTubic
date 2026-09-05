@@ -62,7 +62,7 @@ import { fetchRadio } from "@/lib/innertube/radio";
 import { fetchLikedSongs } from "@/lib/innertube/library";
 import {
   addToPlaylist,
-  createPlaylistWithTrack,
+  createPlaylistWithTracks,
   fetchUserPlaylists,
   removeFromPlaylist,
   type UserPlaylist,
@@ -445,7 +445,7 @@ export function TrackContextMenu({ item, children, context, removal }: Props) {
         open={controller.newPlaylistOpen}
         onOpenChange={controller.setNewPlaylistOpen}
         defaultTitle={item.title}
-        videoId={item.id}
+        videoIds={[item.id]}
       />
     </>
   );
@@ -504,7 +504,7 @@ export function TrackMoreMenu({
         open={controller.newPlaylistOpen}
         onOpenChange={controller.setNewPlaylistOpen}
         defaultTitle={item.title}
-        videoId={item.id}
+        videoIds={[item.id]}
       />
     </>
   );
@@ -514,12 +514,12 @@ export function NewPlaylistDialog({
   open,
   onOpenChange,
   defaultTitle,
-  videoId,
+  videoIds,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   defaultTitle: string;
-  videoId: string;
+  videoIds: string[];
 }) {
   const qc = useQueryClient();
   const [title, setTitle] = useState(defaultTitle);
@@ -534,7 +534,7 @@ export function NewPlaylistDialog({
     if (!t || busy) return;
     setBusy(true);
     try {
-      await createPlaylistWithTrack(t, videoId);
+      await createPlaylistWithTracks(t, videoIds);
       await qc.invalidateQueries({ queryKey: ["user-playlists"] });
       await qc.invalidateQueries({ queryKey: ["library"] });
       toast.success(`Created "${t}"`);
@@ -552,8 +552,11 @@ export function NewPlaylistDialog({
         <DialogHeader>
           <DialogTitle>New playlist</DialogTitle>
           <DialogDescription>
-            The track will be added as the first entry. Playlists are created as
-            private — you can change that later on music.youtube.com.
+            {videoIds.length === 1
+              ? "The track will be added as the first entry."
+              : `The ${videoIds.length} tracks will be added in order.`}{" "}
+            Playlists are created as private — you can change that later on
+            music.youtube.com.
           </DialogDescription>
         </DialogHeader>
         <Input
