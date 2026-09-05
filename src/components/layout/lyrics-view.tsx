@@ -450,7 +450,7 @@ function TimedLyrics({
                 // browser has a defined start AND end to interpolate.
                 "lyrics-line origin-left cursor-pointer rounded-md px-2 py-1 text-left font-[650] leading-snug transition-[scale,color] duration-[1260ms] ease-in-out hover:bg-black/10 dark:hover:bg-black/30",
                 large
-                  ? "px-3 py-2 text-[31px] font-bold leading-[1.18] tracking-[-0.025em]"
+                  ? "px-3 py-3.5 text-[31px] font-bold leading-[1.18] tracking-[-0.025em]"
                   : "text-lg",
                 isActive
                   ? "scale-[1.06] text-foreground"
@@ -478,14 +478,13 @@ function TimedLyrics({
         className="lyrics-blur-overlay pointer-events-none absolute inset-x-0 top-0 h-[26%] transition-opacity duration-500 ease-in-out"
         style={{ opacity: activeIdx <= 0 ? 0 : 1 }}
       />
-      {/* Full screen shows the column as a band across the art, so the
-          bottom edge softens the same way as the top. */}
-      {large ? (
-        <div
-          aria-hidden
-          className="lyrics-blur-overlay-bottom pointer-events-none absolute inset-x-0 bottom-0 h-[26%]"
-        />
-      ) : null}
+      {/* The bottom edge softens the same way as the top, so upcoming
+          lines dissolve out of the column instead of stopping on a
+          line. */}
+      <div
+        aria-hidden
+        className="lyrics-blur-overlay-bottom pointer-events-none absolute inset-x-0 bottom-0 h-[26%]"
+      />
     </div>
   );
 }
