@@ -27,7 +27,9 @@ dist-ssr
 # TanStack Router generated
 src/routeTree.gen.ts
 .tanstack/
-.claude/
+# Local Claude state stays out; the shared skills under .claude/skills are kept.
+.claude/*
+!.claude/skills/
 
 # Rust / Tauri
 src-tauri/target/
