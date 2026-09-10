@@ -434,6 +434,14 @@ const YT_WEBVIEW_ARGS: &str = "--disable-features=HardwareMediaKeyHandling,Media
 /// which the conf.json value extends.)
 const APP_WEBVIEW_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,HardwareMediaKeyHandling,MediaSessionService --autoplay-policy=no-user-gesture-required";
 
+/// Google's sign-in entry that lands on YT Music with the youtube.com
+/// cookies already minted. Used by the sign-in window, and by the keeper
+/// to restore a session Google expired: with the Google account still
+/// known to the profile, this redirect chain re-issues the youtube.com
+/// cookies without any click.
+const SERVICE_LOGIN_URL: &str =
+    "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
+
 /// Legacy single-account path — kept only for migration. New code
 /// should resolve cookies via `active_cookies_path`.
 fn legacy_cookies_enc_path(app: &tauri::AppHandle) -> PathBuf {
@@ -1027,57 +1035,94 @@ async fn cleanup_login_artifacts(app: &tauri::AppHandle) {
     let _ = tokio::fs::remove_file(cache.join(".cookies")).await;
 }
 
-/// Open an in-app Google sign-in window in an isolated WebView profile
-/// and add the resulting cookies as a new account. Polls the (fresh)
+/// Which account a sign-in window is for.
+enum LoginMode {
+    /// "Sign in" / "Add another account": a brand-new id and profile, so
+    /// Google starts from a clean sign-in and identity isolation holds.
+    Fresh,
+    /// Re-establish an existing account's session on ITS OWN profile.
+    /// Google already knows the account there, so the window lands on
+    /// the account chooser (one click) or goes straight back in. The
+    /// row, its meta and its keeper profile are all kept; only the jar
+    /// is rewritten.
+    Relink,
+}
+
+/// Drop a sign-in attempt: tell the UI, close the window, and for a
+/// fresh sign-in wipe the account dir it was building (profile + any
+/// partial jar). A re-link keeps everything: the profile is the
+/// account's live session and the old jar is still the best we have.
+async fn abort_login(
+    app: &tauri::AppHandle,
+    win: Option<&tauri::WebviewWindow>,
+    wipe: Option<&std::path::Path>,
+) {
+    let _ = app.emit("login-cancelled", ());
+    if let Some(w) = win {
+        let _ = w.close();
+    }
+    if let Some(dir) = wipe {
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+}
+
+/// Open an in-app Google sign-in window on `account_id`'s WebView
+/// profile and capture the resulting cookies into its jar. Polls the
 /// webview cookie store until YouTube auth cookies appear, encrypts
-/// them, writes them to `accounts/<id>/cookies.enc`, registers the
-/// account in `accounts.json`, and marks it active.
+/// them, writes `accounts/<id>/cookies.enc`, and for a fresh sign-in
+/// registers the account in `accounts.json` and marks it active.
 ///
-/// Isolation matters: without it, "add another account" instantly
-/// succeeds with whatever Google session is already in the shared
-/// WebView2 user data dir — and there's no way for the user to pick a
-/// different identity. The temp profile is deleted on close (success
-/// or cancellation); our DPAPI-encrypted jar is the canonical store.
+/// Isolation matters for a fresh sign-in: without it, "add another
+/// account" instantly succeeds with whatever Google session is already
+/// in the shared WebView2 user data dir, and there's no way for the
+/// user to pick a different identity. So a fresh sign-in gets a fresh
+/// profile, which is KEPT on success: it holds the live, Google-bound
+/// session that `refresh_account_cookies` re-extracts from.
 ///
-/// Emits `login-success` (payload: new account id) on success and
-/// `login-cancelled` on close-without-auth.
+/// Emits `login-success` (payload: new account id) for a fresh sign-in,
+/// `session-relinked` (payload: the id) for a re-link, and
+/// `login-cancelled` on close-without-auth or any failure.
 ///
-/// We deliberately do NOT emit `accounts-changed` here. The newly-
-/// added account has empty meta and may not even survive the next
-/// step: the frontend's meta backfill calls `update_account_meta`,
+/// We deliberately do NOT emit `accounts-changed` for a fresh sign-in.
+/// The newly-added account has empty meta and may not even survive the
+/// next step: the frontend's meta backfill calls `update_account_meta`,
 /// which is when we find out via an identity lookup (email, or avatar
 /// when the email is empty) whether this is genuinely a new account or
-/// a re-sign-in of an existing one. That
-/// command emits `accounts-changed` for both cases, and the global
-/// listener does its full reset there. Firing the event twice was the
-/// "double-reset on dedup" UX bug.
-#[tauri::command]
-async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
+/// a re-sign-in of an existing one. That command emits
+/// `accounts-changed` for both cases, and the global listener does its
+/// full reset there. Firing the event twice was the "double-reset on
+/// dedup" UX bug.
+async fn open_login_window(
+    app: tauri::AppHandle,
+    account_id: String,
+    mode: LoginMode,
+) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("login") {
         let _ = existing.show();
         let _ = existing.set_focus();
         return Ok(());
     }
 
-    // Per-attempt account id, minted up front so the WebView profile can
-    // live at its permanent home from the first keystroke. Still fresh
-    // per attempt (a unique id), so Google's auth cookies are empty at
-    // window open and "add account" starts from a clean sign-in, so
-    // identity isolation is preserved. Unlike the old throwaway temp
-    // profile, we KEEP this one after a successful login: it holds the
-    // live, Google-bound session that `refresh_account_cookies` re-
-    // extracts from periodically, so the replayed snapshot never outlives
-    // Google's ~2h leash on extracted cookies.
-    let account_id = generate_account_id();
+    let relink = matches!(mode, LoginMode::Relink);
     let webview_data = account_webview_dir(&app, &account_id);
-    if let Err(e) = tokio::fs::create_dir_all(&webview_data).await {
+    if relink {
+        if !webview_data.exists() {
+            return Err("this account has no browser profile to re-link; sign in instead".into());
+        }
+        // The keeper shares this profile. Close it so its reload cannot
+        // race the user's click; the refresh loop rebuilds it as soon as
+        // the window is gone.
+        if let Some(keeper) = app.get_webview_window(&format!("keeper-{account_id}")) {
+            let _ = keeper.close();
+        }
+    } else if let Err(e) = tokio::fs::create_dir_all(&webview_data).await {
         eprintln!("[login] mkdir webview-data: {e}");
     }
-    // Wiped wholesale on cancel/error (profile + any partial jar); kept
-    // on success.
-    let account_dir = accounts_dir(&app).join(&account_id);
+    // Wiped wholesale on a fresh sign-in's cancel/error; never for a
+    // re-link.
+    let wipe_on_failure: Option<PathBuf> =
+        (!relink).then(|| accounts_dir(&app).join(&account_id));
 
-    const SERVICE_LOGIN_URL: &str = "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F";
     let url = SERVICE_LOGIN_URL
         .parse::<tauri::Url>()
         .map_err(|e| e.to_string())?;
@@ -1101,10 +1146,8 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let app_poll = app.clone();
-    // Failure paths wipe the whole account dir (profile + jar); on
-    // success we keep it so the live session can be refreshed later.
-    let cleanup_dir = account_dir.clone();
     tauri::async_runtime::spawn(async move {
+        let wipe = wipe_on_failure.as_deref();
         // Set to true once we've redirected the webview to YT ourselves.
         // Guards against thrashing if YT auto-sign-in is slow and we
         // catch a Google-auth-only state on multiple ticks.
@@ -1116,8 +1159,11 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             tokio::time::sleep(Duration::from_millis(1500)).await;
 
             let Some(win) = app_poll.get_webview_window("login") else {
-                let _ = app_poll.emit("login-cancelled", ());
-                let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
+                abort_login(&app_poll, None, wipe).await;
+                if relink {
+                    // Put the keeper back on the profile.
+                    refresh_now().notify_one();
+                }
                 return;
             };
 
@@ -1129,15 +1175,7 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 }
             };
 
-            let has_yt_auth = cookies.iter().any(|c| {
-                let name = c.name();
-                (name == "__Secure-1PSID" || name == "SAPISID")
-                    && c.domain()
-                        .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                        .unwrap_or(false)
-            });
-
-            if !has_yt_auth {
+            if !has_youtube_auth(&cookies) {
                 // YT cookies aren't set yet. Two ways to land here:
                 //   1) User hasn't completed Google sign-in. Keep waiting.
                 //   2) Google sign-in succeeded but Google parked the
@@ -1153,6 +1191,12 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                 // InnerTube needs; navigating straight to music.youtube.com
                 // relied on YT's client-side auto-sign-in, which completed
                 // only about half the time and left a bare page.
+                //
+                // Only when the window really is parked elsewhere. On a
+                // re-link the Google cookies are there from the first tick
+                // while the window is already on accounts.google.com's
+                // chooser, and replaying the URL underneath the user only
+                // reloaded the page they were about to click.
                 if !nudged_to_yt {
                     let has_google_auth = cookies.iter().any(|c| {
                         let name = c.name();
@@ -1161,15 +1205,19 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
                                 .map(|d| d.trim_start_matches('.').ends_with("google.com"))
                                 .unwrap_or(false)
                     });
-                    if has_google_auth {
+                    let in_sign_in_flow = win
+                        .url()
+                        .ok()
+                        .and_then(|u| u.host_str().map(str::to_string))
+                        .map(|h| h == "accounts.google.com" || h.ends_with("youtube.com"))
+                        .unwrap_or(false);
+                    if has_google_auth && !in_sign_in_flow {
                         if let Ok(url) = SERVICE_LOGIN_URL.parse::<tauri::Url>() {
                             match win.navigate(url) {
                                 Ok(()) => eprintln!(
                                     "[login] google-auth detected without YT cookies; replayed ServiceLogin so Google bridges the youtube.com cookies itself"
                                 ),
-                                Err(e) => eprintln!(
-                                    "[login] failed to redirect to YT: {e}"
-                                ),
+                                Err(e) => eprintln!("[login] failed to redirect to YT: {e}"),
                             }
                         }
                         nudged_to_yt = true;
@@ -1184,82 +1232,62 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
             // look like the browser session Google issued it to, so
             // give the handshake a few ticks to complete. Capture
             // anyway after ~6 s in case the cookie set changes shape.
-            let has_login_info = cookies.iter().any(|c| {
-                c.name() == "LOGIN_INFO"
-                    && c.domain()
-                        .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                        .unwrap_or(false)
-            });
-            if !has_login_info && full_set_grace < 4 {
+            if !has_login_info(&cookies) && full_set_grace < 4 {
                 full_set_grace += 1;
                 continue;
             }
 
-            // Same id as the persisted WebView profile created above, so
-            // the account row and its live session profile stay paired.
-            let new_id = account_id.clone();
-            let cookies_path = account_cookies_path(&app_poll, &new_id);
-            if let Some(dir) = cookies_path.parent() {
-                let _ = tokio::fs::create_dir_all(dir).await;
-            }
-            let plain = cookies_to_netscape(&cookies).into_bytes();
-            let encrypted =
-                match tokio::task::spawn_blocking(move || secure_store::encrypt(&plain)).await {
-                    Ok(Ok(e)) => e,
-                    Ok(Err(e)) => {
-                        eprintln!("[login] encrypt cookies: {e}");
-                        let _ = win.close();
-                        let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
-                        return;
-                    }
-                    Err(e) => {
-                        eprintln!("[login] encrypt join: {e}");
-                        let _ = win.close();
-                        let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
-                        return;
-                    }
-                };
-            if let Err(e) = write_atomic(&cookies_path, &encrypted).await {
-                eprintln!("[login] write account cookies: {e}");
-                let _ = win.close();
-                let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
+            if let Err(e) = write_snapshot(&app_poll, &account_id, &cookies).await {
+                eprintln!("[login] {e}");
+                abort_login(&app_poll, Some(&win), wipe).await;
                 return;
             }
 
-            let mut idx = read_index(&app_poll).await;
-            let now_s = time::OffsetDateTime::now_utc().unix_timestamp();
-            idx.accounts.push(Account {
-                id: new_id.clone(),
-                added_at: now_s,
-                ..Default::default()
-            });
-            idx.active = Some(new_id.clone());
-            if let Err(e) = write_index(&app_poll, &idx).await {
-                // We've already written the cookies file; not fatal but
-                // visible to the user as "account didn't appear in
-                // list". Surface it through the cancel event so the
-                // frontend at least flips out of the spinning state.
-                eprintln!("[login] write index: {e}");
-                let _ = app_poll.emit("login-cancelled", ());
-                let _ = tokio::fs::remove_dir_all(
-                    &account_cookies_path(&app_poll, &new_id)
-                        .parent()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_default(),
-                )
-                .await;
-                let _ = win.close();
-                let _ = tokio::fs::remove_dir_all(&cleanup_dir).await;
-                return;
+            match mode {
+                LoginMode::Fresh => {
+                    let mut idx = read_index(&app_poll).await;
+                    idx.accounts.push(Account {
+                        id: account_id.clone(),
+                        added_at: now_ts(),
+                        ..Default::default()
+                    });
+                    idx.active = Some(account_id.clone());
+                    if let Err(e) = write_index(&app_poll, &idx).await {
+                        // The jar is written but the row is not, which
+                        // the user would see as "account didn't appear".
+                        // Treat it as a failed sign-in.
+                        eprintln!("[login] write index: {e}");
+                        abort_login(&app_poll, Some(&win), wipe).await;
+                        return;
+                    }
+                    // `login-success` is the soft signal: the frontend
+                    // invalidates its auth queries so the meta backfill
+                    // runs with the new cookies. The follow-up
+                    // `update_account_meta` call is where dedup happens
+                    // (by identity, email or avatar) and where
+                    // `accounts-changed` fires, so we never run the full
+                    // reset twice for one login flow.
+                    let _ = app_poll.emit("login-success", &account_id);
+                }
+                LoginMode::Relink => {
+                    let mut idx = read_index(&app_poll).await;
+                    if idx.active.as_deref() != Some(account_id.as_str()) {
+                        idx.active = Some(account_id.clone());
+                        if let Err(e) = write_index(&app_poll, &idx).await {
+                            eprintln!("[login] write index on re-link: {e}");
+                        }
+                        let _ = app_poll.emit("accounts-changed", ());
+                    }
+                    write_last_refresh(&app_poll, &account_id, now_ts()).await;
+                    eprintln!("[login] re-linked {account_id}");
+                    app_poll.state::<SessionRenewal>().set_needs_relink(None);
+                    let _ = app_poll.emit("session-relinked", &account_id);
+                    // Rebuild the keeper on the renewed profile right away
+                    // so it holds the profile open (WebView2 flushes its
+                    // cookie store on a timer, not on window close).
+                    refresh_now().notify_one();
+                }
             }
-
-            // `login-success` is the soft signal: the frontend invalidates
-            // its auth queries so the meta backfill runs with the new
-            // cookies. The follow-up `update_account_meta` call is where
-            // dedup happens (by identity, email or avatar) and where
-            // `accounts-changed` fires, so we never run the full reset
-            // twice for one login flow.
-            let _ = app_poll.emit("login-success", &new_id);
             let _ = win.close();
             // Keep the WebView profile: it's the live session the periodic
             // refresh re-extracts from. Only cancel/error paths above (and
@@ -1270,6 +1298,27 @@ async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
 
     let _ = win;
     Ok(())
+}
+
+/// "Sign in" / "Add another account": a fresh identity in a fresh
+/// profile. See `open_login_window`.
+#[tauri::command]
+async fn start_login(app: tauri::AppHandle) -> Result<(), String> {
+    open_login_window(app, generate_account_id(), LoginMode::Fresh).await
+}
+
+/// Re-establish the session of an account the app already knows, on the
+/// profile that already holds its Google account. This is the one-click
+/// way back when Google has expired the session (`needs-relink`), as
+/// opposed to `start_login`, which starts from nothing and would also
+/// replace this profile through dedup.
+#[tauri::command]
+async fn relink_account(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let idx = read_index(&app).await;
+    if !idx.accounts.iter().any(|a| a.id == id) {
+        return Err("unknown account".into());
+    }
+    open_login_window(app, id, LoginMode::Relink).await
 }
 
 /// Counts completed page loads in the session-keeper webview, bumped
@@ -1343,101 +1392,118 @@ async fn ensure_session_keeper(
     Ok((win, true))
 }
 
-/// Refresh the replayed cookie snapshot for `id` from its live session-
-/// keeper WebView. Reloads the keeper to force fresh authenticated
-/// requests (which renews the session and rotates its short-lived
-/// cookies), reads the full cookie set, and overwrites `cookies.enc`. The
-/// keeper window is left OPEN for next time.
-///
-/// This is what survives Google's ~2h leash on *extracted* cookies: the
-/// bound browser session behind the keeper stays live, so the snapshot we
-/// replay never goes stale. Errors (leaving the existing snapshot
-/// untouched) when the account has no persisted profile or its session is
-/// logged out, so we never clobber a usable jar with an empty one.
-async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(), String> {
-    // Serialize refreshes so the periodic timer and a manual trigger can't
-    // reload the keeper / rewrite the jar on top of each other.
-    let guard = app.state::<RefreshGuard>();
-    let _lock = guard.inner().0.lock().await;
+/// YouTube auth cookies (session id or the SAPISID the hash is built
+/// from) on a youtube.com domain: the minimum an authenticated InnerTube
+/// call needs.
+fn has_youtube_auth(cookies: &[cookie::Cookie<'static>]) -> bool {
+    cookies.iter().any(|c| {
+        let n = c.name();
+        (n == "__Secure-1PSID" || n == "SAPISID")
+            && c.domain()
+                .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
+                .unwrap_or(false)
+    })
+}
 
-    // Sampled BEFORE navigating: the capture below only trusts a cookie
-    // store the keeper has actually reloaded into.
-    let loads_before = KEEPER_PAGE_LOADS.load(Ordering::Relaxed);
-    let (win, created) = ensure_session_keeper(app, id).await?;
-    eprintln!("[refresh] start id={id} keeper_created={created}");
-    // A reused keeper is reloaded to force fresh authenticated traffic; a
-    // just-created one is already loading the URL from the builder.
-    if !created {
-        if let Ok(u) = "https://music.youtube.com/".parse::<tauri::Url>() {
-            let _ = win.navigate(u);
+/// LOGIN_INFO lands last in YouTube's post-sign-in handshake; a capture
+/// that has it looks like the browser session Google issued it to.
+fn has_login_info(cookies: &[cookie::Cookie<'static>]) -> bool {
+    cookies.iter().any(|c| {
+        c.name() == "LOGIN_INFO"
+            && c.domain()
+                .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
+                .unwrap_or(false)
+    })
+}
+
+fn navigate_keeper(win: &tauri::WebviewWindow, url: &str) {
+    match url.parse::<tauri::Url>() {
+        Ok(u) => {
+            if let Err(e) = win.navigate(u) {
+                eprintln!("[refresh] keeper navigate failed: {e}");
+            }
         }
+        Err(e) => eprintln!("[refresh] bad keeper url: {e}"),
     }
+}
 
-    // Poll the keeper's cookie store until the full authed set is present
-    // (LOGIN_INFO lands last, as at login), then snapshot it. The keeper
-    // window stays open for the next cycle.
-    let mut captured: Option<Vec<u8>> = None;
-    let mut captured_at = 0u8;
-    let mut captured_count = 0usize;
-    let mut captured_login_info = false;
-    let mut saw_page_load = false;
-    for tick in 0..12u8 {
+/// Result of polling the keeper's cookie store after a navigation.
+struct KeeperCapture {
+    /// The full cookie set once YouTube auth cookies were present, the
+    /// tick it was taken at, and whether LOGIN_INFO had landed.
+    cookies: Option<(Vec<cookie::Cookie<'static>>, u8, bool)>,
+    /// The keeper's page-load hook fired after the navigation.
+    page_loaded: bool,
+}
+
+/// Poll the keeper for up to `max_ticks` x 1.5 s until its store holds a
+/// YouTube session.
+///
+/// `loads_before` is `KEEPER_PAGE_LOADS` sampled before the navigation.
+/// A wedged or dead renderer still hands back a readable store (the
+/// persisted one from last time), so nothing is trusted until the hook
+/// has moved, except in the last few ticks, where a stale-but-present
+/// snapshot beats failing the refresh outright. Once the page has
+/// loaded and no session is there, the wait ends early: that is a
+/// signed-out profile, and the caller has a better move than waiting.
+async fn wait_for_keeper_cookies(
+    win: &tauri::WebviewWindow,
+    loads_before: u64,
+    max_ticks: u8,
+) -> KeeperCapture {
+    let mut page_loaded = false;
+    let mut signed_out_ticks: u8 = 0;
+    let unconfirmed_from = max_ticks.saturating_sub(KEEPER_UNCONFIRMED_TICKS);
+    for tick in 0..max_ticks {
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        // A wedged or dead renderer still hands back a readable cookie
-        // store, so presence of cookies proves nothing about whether the
-        // reload happened. Wait for the page-load hook to fire before
-        // trusting anything, but give up waiting after ~9 s rather than
-        // fail the refresh outright: the snapshot on disk staying fresh
-        // matters more than perfect evidence that it was renewed.
-        if !saw_page_load {
-            saw_page_load = KEEPER_PAGE_LOADS.load(Ordering::Relaxed) > loads_before;
-            if !saw_page_load && tick < 6 {
+        if !page_loaded {
+            page_loaded = KEEPER_PAGE_LOADS.load(Ordering::Relaxed) > loads_before;
+            if !page_loaded && tick < unconfirmed_from {
                 continue;
             }
         }
         let Ok(cookies) = win.cookies() else { continue };
-        let has_yt_auth = cookies.iter().any(|c| {
-            let n = c.name();
-            (n == "__Secure-1PSID" || n == "SAPISID")
-                && c.domain()
-                    .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                    .unwrap_or(false)
-        });
-        if !has_yt_auth {
+        if !has_youtube_auth(&cookies) {
+            if page_loaded {
+                signed_out_ticks += 1;
+                if signed_out_ticks >= KEEPER_SIGNED_OUT_TICKS {
+                    break;
+                }
+            }
             continue;
         }
-        let has_login_info = cookies.iter().any(|c| {
-            c.name() == "LOGIN_INFO"
-                && c.domain()
-                    .map(|d| d.trim_start_matches('.').ends_with("youtube.com"))
-                    .unwrap_or(false)
-        });
+        let login_info = has_login_info(&cookies);
         // Give the handshake a few ticks to complete, then take what we
         // have so a missing LOGIN_INFO can't stall the refresh forever.
-        if !has_login_info && tick < 4 {
+        if !login_info && tick < 4 {
             continue;
         }
-        captured_at = tick;
-        captured_count = cookies.len();
-        captured_login_info = has_login_info;
-        captured = Some(cookies_to_netscape(&cookies).into_bytes());
-        break;
+        return KeeperCapture {
+            cookies: Some((cookies, tick, login_info)),
+            page_loaded,
+        };
     }
-    let Some(plain) = captured else {
-        return Err("no auth cookies after reload (profile logged out?)".into());
-    };
-    eprintln!(
-        "[refresh] captured at tick={captured_at} cookies={captured_count} \
-         has_login_info={captured_login_info} page_load_confirmed={saw_page_load}"
-    );
+    KeeperCapture {
+        cookies: None,
+        page_loaded,
+    }
+}
 
+/// Encrypt a keeper capture into `accounts/<id>/cookies.enc`, logging
+/// how it differs from the jar it replaces.
+async fn write_snapshot(
+    app: &tauri::AppHandle,
+    id: &str,
+    cookies: &[cookie::Cookie<'static>],
+) -> Result<(), String> {
+    let plain = cookies_to_netscape(cookies).into_bytes();
     // The keeper's snapshot replaces the jar wholesale, which throws away
     // whatever `merge_response_cookies` echoed in since the last cycle.
     // Two clients of one Google session, synced one way. Measurement says
-    // the keeper's values are the newer ones, so replacing is currently
-    // the right call and the semantics stay as they were, but the diff
-    // has never been visible. Log it: if the keeper ever starts REGRESSING
-    // values the replay path already learned, this is what will say so.
+    // the keeper's values are the newer ones, so replacing is the right
+    // call, but the diff has never been visible. Log it: if the keeper
+    // ever starts REGRESSING values the replay path already learned,
+    // this is what will say so.
     if let Some(existing) = read_jar_at(&account_cookies_path(app, id)).await {
         let snapshot = String::from_utf8_lossy(&plain).into_owned();
         let before = jar_cookie_keys(&existing);
@@ -1451,7 +1517,6 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
             eprintln!("[refresh] snapshot rotates {changed:?}");
         }
     }
-
     let encrypted = tokio::task::spawn_blocking(move || secure_store::encrypt(&plain))
         .await
         .map_err(|e| format!("encrypt join: {e}"))?
@@ -1466,13 +1531,116 @@ async fn refresh_account_cookies(app: &tauri::AppHandle, id: &str) -> Result<(),
     // `cookies.enc` reads as "signed out".
     write_atomic(&path, &encrypted)
         .await
-        .map_err(|e| format!("write refreshed cookies: {e}"))?;
-    // Tell the UI. Without this the frontend has no way to learn that a
-    // session it already gave up on is healthy again, so a single failed
-    // `/account_menu` at launch would keep showing a sign-in button for
-    // the rest of the session.
-    let _ = app.emit("session-refreshed", id);
-    Ok(())
+        .map_err(|e| format!("write refreshed cookies: {e}"))
+}
+
+/// Refresh the replayed cookie snapshot for `id` from its live session-
+/// keeper WebView. Reloads the keeper to force fresh authenticated
+/// requests (which renews the session and rotates its short-lived,
+/// device-bound cookies), reads the full cookie set, and overwrites
+/// `cookies.enc`. The keeper window is left OPEN for next time.
+///
+/// If the reload comes back with no YouTube session, the keeper is sent
+/// through Google's own sign-in bridge (`SERVICE_LOGIN_URL`) once: with
+/// the Google account still known to the profile, Google re-mints the
+/// youtube.com cookies without any click, which is what a normal
+/// browser does when you open YouTube in the morning. Only when that
+/// too lands without a session does this give up with `NeedsRelink`.
+///
+/// `verify` (used for the boot renewal, where the jar's age makes a
+/// stale-but-present store likely) probes music.youtube.com with the
+/// freshly written jar and treats "anonymous" like a signed-out
+/// profile. It reads the ACTIVE account's jar, so callers pass the
+/// active id.
+///
+/// Errors leave the existing snapshot untouched wherever nothing better
+/// was captured, so a usable jar is never clobbered with an empty one.
+async fn refresh_account_cookies(
+    app: &tauri::AppHandle,
+    id: &str,
+    verify: bool,
+) -> Result<RefreshOutcome, RefreshFailure> {
+    // Serialize refreshes so the periodic timer and a manual trigger can't
+    // reload the keeper / rewrite the jar on top of each other.
+    let guard = app.state::<RefreshGuard>();
+    let _lock = guard.inner().0.lock().await;
+
+    if !account_webview_dir(app, id).exists() {
+        return Err(RefreshFailure::NoProfile);
+    }
+
+    // Sampled BEFORE navigating: the capture only trusts a cookie store
+    // the keeper has actually reloaded into.
+    let loads_before = KEEPER_PAGE_LOADS.load(Ordering::Relaxed);
+    let (win, created) = ensure_session_keeper(app, id)
+        .await
+        .map_err(RefreshFailure::Other)?;
+    eprintln!("[refresh] start id={id} keeper_created={created} verify={verify}");
+    // A reused keeper is reloaded to force fresh authenticated traffic; a
+    // just-created one is already loading the URL from the builder.
+    if !created {
+        navigate_keeper(&win, "https://music.youtube.com/");
+    }
+
+    let mut capture = wait_for_keeper_cookies(&win, loads_before, KEEPER_RELOAD_TICKS).await;
+    let mut bridged = false;
+    loop {
+        if let Some((cookies, tick, login_info)) = capture.cookies.take() {
+            eprintln!(
+                "[refresh] captured at tick={tick} cookies={} has_login_info={login_info} \
+                 page_load_confirmed={} bridged={bridged}",
+                cookies.len(),
+                capture.page_loaded
+            );
+            write_snapshot(app, id, &cookies)
+                .await
+                .map_err(RefreshFailure::Other)?;
+            let alive = if verify {
+                match probe_session_alive(app).await {
+                    Ok(alive) => {
+                        eprintln!("[refresh] verify: renewed jar authenticates = {alive}");
+                        alive
+                    }
+                    Err(e) => {
+                        // Can't tell; assume the capture is good rather
+                        // than send a healthy session to the bridge.
+                        eprintln!("[refresh] could not verify the renewed jar: {e}");
+                        true
+                    }
+                }
+            } else {
+                true
+            };
+            if alive {
+                // Tell the UI. Without this the frontend has no way to
+                // learn that a session it already gave up on is healthy
+                // again, so a single failed `/account_menu` at launch
+                // would keep showing a sign-in button for the rest of
+                // the session.
+                app.state::<SessionRenewal>().set_needs_relink(None);
+                let _ = app.emit("session-refreshed", id);
+                return Ok(RefreshOutcome {
+                    page_load_confirmed: capture.page_loaded,
+                });
+            }
+        } else {
+            eprintln!(
+                "[refresh] no YouTube session in the keeper after {} (page_loaded={})",
+                if bridged { "the sign-in bridge" } else { "reload" },
+                capture.page_loaded
+            );
+        }
+        if bridged {
+            return Err(RefreshFailure::NeedsRelink);
+        }
+        bridged = true;
+        eprintln!(
+            "[refresh] replaying ServiceLogin so Google restores the session from the account it still knows"
+        );
+        let loads_before = KEEPER_PAGE_LOADS.load(Ordering::Relaxed);
+        navigate_keeper(&win, SERVICE_LOGIN_URL);
+        capture = wait_for_keeper_cookies(&win, loads_before, KEEPER_BRIDGE_TICKS).await;
+    }
 }
 
 /// Force an immediate snapshot refresh for the active account. Exposed
@@ -1485,11 +1653,11 @@ async fn refresh_active_session(app: tauri::AppHandle) -> Result<bool, String> {
     let Some(active) = idx.active else {
         return Ok(false);
     };
-    match refresh_account_cookies(&app, &active).await {
-        Ok(()) => Ok(true),
+    match refresh_account_cookies(&app, &active, false).await {
+        Ok(_) => Ok(true),
         Err(e) => {
             eprintln!("[refresh] {active}: {e}");
-            Err(e)
+            Err(e.to_string())
         }
     }
 }
@@ -1506,6 +1674,222 @@ const REFRESH_BACKOFF_SECS: [i64; 3] = [30, 120, 300];
 /// clock which jumped forward across a suspend is noticed promptly, no
 /// matter what the monotonic clock did while the machine was out.
 const REFRESH_TICK_SECS: u64 = 60;
+
+/// Snapshot age past which a launch renews BEFORE the UI trusts the jar.
+///
+/// Under 30 min the copy is at most one cycle old and Google still
+/// honors it. Past that the app was closed long enough that the copy may
+/// already be dead (measured 2026-09: dead within 10 h, while the
+/// keeper's own browser session came back fine after 26 h). Trusting a
+/// dead copy at launch painted a sign-in button and an empty library
+/// over a session the keeper revived 25 s later, and users clicked the
+/// button, which threw the keeper profile away for a full sign-in.
+const BOOT_RENEW_AFTER_SECS: i64 = 30 * 60;
+/// Retry delay after a capture the keeper could not confirm with a page
+/// load: the store it read may be the persisted one from last time.
+const REFRESH_UNCONFIRMED_RETRY_SECS: i64 = 60;
+/// Ticks (1.5 s each) to wait for the keeper's reload. Long, because at
+/// launch after a night the reload is also when Chromium rotates the
+/// device-bound cookies, and that adds round-trips to accounts.google.com.
+const KEEPER_RELOAD_TICKS: u8 = 20;
+/// Ticks to wait for Google's sign-in bridge to land back on YT Music.
+const KEEPER_BRIDGE_TICKS: u8 = 12;
+/// In the last ticks of a wait an unconfirmed (no page-load hook) store
+/// is accepted rather than failing the refresh outright.
+const KEEPER_UNCONFIRMED_TICKS: u8 = 4;
+/// Ticks after a confirmed page load with no YouTube session before the
+/// wait gives up early instead of running out the clock.
+const KEEPER_SIGNED_OUT_TICKS: u8 = 4;
+
+fn needs_boot_renewal(last_refresh: Option<i64>, now: i64) -> bool {
+    match last_refresh {
+        None => true,
+        Some(t) => now - t > BOOT_RENEW_AFTER_SECS,
+    }
+}
+
+/// Synchronous twin of `read_index` + `read_last_refresh` for `setup`,
+/// which must answer before the webview's first IPC call whether the
+/// UI may trust the jar on disk.
+fn boot_renewal_needed(app: &tauri::AppHandle) -> bool {
+    let idx: AccountsIndex = std::fs::read(accounts_index_path(app))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    let Some(active) = idx.active else {
+        return false;
+    };
+    if !account_webview_dir(app, &active).exists() {
+        return false;
+    }
+    let last = std::fs::read_to_string(last_refresh_path(app, &active))
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok());
+    needs_boot_renewal(last, now_ts())
+}
+
+/// Boot-time renewal state. The frontend reads it once through
+/// `get_session_state` and holds its first InnerTube requests until the
+/// keeper has renewed the snapshot (or reported that it cannot), so no
+/// request ever goes out with a copy Google may have expired overnight.
+#[derive(Default)]
+struct SessionRenewal {
+    renewing: AtomicBool,
+    /// Account whose session Google has expired for good (see
+    /// `RefreshFailure::NeedsRelink`). Kept here as well as being
+    /// emitted, because the verdict can land before the UI has mounted
+    /// its listener (a cold boot where the keeper is quicker than the
+    /// webview), and a missed event would leave a plain "Sign in"
+    /// button where the one-click re-link belongs.
+    needs_relink: std::sync::Mutex<Option<String>>,
+}
+
+impl SessionRenewal {
+    fn set_needs_relink(&self, id: Option<&str>) {
+        if let Ok(mut slot) = self.needs_relink.lock() {
+            *slot = id.map(str::to_string);
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionState {
+    renewing: bool,
+    needs_relink: Option<String>,
+}
+
+#[tauri::command]
+fn get_session_state(state: tauri::State<'_, SessionRenewal>) -> SessionState {
+    SessionState {
+        renewing: state.renewing.load(Ordering::Relaxed),
+        needs_relink: state
+            .needs_relink
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or(None),
+    }
+}
+
+/// A renewal is about to run against a snapshot that may be dead (a
+/// resume from sleep, a switch to an account that has aged in the
+/// background): raise the gate so the UI's requests wait for the verdict
+/// instead of going out anonymous, exactly as at boot. Not used for the
+/// routine 20-minute cycle of a healthy session, which must never stall
+/// the app.
+fn announce_renewal(app: &tauri::AppHandle) {
+    app.state::<SessionRenewal>()
+        .renewing
+        .store(true, Ordering::Relaxed);
+    let _ = app.emit("session-renewing", ());
+}
+
+/// Wakes the refresh loop so the active account is renewed now (account
+/// switch, re-link) instead of at its next tick. `notify_one` keeps a
+/// permit if the loop is mid-refresh, so the request is never lost.
+fn refresh_now() -> &'static Notify {
+    static NOTIFY: std::sync::OnceLock<Notify> = std::sync::OnceLock::new();
+    NOTIFY.get_or_init(Notify::new)
+}
+
+/// Why a refresh did not produce a usable jar. The loop turns this into
+/// the `session-refresh-failed` event's `reason`; the sidebar keys its
+/// "session expired" prompt on `needs-relink`.
+#[derive(Debug)]
+enum RefreshFailure {
+    /// The keeper profile no longer holds a YouTube session and Google's
+    /// sign-in bridge could not restore it silently: Google wants the
+    /// user to pick the account. `relink_account` on this profile is one
+    /// click; a fresh `start_login` would be a full sign-in.
+    NeedsRelink,
+    /// Nothing to refresh from: the account predates the keeper or its
+    /// profile was lost.
+    NoProfile,
+    /// No internet for the whole wait.
+    Offline,
+    /// Anything else (window build, encrypt, disk). The jar on disk is
+    /// left as it was.
+    Other(String),
+}
+
+impl RefreshFailure {
+    fn reason(&self) -> &'static str {
+        match self {
+            RefreshFailure::NeedsRelink => "needs-relink",
+            RefreshFailure::NoProfile => "no-profile",
+            RefreshFailure::Offline => "offline",
+            RefreshFailure::Other(_) => "error",
+        }
+    }
+}
+
+impl std::fmt::Display for RefreshFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefreshFailure::NeedsRelink => {
+                write!(f, "the keeper's session is gone and Google wants a click to restore it")
+            }
+            RefreshFailure::NoProfile => write!(f, "no persisted webview profile"),
+            RefreshFailure::Offline => write!(f, "no internet"),
+            RefreshFailure::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// What a successful refresh can say about itself.
+struct RefreshOutcome {
+    /// The keeper's page-load hook fired before the capture, so the
+    /// cookies come from a reload Google actually served, not from the
+    /// persisted store of a renderer that never got going.
+    page_load_confirmed: bool,
+}
+
+/// Close out a refresh attempt that produced no usable jar: drops the
+/// boot gate and tells the UI why. Emitted for every `needs-relink`
+/// (that is the "session expired" prompt, mid-session too) but for the
+/// transient reasons only while a boot renewal is pending, so a laptop
+/// sitting offline does not raise an event every 30 s.
+fn settle_refresh(app: &tauri::AppHandle, id: Option<&str>, failure: &RefreshFailure) {
+    let renewal = app.state::<SessionRenewal>();
+    let was_boot = renewal.renewing.swap(false, Ordering::Relaxed);
+    if matches!(failure, RefreshFailure::NeedsRelink) {
+        renewal.set_needs_relink(id);
+    }
+    if was_boot || matches!(failure, RefreshFailure::NeedsRelink) {
+        eprintln!(
+            "[refresh] telling the UI: session-refresh-failed reason={} (boot={was_boot})",
+            failure.reason()
+        );
+        let _ = app.emit(
+            "session-refresh-failed",
+            serde_json::json!({ "id": id, "reason": failure.reason() }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod boot_renewal_tests {
+    use super::{needs_boot_renewal, BOOT_RENEW_AFTER_SECS};
+
+    #[test]
+    fn a_missing_stamp_renews() {
+        assert!(needs_boot_renewal(None, 1_000_000));
+    }
+
+    #[test]
+    fn a_fresh_stamp_does_not() {
+        let now = 1_000_000;
+        assert!(!needs_boot_renewal(Some(now - 60), now));
+        assert!(!needs_boot_renewal(Some(now - BOOT_RENEW_AFTER_SECS), now));
+    }
+
+    #[test]
+    fn an_old_stamp_renews() {
+        let now = 1_000_000;
+        assert!(needs_boot_renewal(Some(now - BOOT_RENEW_AFTER_SECS - 1), now));
+        assert!(needs_boot_renewal(Some(now - 10 * 3600), now));
+    }
+}
 
 fn now_ts() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
@@ -1542,6 +1926,11 @@ async fn write_last_refresh(app: &tauri::AppHandle, id: &str, ts: i64) {
 /// the moment the machine wakes, into a network stack that has not come
 /// back yet. A deadline in wall-clock seconds is immune either way, and
 /// the resume notification wakes us straight out of the tick.
+///
+/// The first pass doubles as the boot renewal when `setup` decided the
+/// jar on disk is too old to trust (see `SessionRenewal`): it runs with
+/// `verify` on, and whichever way it ends the boot gate is dropped so
+/// the UI's first requests can go out.
 async fn run_refresh_loop(app: tauri::AppHandle) {
     let resume = power::resume_signal();
     // Wall-clock deadline for the next attempt; 0 means "right now".
@@ -1556,75 +1945,125 @@ async fn run_refresh_loop(app: tauri::AppHandle) {
 
     loop {
         if now_ts() >= next_due {
-            match read_index(&app).await.active {
-                None => next_due = now_ts() + REFRESH_INTERVAL_SECS,
-                Some(active) if !account_webview_dir(&app, &active).exists() => {
-                    if warned_profileless.as_deref() != Some(active.as_str()) {
-                        eprintln!(
-                            "[refresh] {active} has no persisted webview profile; its snapshot \
-                             cannot be renewed until the user signs in again"
-                        );
-                        warned_profileless = Some(active.clone());
+            let boot = app
+                .state::<SessionRenewal>()
+                .renewing
+                .load(Ordering::Relaxed);
+            if app.get_webview_window("login").is_some() {
+                // A sign-in window owns the profile for now (a re-link
+                // shares the keeper's). Reloading underneath the user's
+                // click would be confusing; the window notifies us when
+                // it is done.
+                next_due = now_ts() + 30;
+            } else {
+                match read_index(&app).await.active {
+                    None => {
+                        settle_refresh(&app, None, &RefreshFailure::NoProfile);
+                        next_due = now_ts() + REFRESH_INTERVAL_SECS;
                     }
-                    next_due = now_ts() + REFRESH_INTERVAL_SECS;
-                }
-                Some(active) => {
-                    warned_profileless = None;
-                    // Don't spend the attempt on a NIC that hasn't come
-                    // back yet: that is what made a resume cost a full
-                    // cycle before.
-                    if !power::wait_for_network(Duration::from_secs(60)).await {
-                        if !warned_offline {
-                            eprintln!("[refresh] no internet; deferring until it comes back");
-                            warned_offline = true;
+                    Some(active) if !account_webview_dir(&app, &active).exists() => {
+                        if warned_profileless.as_deref() != Some(active.as_str()) {
+                            eprintln!(
+                                "[refresh] {active} has no persisted webview profile; its snapshot \
+                                 cannot be renewed until the user signs in again"
+                            );
+                            warned_profileless = Some(active.clone());
                         }
-                        next_due = now_ts() + 30;
-                    } else {
-                        if warned_offline {
-                            eprintln!("[refresh] internet is back");
-                            warned_offline = false;
-                        }
-                        let previous = read_last_refresh(&app, &active).await;
-                        match refresh_account_cookies(&app, &active).await {
-                            Ok(()) => {
-                                let now = now_ts();
-                                match previous {
-                                    Some(t) => eprintln!(
-                                        "[refresh] renewed snapshot for {active} \
-                                         (previous succeeded {}s ago)",
-                                        now - t
-                                    ),
-                                    None => eprintln!("[refresh] renewed snapshot for {active}"),
-                                }
-                                write_last_refresh(&app, &active, now).await;
-                                failures = 0;
-                                next_due = now + REFRESH_INTERVAL_SECS;
+                        settle_refresh(&app, Some(&active), &RefreshFailure::NoProfile);
+                        next_due = now_ts() + REFRESH_INTERVAL_SECS;
+                    }
+                    Some(active) => {
+                        warned_profileless = None;
+                        // Don't spend the attempt on a NIC that hasn't come
+                        // back yet: that is what made a resume cost a full
+                        // cycle before.
+                        if !power::wait_for_network(Duration::from_secs(60)).await {
+                            if !warned_offline {
+                                eprintln!("[refresh] no internet; deferring until it comes back");
+                                warned_offline = true;
                             }
-                            Err(e) => {
-                                eprintln!("[refresh] {active}: {e}");
-                                // Separate "the keeper misbehaved" from
-                                // "the session is genuinely gone". Only
-                                // on the first failure, so a permanently
-                                // dead profile doesn't probe on a loop.
-                                if failures == 0 {
-                                    match probe_session_alive(&app).await {
-                                        Ok(true) => eprintln!(
-                                            "[refresh] the jar still authenticates, so the \
-                                             keeper is what failed"
+                            settle_refresh(&app, Some(&active), &RefreshFailure::Offline);
+                            next_due = now_ts() + 30;
+                        } else {
+                            if warned_offline {
+                                eprintln!("[refresh] internet is back");
+                                warned_offline = false;
+                            }
+                            let previous = read_last_refresh(&app, &active).await;
+                            match refresh_account_cookies(&app, &active, boot).await {
+                                Ok(outcome) => {
+                                    let now = now_ts();
+                                    match previous {
+                                        Some(t) => eprintln!(
+                                            "[refresh] renewed snapshot for {active} \
+                                             (previous succeeded {}s ago)",
+                                            now - t
                                         ),
-                                        Ok(false) => eprintln!(
-                                            "[refresh] the jar no longer authenticates; this \
-                                             account needs a re-login"
-                                        ),
-                                        Err(e) => eprintln!("[refresh] liveness probe failed: {e}"),
+                                        None => {
+                                            eprintln!("[refresh] renewed snapshot for {active}")
+                                        }
+                                    }
+                                    write_last_refresh(&app, &active, now).await;
+                                    failures = 0;
+                                    app.state::<SessionRenewal>()
+                                        .renewing
+                                        .store(false, Ordering::Relaxed);
+                                    next_due = if outcome.page_load_confirmed {
+                                        now + REFRESH_INTERVAL_SECS
+                                    } else {
+                                        eprintln!(
+                                            "[refresh] capture had no confirmed page load; \
+                                             retrying in {REFRESH_UNCONFIRMED_RETRY_SECS}s"
+                                        );
+                                        now + REFRESH_UNCONFIRMED_RETRY_SECS
+                                    };
+                                }
+                                Err(e) => {
+                                    eprintln!("[refresh] {active}: {e}");
+                                    settle_refresh(&app, Some(&active), &e);
+                                    match e {
+                                        // Nothing here can fix these; the
+                                        // user's re-link (or a resume)
+                                        // wakes the loop, so no backoff
+                                        // churn against Google's sign-in
+                                        // pages meanwhile.
+                                        RefreshFailure::NeedsRelink | RefreshFailure::NoProfile => {
+                                            failures = 0;
+                                            next_due = now_ts() + REFRESH_INTERVAL_SECS;
+                                        }
+                                        RefreshFailure::Offline => {
+                                            next_due = now_ts() + 30;
+                                        }
+                                        RefreshFailure::Other(_) => {
+                                            // Separate "the keeper misbehaved"
+                                            // from "the session is genuinely
+                                            // gone". Only on the first
+                                            // failure, so a permanently dead
+                                            // profile doesn't probe on a loop.
+                                            if failures == 0 {
+                                                match probe_session_alive(&app).await {
+                                                    Ok(true) => eprintln!(
+                                                        "[refresh] the jar still authenticates, \
+                                                         so the keeper is what failed"
+                                                    ),
+                                                    Ok(false) => eprintln!(
+                                                        "[refresh] the jar no longer authenticates; \
+                                                         this account needs a re-login"
+                                                    ),
+                                                    Err(e) => eprintln!(
+                                                        "[refresh] liveness probe failed: {e}"
+                                                    ),
+                                                }
+                                            }
+                                            failures += 1;
+                                            let wait = REFRESH_BACKOFF_SECS
+                                                .get(failures - 1)
+                                                .copied()
+                                                .unwrap_or(REFRESH_INTERVAL_SECS);
+                                            next_due = now_ts() + wait;
+                                        }
                                     }
                                 }
-                                failures += 1;
-                                let wait = REFRESH_BACKOFF_SECS
-                                    .get(failures - 1)
-                                    .copied()
-                                    .unwrap_or(REFRESH_INTERVAL_SECS);
-                                next_due = now_ts() + wait;
                             }
                         }
                     }
@@ -1637,6 +2076,14 @@ async fn run_refresh_loop(app: tauri::AppHandle) {
             _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
             _ = resume.notified() => {
                 eprintln!("[power] resumed from sleep; forcing a session refresh");
+                // Hours of sleep are enough for the snapshot to have
+                // died; hold the UI's requests until this one settles.
+                announce_renewal(&app);
+                next_due = 0;
+                failures = 0;
+            }
+            _ = refresh_now().notified() => {
+                eprintln!("[refresh] renewal requested; refreshing now");
                 next_due = 0;
                 failures = 0;
             }
@@ -1978,6 +2425,12 @@ async fn switch_account(app: tauri::AppHandle, id: String) -> Result<(), String>
     idx.active = Some(id);
     write_index(&app, &idx).await?;
     let _ = app.emit("accounts-changed", ());
+    // The account we just switched to may not have been renewed for a
+    // while (its jar ages while another account is active); don't make
+    // it wait for the next tick, and don't let the switch's refetches
+    // run against it before the keeper has looked at it.
+    announce_renewal(&app);
+    refresh_now().notify_one();
     Ok(())
 }
 
@@ -2321,8 +2774,12 @@ async fn merge_response_cookies(
         let app_probe = app.clone();
         tauri::async_runtime::spawn(async move {
             if let Some(active) = read_index(&app_probe).await.active {
-                if let Err(e) = refresh_account_cookies(&app_probe, &active).await {
+                // Verified: the question here is precisely whether the
+                // session is gone, and a `needs-relink` verdict must reach
+                // the UI as it would from the loop.
+                if let Err(e) = refresh_account_cookies(&app_probe, &active, true).await {
                     eprintln!("[auth] post-expiry keeper re-check failed: {e}");
+                    settle_refresh(&app_probe, Some(&active), &e);
                 }
             }
         });
@@ -3722,6 +4179,7 @@ pub fn run() {
         .manage(CloseBehavior::default())
         .manage(JarWriteLock::default())
         .manage(RefreshGuard::default())
+        .manage(SessionRenewal::default())
         .manage(discord::spawn())
         .manage(lastfm::LastfmState::default())
         .invoke_handler(tauri::generate_handler![
@@ -3735,6 +4193,8 @@ pub fn run() {
             is_logged_in,
             probe_session,
             refresh_active_session,
+            get_session_state,
+            relink_account,
             clear_cookies,
             list_accounts,
             switch_account,
@@ -3856,11 +4316,25 @@ pub fn run() {
             if let Err(e) = power::init() {
                 eprintln!("[power] resume notifications unavailable: {e}");
             }
+            // Decided here, synchronously, so the webview's first
+            // `get_session_state` already sees it: when the jar on disk is
+            // old enough that Google may have expired it, the UI holds its
+            // first requests until the keeper has renewed it, and the loop
+            // starts right away instead of after the settle delay.
             let refresh_handle = app.handle().clone();
+            let boot_stale = boot_renewal_needed(&refresh_handle);
+            refresh_handle
+                .state::<SessionRenewal>()
+                .renewing
+                .store(boot_stale, Ordering::Relaxed);
+            if boot_stale {
+                eprintln!("[refresh] snapshot on disk is stale; renewing before the UI trusts it");
+            }
             tauri::async_runtime::spawn(async move {
-                // Let migrations + the stream server settle, and give a
-                // just-completed login time to persist its profile.
-                tokio::time::sleep(Duration::from_secs(20)).await;
+                // Otherwise let migrations + the stream server settle, and
+                // give a just-completed login time to persist its profile.
+                let settle = if boot_stale { 1 } else { 20 };
+                tokio::time::sleep(Duration::from_secs(settle)).await;
                 run_refresh_loop(refresh_handle).await;
             });
             // Native media controls: SMTC on Windows, MPRIS on Linux, and Now

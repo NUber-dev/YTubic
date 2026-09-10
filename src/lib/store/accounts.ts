@@ -131,7 +131,26 @@ export function useLoginSuccessListener(): void {
  * restart. Dropping the 5-minute auth-context cache and invalidating
  * the auth triad turns each successful refresh into a fresh verdict.
  *
- * Cheap: three queries, only refetched where they're actually mounted.
+ * Cheap in the common case: three queries, only refetched where
+ * they're actually mounted.
+ *
+ * The exception is a session that was DEAD when the app opened. The
+ * keeper renews it ~26 s into the launch, but by then every content
+ * query has already run against a jar Google no longer honors and
+ * cached what came back: an anonymous `/browse` answers 200 with an
+ * empty shelf, so the emptiness is stored as success data, not as an
+ * error. Refreshing only the auth triad then repaints the account (the
+ * sign-in button disappears) over a library that stays empty for the
+ * rest of the session, which is exactly the "it says I'm logged in but
+ * nothing loads" report. `["liked-songs"]` is worse still: 1 h
+ * staleTime plus `shouldPersistQuery`, so the empty list survives a
+ * reload from disk and the hearts stay grey.
+ *
+ * So when the frontend currently believes it is signed out, treat the
+ * refresh as a sign-in and invalidate everything. Gated on that belief
+ * because the event also fires every 20 min on a perfectly healthy
+ * session, where a blanket invalidation would refetch the whole app
+ * for nothing.
  */
 export function useSessionRefreshedListener(): void {
   const qc = useQueryClient();
@@ -139,10 +158,21 @@ export function useSessionRefreshedListener(): void {
     let cancelled = false;
     let dispose: (() => void) | undefined;
     void listen("session-refreshed", () => {
+      // Read BEFORE invalidating: the verdict we are reacting to is the
+      // one the app is showing right now.
+      const info = qc.getQueryState(["account-info"]);
+      const believedSignedOut =
+        info?.status === "error" ||
+        (info?.status === "success" && info.data == null);
+
       resetInnertube();
       void qc.invalidateQueries({ queryKey: ["auth-logged-in"] });
       void qc.invalidateQueries({ queryKey: ["account-info"] });
       void qc.invalidateQueries({ queryKey: ["premium-status"] });
+      // Everything else was fetched anonymously; none of it is truth.
+      // Mounted queries refetch now, the rest on next mount, and the
+      // persisted copies are overwritten as they do.
+      if (believedSignedOut) void qc.invalidateQueries();
     }).then((un) => {
       if (cancelled) un();
       else dispose = un;

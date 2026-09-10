@@ -80,6 +80,7 @@ import { resetInnertube } from "@/lib/innertube/client";
 import { accountSlot } from "@/lib/auth-presence";
 import { usePremiumStore } from "@/lib/store/premium";
 import { accountInfoQuery, authLoggedInQuery } from "@/lib/store/auth-queries";
+import { useSessionStatusStore } from "@/lib/store/session-status";
 import {
   removeAccount,
   switchAccount,
@@ -494,19 +495,28 @@ const MANAGE_SUBSCRIPTION_URL = "https://music.youtube.com/paid_memberships";
 
 /**
  * The logged-out footer CTA: a full-width primary (brand red) button.
- * Collapses to a red icon button with a tooltip in icon mode. Runs the
- * same `start_login` flow as "Add another account".
+ * Collapses to a red icon button with a tooltip in icon mode.
+ *
+ * With `relinkId` it signs the stored account back in on its own
+ * browser profile: Google's chooser has the account preselected and
+ * the profile (the keeper's live session, Google's knowledge of this
+ * device) is kept rather than replaced through dedup. Google may still
+ * ask for a passkey or password when it has expired the session, so
+ * to the user this is the same "Sign in" and is labelled as such.
+ * Without it (nothing stored, or an account with no profile) it runs
+ * the same fresh `start_login` as "Add another account".
  */
-function SidebarSignInButton() {
+function SidebarSignInButton({ relinkId }: { relinkId: string | null }) {
   return (
     <SidebarMenu>
       <SidebarMenuItem>
         <Button
           title="Sign in"
           onClick={() => {
-            invoke("start_login").catch((e) =>
-              toast.error(`Sign-in failed: ${String(e)}`),
-            );
+            const call = relinkId
+              ? invoke("relink_account", { id: relinkId })
+              : invoke("start_login");
+            call.catch((e) => toast.error(`Sign-in failed: ${String(e)}`));
           }}
           className="grid h-9 w-full grid-cols-[32px_minmax(0,1fr)] items-center gap-0.5 overflow-hidden py-0 ps-0.5 pe-2.5 [&>svg]:justify-self-center"
         >
@@ -525,6 +535,7 @@ function UserProfile() {
   const account = useQuery(accountInfoQuery(loggedIn.data === true));
   const accounts = useAccounts();
   const premiumStatus = usePremiumStore((s) => s.status);
+  const expiredAccountId = useSessionStatusStore((s) => s.expiredAccountId);
 
   const allAccounts = accounts.data ?? [];
   const activeAccount = allAccounts.find((a) => a.isActive) ?? allAccounts[0];
@@ -540,8 +551,18 @@ function UserProfile() {
     accountLoading: account.isLoading,
     accountErrored: account.isError,
   });
+  // The keeper's own verdict, which arrives independently of the
+  // queries above: Google expired the session and wants the user to
+  // sign in again. Shown as the sign-in button rather than the stored
+  // profile, which would look signed in over a dead session.
+  const expired =
+    !!activeAccount && expiredAccountId === activeAccount.id;
+  const relinkId =
+    activeAccount && activeAccount.canRefresh ? activeAccount.id : null;
   if (slot === "wait") return null;
-  if (slot === "sign-in") return <SidebarSignInButton />;
+  if (slot === "sign-in" || expired) {
+    return <SidebarSignInButton relinkId={relinkId} />;
+  }
 
   const live = account.data;
   const name =
@@ -646,6 +667,15 @@ function UserProfile() {
                 >
                   {tierLabel}
                 </Badge>
+              ) : account.isLoading ? (
+                // First look at the session, typically the few seconds
+                // at launch while the keeper renews an old snapshot.
+                <span
+                  data-sidebar-label
+                  className="ms-auto text-[10px] text-muted-foreground group-data-[collapsible=icon]:hidden"
+                >
+                  Connecting…
+                </span>
               ) : null}
             </SidebarMenuButton>
           </DropdownMenuTrigger>

@@ -1,5 +1,6 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
+import { sessionReady } from "@/lib/session-gate";
 import type { ShelfItem, ShelfMore, Thumbnail } from "./types";
 
 export type YtNode = Record<string, any>;
@@ -122,6 +123,10 @@ let authPromise: Promise<AuthContext> | null = null;
 let authEpoch = 0;
 
 async function loadAuthContext(): Promise<AuthContext> {
+  // At launch after hours closed the jar on disk is usually expired and
+  // the keeper renews it seconds later; reading it before that made the
+  // first wave of requests anonymous. Resolved once, then free.
+  await sessionReady();
   const now = Date.now();
   if (authCache && now - authCache.loadedAt < AUTH_CACHE_TTL_MS) {
     return authCache.value;
