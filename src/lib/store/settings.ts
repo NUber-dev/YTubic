@@ -33,6 +33,8 @@ type State = {
   /** Body of the full-screen player: cover centred, cover with the
    *  lyrics beside it, or the art itself behind the title. */
   fullscreenLayout: FullscreenLayout;
+  /** Let the full-screen controls recede once the mouse settles. */
+  fullscreenIdleFade: boolean;
   /** System toast on track change while the app is in the background
    *  (see `lib/playback-notifications.ts`). */
   playbackNotifications: boolean;
@@ -65,6 +67,7 @@ type State = {
   setInterfaceFont: (v: InterfaceFont) => void;
   setRatingButtons: (v: RatingButtons) => void;
   setFullscreenLayout: (v: FullscreenLayout) => void;
+  setFullscreenIdleFade: (v: boolean) => void;
   setPlaybackNotifications: (v: boolean) => void;
   setDiscordRichPresence: (v: boolean) => void;
   setLastfmEnabled: (v: boolean) => void;
@@ -92,6 +95,7 @@ export const useSettingsStore = create<State>()(
       interfaceFont: "system",
       ratingButtons: "heart",
       fullscreenLayout: "cover",
+      fullscreenIdleFade: true,
       playbackNotifications: false,
       discordRichPresence: false,
       lastfmEnabled: false,
@@ -106,6 +110,7 @@ export const useSettingsStore = create<State>()(
       setInterfaceFont: (interfaceFont) => set({ interfaceFont }),
       setRatingButtons: (ratingButtons) => set({ ratingButtons }),
       setFullscreenLayout: (fullscreenLayout) => set({ fullscreenLayout }),
+      setFullscreenIdleFade: (fullscreenIdleFade) => set({ fullscreenIdleFade }),
       setPlaybackNotifications: (playbackNotifications) =>
         set({ playbackNotifications }),
       setDiscordRichPresence: (discordRichPresence) =>

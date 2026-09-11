@@ -26,8 +26,14 @@ function Slider({
   value,
   min = 0,
   max = 100,
+  marks,
   ...props
-}: React.ComponentProps<typeof SliderPrimitive.Root>) {
+}: React.ComponentProps<typeof SliderPrimitive.Root> & {
+  // Painted over the inactive pill but under the active one, so anything
+  // a consumer marks on the track still reads as unplayed ahead of the
+  // thumb and stays behind the fill once passed.
+  marks?: React.ReactNode
+}) {
   const _values = React.useMemo(
     () =>
       Array.isArray(value)
@@ -76,16 +82,6 @@ function Slider({
           "relative grow data-[orientation=horizontal]:h-1.5 data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-1.5"
         )}
       >
-        {/* Active (filled) pill — grows from the start to the thumb gap. */}
-        <div
-          data-slot="slider-range"
-          aria-hidden
-          className={cn(
-            "absolute rounded-full bg-primary",
-            isVertical ? "inset-x-0 bottom-0" : "inset-y-0 left-0"
-          )}
-          style={isVertical ? { height: activeSize } : { width: activeSize }}
-        />
         {/* Inactive pill — starts after the thumb gap, runs to the end.
             Keeps the `slider-track` data-slot so a consumer can still
             retint the visible inactive bar. */}
@@ -101,6 +97,17 @@ function Slider({
               ? { bottom: inactiveStart }
               : { left: inactiveStart }
           }
+        />
+        {marks}
+        {/* Active (filled) pill — grows from the start to the thumb gap. */}
+        <div
+          data-slot="slider-range"
+          aria-hidden
+          className={cn(
+            "absolute rounded-full bg-primary",
+            isVertical ? "inset-x-0 bottom-0" : "inset-y-0 left-0"
+          )}
+          style={isVertical ? { height: activeSize } : { width: activeSize }}
         />
       </SliderPrimitive.Track>
       {Array.from({ length: _values.length }, (_, index) => (

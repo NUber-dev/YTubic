@@ -19,7 +19,8 @@
         { "url": "https://itunes.apple.com/*" },
         { "url": "https://apic-desktop.musixmatch.com/*" },
         { "url": "https://genius.com/*" },
-        { "url": "https://lrclib.net/*" }
+        { "url": "https://lrclib.net/*" },
+        { "url": "https://sponsor.ajay.app/*" }
       ]
     },
     "store:default",

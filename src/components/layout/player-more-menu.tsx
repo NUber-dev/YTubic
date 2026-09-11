@@ -26,6 +26,7 @@ import {
   useTrackMenuController,
 } from "@/components/shared/track-context-menu";
 import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
+import { trackArtistIds, trackArtistNames } from "@/lib/track-meta";
 import { useTrackSourceStore, type SourceKind } from "@/lib/store/track-source";
 import type { QueueTrack } from "@/lib/store/playback";
 import type { ShelfItem } from "@/lib/innertube/types";
@@ -156,9 +157,17 @@ function SourceMenuItems({ track }: { track: QueueTrack }) {
     }
     setBusy(target);
     try {
-      const artistsLine = track.artists?.map((a) => a.name).join(" ") ?? "";
-      const query = `${track.title} ${artistsLine}`.trim();
-      const altId = await findAlternateVideoId(query, track.videoId, target);
+      const artistNames = trackArtistNames(track);
+      const query = `${track.title} ${artistNames.join(" ")}`.trim();
+      const altId = await findAlternateVideoId(
+        query,
+        track.videoId,
+        target,
+        artistNames,
+        track.title,
+        trackArtistIds(track),
+        track.duration,
+      );
       if (!altId) {
         toast.error(
           target === "video"
