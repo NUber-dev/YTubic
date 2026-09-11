@@ -11,6 +11,7 @@ import {
   IconThumbDown,
   IconThumbUp,
   IconTypography,
+  IconEyeOff,
 } from "@tabler/icons-react";
 import {
   DropdownMenu,
@@ -113,6 +114,7 @@ export function AppearanceTab() {
         />
         <PlayerLayoutRow />
         <FullscreenLayoutRow />
+        <IdleFadeRow />
       </Group>
     </TabPane>
   );
@@ -449,6 +451,25 @@ const PLAYER_TILES: {
  * "album" wash, a cover, the title bars and the transport with its play
  * button.
  */
+function IdleFadeRow() {
+  const on = useSettingsStore((s) => s.fullscreenIdleFade);
+  const set = useSettingsStore((s) => s.setFullscreenIdleFade);
+  return (
+    <SettingRow
+      icon={IconEyeOff}
+      title="Hide Controls When Idle"
+      description="Fade the full-screen controls away once the mouse stops moving."
+      control={
+        <Switch
+          checked={on}
+          onCheckedChange={set}
+          aria-label="Hide Controls When Idle"
+        />
+      }
+    />
+  );
+}
+
 function FullscreenLayoutRow() {
   const value = useSettingsStore((s) => s.fullscreenLayout);
   const setValue = useSettingsStore((s) => s.setFullscreenLayout);

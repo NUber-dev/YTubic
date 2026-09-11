@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "@tanstack/react-router";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import type { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ArrowLeftIcon, ArrowRightIcon, MoreHorizontalIcon } from "lucide-react";
 import {
+  IconArrowsMinimize,
   IconBugFilled,
   IconDeviceDesktopFilled,
   IconExternalLink,
@@ -87,6 +89,89 @@ export function TopBar() {
   const [maximized, setMaximized] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [trueFullscreen, setTrueFullscreen] = useState(false);
+  const [barRevealed, setBarRevealed] = useState(true);
+  const restoreBoundsRef = useRef<{
+    position: PhysicalPosition;
+    size: PhysicalSize;
+    wasMaximized: boolean;
+  } | null>(null);
+  const hideTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!trueFullscreen) return;
+    const REVEAL_ZONE = 8;
+    const HOLD_ZONE = 40;
+    const onMove = (e: MouseEvent) => {
+      const zone = barRevealed ? HOLD_ZONE : REVEAL_ZONE;
+      if (e.clientY <= zone) {
+        if (hideTimerRef.current !== null) {
+          window.clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        if (!barRevealed) setBarRevealed(true);
+      } else if (hideTimerRef.current === null) {
+        hideTimerRef.current = window.setTimeout(() => {
+          hideTimerRef.current = null;
+          setBarRevealed(false);
+        }, 900);
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      if (hideTimerRef.current !== null) {
+        window.clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [trueFullscreen, barRevealed]);
+
+  const toggleTrueFullscreen = async () => {
+    const w = getCurrentWindow();
+    if (!trueFullscreen) {
+      const monitor = await currentMonitor();
+      if (!monitor) return;
+      restoreBoundsRef.current = {
+        position: await w.outerPosition(),
+        size: await w.outerSize(),
+        wasMaximized: await w.isMaximized(),
+      };
+      await w.setAlwaysOnTop(true);
+      await w.setResizable(false);
+      await w.setShadow(false);
+      await w.setPosition(monitor.position);
+      await w.setSize(monitor.size);
+      setTrueFullscreen(true);
+      setBarRevealed(false);
+    } else {
+      await w.setAlwaysOnTop(false);
+      await w.setResizable(true);
+      await w.setShadow(true);
+      const bounds = restoreBoundsRef.current;
+      if (bounds?.wasMaximized) {
+        await w.maximize();
+      } else if (bounds) {
+        await w.setSize(bounds.size);
+        await w.setPosition(bounds.position);
+      }
+      setTrueFullscreen(false);
+      setBarRevealed(true);
+    }
+  };
+
+  const barHidden = trueFullscreen && !barRevealed;
+
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "F11") return;
+      e.preventDefault();
+      void toggleTrueFullscreen();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   useEffect(() => {
     // macOS has no custom maximize glyph to keep in sync; native traffic
@@ -128,8 +213,9 @@ export function TopBar() {
         // reachable there; the bar itself is transparent, so the blurred
         // cover runs up behind it.
         className={cn(
-          "relative flex h-9 shrink-0 select-none items-center",
+          "relative flex h-9 shrink-0 select-none items-center transition-transform duration-300",
           fullscreen ? "z-[45]" : "z-30",
+          barHidden ? "-translate-y-full pointer-events-none" : "translate-y-0",
         )}
       >
         <div
@@ -178,6 +264,18 @@ export function TopBar() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {IS_TAURI && trueFullscreen ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={NAV_BTN_CLS}
+              onClick={() => void toggleTrueFullscreen()}
+              aria-label="Exit full screen"
+            >
+              <IconArrowsMinimize />
+            </Button>
+          ) : null}
 
           {/* No page and no sidebar to navigate while the full-screen
               player is up, so the three go with it. */}
@@ -243,7 +341,12 @@ export function TopBar() {
       {!IS_MAC && (
         <div
           {...{ [WINDOW_CHROME_ATTR]: "" }}
-          className="pointer-events-auto fixed right-0 top-0 z-[60] flex h-9 items-center"
+          className={cn(
+            "fixed right-0 top-0 z-[60] flex h-9 items-center transition-transform duration-300",
+            barHidden
+              ? "-translate-y-full pointer-events-none"
+              : "translate-y-0 pointer-events-auto",
+          )}
         >
           <button
             type="button"

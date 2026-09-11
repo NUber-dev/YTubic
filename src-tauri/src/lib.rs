@@ -11,7 +11,7 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::{Mutex, Notify};
 
 use axum::{
-    extract::{Path, Request, State as AxumState},
+    extract::{Path, Query, Request, State as AxumState},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -3228,6 +3228,9 @@ struct StreamServer {
     /// in-flight independently for the two modes.
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
+    /// Music-video files for the full-screen backdrop. Session-only,
+    /// wiped on startup like the ephemeral audio cache.
+    video_dir: PathBuf,
     downloads: DownloadMap,
     /// Expected location of the managed yt-dlp copy. Resolution to an
     /// actual program (managed vs PATH fallback) happens per-spawn via
@@ -3954,12 +3957,415 @@ fn generate_stream_token() -> String {
     out
 }
 
+const VIDEO_FORMAT_LO: &str = "bestvideo[vcodec^=avc1][height<=1440][protocol^=http]/bestvideo[height<=1440][protocol^=http]/bestvideo[protocol^=http]/best[protocol^=http]";
+const VIDEO_FORMAT_HI: &str = "bestvideo[vcodec^=vp9][height<=2160][protocol^=http]/bestvideo[vcodec^=av01][height<=2160][protocol^=http]/bestvideo[vcodec^=avc1][height<=1440][protocol^=http]/bestvideo[height<=1440][protocol^=http]/bestvideo[protocol^=http]/best[protocol^=http]";
+
+fn spawn_video_downloader(
+    video_id: String,
+    tier: String,
+    target_dir: PathBuf,
+    map_key: String,
+    srv: StreamServer,
+    state: Arc<DownloadState>,
+) {
+    let downloads = srv.downloads.clone();
+    tokio::spawn(async move {
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        let part_path = target_dir.join(format!("{video_id}.{tier}.video.part"));
+        let final_path = target_dir.join(format!("{video_id}.{tier}.video.webm"));
+        let _ = tokio::fs::create_dir_all(&target_dir).await;
+        let _ = tokio::fs::remove_file(&part_path).await;
+
+        let format = if tier == "hi" { VIDEO_FORMAT_HI } else { VIDEO_FORMAT_LO };
+        let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
+        cmd.args([
+            "-f",
+            format,
+            "--no-playlist",
+            "--no-warnings",
+            "--no-part",
+            "-q",
+            "--retries",
+            "5",
+            "--extractor-retries",
+            "3",
+            "--socket-timeout",
+            "15",
+            "-o",
+            "-",
+        ]);
+        cmd.arg(&url);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);
+        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[stream-video] spawn {video_id}: {e}");
+                state.complete.store(true, Ordering::Release);
+                state.notify.notify_waiters();
+                downloads.lock().await.remove(&map_key);
+                return;
+            }
+        };
+
+        let mut stdout = child.stdout.take().unwrap();
+        let mut file = tokio::fs::File::create(&part_path).await.ok();
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut ok = true;
+        const READ_TIMEOUT: Duration = Duration::from_secs(60);
+        loop {
+            match tokio::time::timeout(READ_TIMEOUT, stdout.read(&mut buf)).await {
+                Err(_) => {
+                    eprintln!("[stream-video] read timeout for {video_id}; killing yt-dlp");
+                    let _ = child.start_kill();
+                    ok = false;
+                    break;
+                }
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
+                    let chunk = &buf[..n];
+                    if let Some(ref mut f) = file {
+                        if let Err(e) = f.write_all(chunk).await {
+                            eprintln!("[stream-video] write .part: {e}");
+                            file = None;
+                            ok = false;
+                        }
+                    }
+                    state.notify.notify_waiters();
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[stream-video] read stdout: {e}");
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if let Some(mut f) = file.take() {
+            let _ = f.flush().await;
+            drop(f);
+        }
+        let status = child.wait().await;
+        let success = ok && status.map(|s| s.success()).unwrap_or(false);
+
+        const MIN_VIDEO_BYTES: u64 = 32 * 1024;
+        let part_size = tokio::fs::metadata(&part_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if success && part_size >= MIN_VIDEO_BYTES {
+            if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
+                eprintln!("[stream-video] rename: {e}");
+                let _ = tokio::fs::remove_file(&part_path).await;
+            } else {
+                eprintln!("[stream-video] cached {video_id} ({part_size} bytes)");
+            }
+        } else {
+            if success {
+                eprintln!(
+                    "[stream-video] download too small for {video_id}: {part_size} bytes (min {MIN_VIDEO_BYTES})"
+                );
+            } else {
+                eprintln!("[stream-video] download failed {video_id}");
+            }
+            let _ = tokio::fs::remove_file(&part_path).await;
+        }
+
+        state.complete.store(true, Ordering::Release);
+        state.notify.notify_waiters();
+
+        if success {
+            let downloads_evict = downloads.clone();
+            let key = map_key.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                downloads_evict.lock().await.remove(&key);
+            });
+        } else {
+            downloads.lock().await.remove(&map_key);
+        }
+    });
+}
+
+async fn sniff_video_mime(path: &std::path::Path) -> &'static str {
+    let mut buf = [0u8; 16];
+    if let Ok(mut f) = tokio::fs::File::open(path).await {
+        let _ = f.read(&mut buf).await;
+    }
+    if &buf[4..8] == b"ftyp" {
+        "video/mp4"
+    } else {
+        "video/webm"
+    }
+}
+
+async fn video_handler(
+    AxumState(srv): AxumState<StreamServer>,
+    Path(video_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    req: Request,
+) -> Response {
+    if !sanitize_video_id(&video_id) {
+        return (StatusCode::BAD_REQUEST, "invalid videoId").into_response();
+    }
+
+    let tier = match params.get("q").map(|s| s.as_str()) {
+        Some("hi") => "hi",
+        _ => "lo",
+    };
+    let target_dir = srv.video_dir.clone();
+    let map_key = format!("v:{tier}:{video_id}");
+    let final_path = target_dir.join(format!("{video_id}.{tier}.video.webm"));
+
+    let t0 = std::time::Instant::now();
+    let range_hdr = req
+        .headers()
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    eprintln!(
+        "[stream-video] GET /video/{video_id} range={range_hdr:?} cached={}",
+        final_path.exists()
+    );
+
+    if !final_path.exists() {
+        let state = {
+            let mut map = srv.downloads.lock().await;
+            if let Some(s) = map.get(&map_key) {
+                s.clone()
+            } else {
+                let s = Arc::new(DownloadState {
+                    complete: Arc::new(AtomicBool::new(false)),
+                    notify: Arc::new(Notify::new()),
+                });
+                map.insert(map_key.clone(), s.clone());
+                drop(map);
+                spawn_video_downloader(
+                    video_id.clone(),
+                    tier.to_string(),
+                    target_dir.clone(),
+                    map_key.clone(),
+                    srv.clone(),
+                    s.clone(),
+                );
+                s
+            }
+        };
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+        while !state.complete.load(Ordering::Acquire) {
+            if tokio::time::Instant::now() >= deadline {
+                eprintln!("[stream-video] {video_id}: TIMEOUT after 180s");
+                return (StatusCode::GATEWAY_TIMEOUT, "download timeout").into_response();
+            }
+            let notified = state.notify.notified();
+            tokio::pin!(notified);
+            let _ = tokio::time::timeout(Duration::from_secs(5), notified).await;
+        }
+
+        if !final_path.exists() {
+            eprintln!(
+                "[stream-video] {video_id}: BAD_GATEWAY, complete but no file (elapsed {:.2}s)",
+                t0.elapsed().as_secs_f32()
+            );
+            return (StatusCode::BAD_GATEWAY, "download failed").into_response();
+        }
+        eprintln!(
+            "[stream-video] {video_id}: download finished in {:.2}s",
+            t0.elapsed().as_secs_f32()
+        );
+    }
+
+    let sniffed_ct = sniff_video_mime(&final_path).await;
+    let mut resp = ServeFile::new(&final_path)
+        .oneshot(req)
+        .await
+        .map(|r| r.into_response())
+        .unwrap_or_else(|e| {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("serve: {e}")).into_response()
+        });
+    if resp.status().is_success() || resp.status() == StatusCode::PARTIAL_CONTENT {
+        resp.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(sniffed_ct),
+        );
+    }
+    eprintln!(
+        "[stream-video] {video_id}: responding {} ({:.2}s total) ct={:?} len={:?}",
+        resp.status(),
+        t0.elapsed().as_secs_f32(),
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        resp.headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()),
+    );
+    resp
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoMeta {
+    title: Option<String>,
+    channel: Option<String>,
+    channel_id: Option<String>,
+    channel_is_verified: Option<bool>,
+    categories: Vec<String>,
+    view_count: Option<u64>,
+    duration: Option<f64>,
+}
+
+/// Title and uploader for one video, straight from YouTube's oembed
+/// endpoint. Two orders of magnitude cheaper than a yt-dlp extraction
+/// (one small HTTP GET, no process spawn), so every candidate can afford
+/// one; the fields yt-dlp alone can answer (verified badge, channel id,
+/// category) still need `probe_video_meta` on the finalists.
+#[derive(serde::Serialize)]
+struct VideoBrief {
+    id: String,
+    title: Option<String>,
+    channel: Option<String>,
+}
+
+#[tauri::command]
+async fn probe_video_briefs(video_ids: Vec<String>) -> Result<Vec<VideoBrief>, String> {
+    const MAX_BRIEFS: usize = 40;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("build brief client: {e}"))?;
+    let mut handles = Vec::new();
+    for id in video_ids
+        .into_iter()
+        .filter(|v| sanitize_video_id(v))
+        .take(MAX_BRIEFS)
+    {
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            let url = format!(
+                "https://www.youtube.com/oembed?url=https%3A//www.youtube.com/watch%3Fv%3D{id}&format=json"
+            );
+            let mut brief = VideoBrief {
+                id,
+                title: None,
+                channel: None,
+            };
+            let Ok(res) = client.get(&url).send().await else {
+                return brief;
+            };
+            if !res.status().is_success() {
+                return brief;
+            }
+            let Ok(body) = res.text().await else {
+                return brief;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) else {
+                return brief;
+            };
+            brief.title = json.get("title").and_then(|v| v.as_str()).map(String::from);
+            brief.channel = json
+                .get("author_name")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            brief
+        }));
+    }
+    let mut out = Vec::new();
+    for h in handles {
+        if let Ok(brief) = h.await {
+            out.push(brief);
+        }
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn probe_video_meta(app: tauri::AppHandle, video_id: String) -> Result<VideoMeta, String> {
+    if !sanitize_video_id(&video_id) {
+        return Err(format!("invalid videoId: {video_id}"));
+    }
+    let url = format!("https://www.youtube.com/watch?v={video_id}");
+    let mut command = TokioCommand::new(ytdlp::program(&ytdlp::managed_path(&app)));
+    command.args([
+        "-j",
+        "--skip-download",
+        "--no-playlist",
+        "--no-warnings",
+        "--socket-timeout",
+        "10",
+        &url,
+    ]);
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let output = command
+        .output()
+        .await
+        .map_err(|e| format!("spawn yt-dlp: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "yt-dlp exit {}: {}",
+            output.status,
+            stderr.chars().take(400).collect::<String>()
+        ));
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("parse: {e}"))?;
+    Ok(VideoMeta {
+        title: json.get("title").and_then(|v| v.as_str()).map(String::from),
+        channel: json
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        channel_id: json
+            .get("channel_id")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        channel_is_verified: json.get("channel_is_verified").and_then(|v| v.as_bool()),
+        categories: json
+            .get("categories")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        view_count: json.get("view_count").and_then(|v| v.as_u64()),
+        duration: json.get("duration").and_then(|v| v.as_f64()),
+    })
+}
+
+async fn wipe_dir_files(dir: &std::path::Path, label: &str) {
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        let mut wiped: u64 = 0;
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if meta.is_file() {
+                    wiped += meta.len();
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                }
+            }
+        }
+        if wiped > 0 {
+            eprintln!("[stream-server] wiped {wiped} bytes from {label} dir");
+        }
+    }
+}
+
+#[tauri::command]
+async fn diag_log(tag: String, text: String) {
+    eprintln!("[{tag}] {text}");
+}
+
 async fn start_stream_server(
     port_state: Arc<Mutex<Option<u16>>>,
     token_state: Arc<Mutex<Option<String>>>,
     cache_dir: PathBuf,
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
+    video_dir: PathBuf,
     ytdlp_bin: PathBuf,
 ) {
     if let Err(e) = tokio::fs::create_dir_all(&cache_dir).await {
@@ -3971,6 +4377,10 @@ async fn start_stream_server(
     if let Err(e) = tokio::fs::create_dir_all(&cover_dir).await {
         eprintln!("[stream-server] mkdir {cover_dir:?}: {e}");
     }
+    if let Err(e) = tokio::fs::create_dir_all(&video_dir).await {
+        eprintln!("[stream-server] mkdir {video_dir:?}: {e}");
+    }
+    wipe_dir_files(&video_dir, "video").await;
 
     // Wipe whatever a previous (anonymous / Free) session left behind.
     // Persisting tracks across restarts is a Premium-only feature; if a
@@ -3995,6 +4405,7 @@ async fn start_stream_server(
         cache_dir,
         ephemeral_dir,
         cover_dir,
+        video_dir,
         downloads: Arc::new(Mutex::new(HashMap::new())),
         ytdlp_bin,
     };
@@ -4008,6 +4419,7 @@ async fn start_stream_server(
 
     let routes = Router::new()
         .route("/stream/:video_id", get(stream_handler))
+        .route("/video/:video_id", get(video_handler))
         .route("/prefetch/:video_id", get(prefetch_handler))
         .route("/cover/:filename", get(cover_serve_handler))
         .with_state(server);
@@ -4185,6 +4597,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             ensure_ytdlp,
             resolve_stream_ytdlp,
+            probe_video_meta,
+            probe_video_briefs,
+            diag_log,
             get_stream_base_url,
             start_login,
             get_cookie_header,
@@ -4296,6 +4711,7 @@ pub fn run() {
             let cache_dir = cache_root.join("stream");
             let ephemeral_dir = cache_root.join("stream-ephemeral");
             let cover_dir = cache_root.join("covers");
+            let video_dir = cache_root.join("stream-video");
             let handle = app.handle().clone();
             eprintln!("[stream-server] cache dir: {cache_dir:?}");
             eprintln!("[stream-server] ephemeral dir: {ephemeral_dir:?}");
@@ -4308,7 +4724,15 @@ pub fn run() {
                 // email-based dedup before the UI reads the list.
                 dedup_accounts_by_identity(&handle).await;
                 cleanup_login_artifacts(&handle).await;
-                start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
+                start_stream_server(
+                    port,
+                    token,
+                    cache_dir,
+                    ephemeral_dir,
+                    cover_dir,
+                    video_dir,
+                    ytdlp_bin,
+                )
                     .await;
             });
             // Subscribe to resume-from-sleep before the loop starts, so a

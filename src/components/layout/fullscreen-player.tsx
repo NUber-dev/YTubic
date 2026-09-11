@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { HeartIcon, ThumbsDownIcon, ThumbsUpIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -48,6 +48,19 @@ import { useFullscreenStore } from "@/lib/store/fullscreen";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useScrubStore } from "@/lib/store/scrub";
 import { useSettingsStore, type FullscreenLayout } from "@/lib/store/settings";
+import { useTrackSourceStore } from "@/lib/store/track-source";
+import { videoStreamUrlFor } from "@/lib/stream";
+import { getVideoQualityTier, reportPlaybackStutter } from "@/lib/video-quality";
+import { useVideoGateStore } from "@/lib/store/video-gate";
+import { getAudioClock } from "@/lib/audio-clock";
+
+const VIDEO_WAIT_CEILING_MS = 45_000;
+/** Under this the picture reads as in step, so leave the rate alone. */
+const SYNC_TOLERANCE = 0.04;
+/** Past this it's a seek or a stall, not drift, so jump rather than ease. */
+const SYNC_SEEK_THRESHOLD = 0.5;
+const SYNC_MAX_RATE_TRIM = 0.1;
+const IDLE_DELAY_MS = 2800;
 import type { QueueTrack } from "@/lib/store/playback";
 
 /**
@@ -102,6 +115,99 @@ const sideButton = (on: boolean) =>
 /* The view                                                            */
 /* ------------------------------------------------------------------ */
 
+function VideoBackdrop({
+  streamId,
+  onError,
+  onReady,
+}: {
+  streamId: string;
+  onError: () => void;
+  onReady: () => void;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(null);
+    (async () => {
+      const tier = await getVideoQualityTier();
+      const url = await videoStreamUrlFor(streamId, tier);
+      if (!cancelled) setSrc(url);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [streamId]);
+
+  useEffect(() => {
+    if (!src) return;
+    const check = setTimeout(() => {
+      const el = videoRef.current;
+      if (!el || typeof el.getVideoPlaybackQuality !== "function") return;
+      const q = el.getVideoPlaybackQuality();
+      if (q.totalVideoFrames > 60 && q.droppedVideoFrames / q.totalVideoFrames > 0.1) {
+        reportPlaybackStutter();
+      }
+    }, 4000);
+    return () => clearTimeout(check);
+  }, [src]);
+
+  useEffect(() => {
+    if (!src) return;
+    let raf: number;
+    const tick = () => {
+      const el = videoRef.current;
+      if (el) {
+        const { position, playing } = usePlaybackStore.getState();
+        if (playing && el.paused) void el.play().catch(() => {});
+        if (!playing && !el.paused) el.pause();
+        const target = getAudioClock() ?? position;
+        const seekable = !el.duration || target <= el.duration;
+        if (el.readyState >= 2 && seekable) {
+          const drift = el.currentTime - target;
+          const off = Math.abs(drift);
+          if (off > SYNC_SEEK_THRESHOLD || !playing) {
+            if (off > SYNC_TOLERANCE) el.currentTime = target;
+            if (el.playbackRate !== 1) el.playbackRate = 1;
+          } else if (off > SYNC_TOLERANCE) {
+            // Ease the picture back onto the audio instead of jumping.
+            // A seek this small costs a visible hitch and re-drifts within
+            // seconds; the rate change is imperceptible on a muted video.
+            const trim = Math.max(
+              -SYNC_MAX_RATE_TRIM,
+              Math.min(SYNC_MAX_RATE_TRIM, drift),
+            );
+            el.playbackRate = 1 - trim;
+          } else if (el.playbackRate !== 1) {
+            el.playbackRate = 1;
+          }
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [src]);
+
+  if (!src) return null;
+
+  return (
+    <video
+      ref={videoRef}
+      key={src}
+      src={src}
+      muted
+      autoPlay
+      loop
+      playsInline
+      onError={onError}
+      onLoadedData={onReady}
+      className="size-full object-cover"
+    />
+  );
+}
+
 function FullscreenView({ track }: { track: QueueTrack }) {
   const setOpen = useFullscreenStore((s) => s.setOpen);
   const layout = useSettingsStore((s) => s.fullscreenLayout);
@@ -131,6 +237,59 @@ function FullscreenView({ track }: { track: QueueTrack }) {
   const loading = status === "loading" && playing;
 
   const iTunesCover = useITunesCover(track);
+  const sourceRecord = useTrackSourceStore((s) => s.byVideoId[track.videoId]);
+  const [videoErrored, setVideoErrored] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
+  useEffect(() => {
+    setVideoErrored(false);
+  }, [track.videoId]);
+  useEffect(() => {
+    setVideoReady(false);
+  }, [sourceRecord?.video]);
+
+  const setVideoWaiting = useVideoGateStore((s) => s.setWaiting);
+  const showVideo =
+    sourceRecord?.selected === "video" && !!sourceRecord.video && !videoErrored;
+
+  // Hold the audio while the backdrop is still fetching, so the track
+  // doesn't run ahead of the picture. Released on a frame, on an error,
+  // on leaving the view, and by the timer regardless: a video that never
+  // arrives must not strand playback.
+  // Chrome recedes once the mouse settles, the way a fullscreen video
+  // player does. Held open while paused: a stopped track means the user
+  // is on their way to a control, not watching.
+  const idleFade = useSettingsStore((s) => s.fullscreenIdleFade);
+  const [idle, setIdle] = useState(false);
+  const idleTimer = useRef<number | null>(null);
+  useEffect(() => {
+    const wake = () => {
+      setIdle(false);
+      if (idleTimer.current) window.clearTimeout(idleTimer.current);
+      idleTimer.current = window.setTimeout(() => setIdle(true), IDLE_DELAY_MS);
+    };
+    wake();
+    const events = ["mousemove", "mousedown", "keydown", "wheel"] as const;
+    for (const name of events) window.addEventListener(name, wake);
+    return () => {
+      if (idleTimer.current) window.clearTimeout(idleTimer.current);
+      for (const name of events) window.removeEventListener(name, wake);
+    };
+  }, []);
+  const chromeHidden = idle && playing && idleFade;
+
+  const awaitingVideo = showVideo && !videoReady;
+  useEffect(() => {
+    if (!awaitingVideo) {
+      setVideoWaiting(false);
+      return;
+    }
+    setVideoWaiting(true);
+    const bail = setTimeout(() => setVideoWaiting(false), VIDEO_WAIT_CEILING_MS);
+    return () => {
+      clearTimeout(bail);
+      setVideoWaiting(false);
+    };
+  }, [awaitingVideo, setVideoWaiting]);
   const lyricsState = useLyricsView(track);
   // "With lyrics" only means something when there are some. A track the
   // sources came back empty for shows as Centered instead; the setting
@@ -163,6 +322,9 @@ function FullscreenView({ track }: { track: QueueTrack }) {
     : light
       ? "blur(46px) saturate(0.95) brightness(1.34)"
       : "blur(46px) saturate(1.3) brightness(0.62)";
+  const videoFilter = light
+    ? "saturate(1.05) brightness(1.05)"
+    : "saturate(1.18) brightness(0.72)";
 
   return (
     <TooltipProvider delayDuration={800} skipDelayDuration={0}>
@@ -171,7 +333,10 @@ function FullscreenView({ track }: { track: QueueTrack }) {
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 10, scale: 0.985 }}
         transition={{ duration: 0.26, ease: [0.32, 0.72, 0, 1] }}
-        className="fixed inset-0 z-40 flex flex-col overflow-hidden bg-background"
+        className={cn(
+          "fixed inset-0 z-40 flex flex-col overflow-hidden bg-background",
+          chromeHidden && "cursor-none",
+        )}
       >
         {/* Backdrop: the cover, oversized so the blur has no soft edge.
             An <img> through Thumbnail rather than a CSS background: the
@@ -191,7 +356,20 @@ function FullscreenView({ track }: { track: QueueTrack }) {
             overrideHighRes={iTunesCover}
           />
         </div>
-        {immersive ? (
+        {showVideo && sourceRecord?.video ? (
+          <div
+            aria-hidden
+            className="absolute inset-0 transition-[filter,opacity] duration-500"
+            style={{ filter: videoFilter, opacity: videoReady ? 1 : 0 }}
+          >
+            <VideoBackdrop
+              streamId={sourceRecord.video}
+              onError={() => setVideoErrored(true)}
+              onReady={() => setVideoReady(true)}
+            />
+          </div>
+        ) : null}
+        {immersive && !showVideo ? (
           <>
             {/* Blur bands: strongest at the edges, gone by mid-height. */}
             <div
@@ -216,7 +394,12 @@ function FullscreenView({ track }: { track: QueueTrack }) {
 
         {/* The title bar is transparent and stays on top, so the body
             starts below it and the cover runs up behind it. */}
-        <div className="relative flex min-h-0 flex-1 flex-col px-7 pb-6 pt-[calc(var(--titlebar-h)+8px)]">
+        <div
+          className={cn(
+            "relative flex min-h-0 flex-1 flex-col px-7 pb-6 pt-[calc(var(--titlebar-h)+8px)] transition-opacity duration-500",
+            chromeHidden && "pointer-events-none opacity-0",
+          )}
+        >
           {/* Top row: layout switch, Exit. */}
           <div className="flex shrink-0 items-center gap-2.5">
             <div

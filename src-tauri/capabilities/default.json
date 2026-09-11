@@ -19,7 +19,8 @@
         { "url": "https://itunes.apple.com/*" },
         { "url": "https://apic-desktop.musixmatch.com/*" },
         { "url": "https://genius.com/*" },
-        { "url": "https://lrclib.net/*" }
+        { "url": "https://lrclib.net/*" },
+        { "url": "https://sponsor.ajay.app/*" }
       ]
     },
     "store:default",
@@ -35,6 +36,12 @@
     "core:window:allow-start-resize-dragging",
     "core:window:allow-outer-position",
     "core:window:allow-outer-size",
-    "core:window:allow-set-always-on-top"
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-maximize",
+    "core:window:allow-current-monitor",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-resizable",
+    "core:window:allow-set-shadow"
   ]
 }

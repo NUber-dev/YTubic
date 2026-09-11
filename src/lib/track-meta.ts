@@ -174,6 +174,25 @@ export function artistFromSubtitle(
   return undefined;
 }
 
+export function trackArtistNames(track: {
+  artists?: { name: string }[];
+  subtitle?: string;
+}): string[] {
+  if (track.artists?.length) {
+    return track.artists.map((a) => stripTopicSuffix(a.name)).filter(Boolean);
+  }
+  const fallback = artistFromSubtitle(track.subtitle);
+  return fallback ? [fallback] : [];
+}
+
+export function trackArtistIds(track: {
+  artists?: { id?: string }[];
+}): string[] {
+  return (track.artists ?? [])
+    .map((a) => a.id)
+    .filter((id): id is string => Boolean(id));
+}
+
 /** The structured artist list, joined and de-Topic'd, or undefined. */
 export function artistsFromList(
   artists: { name: string }[] | undefined,

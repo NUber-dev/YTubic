@@ -53,6 +53,7 @@ import {
 import { cn } from "@/lib/utils";
 import { usePlayerCoverDrag } from "@/lib/player-drag";
 import { openFullscreen } from "@/lib/store/fullscreen";
+import { useSponsorSegments } from "@/lib/store/sponsor-segments";
 import { usePlaybackStore, currentTrack } from "@/lib/store/playback";
 import { useScrubStore } from "@/lib/store/scrub";
 import {
@@ -60,6 +61,7 @@ import {
   type SourceKind,
 } from "@/lib/store/track-source";
 import { findAlternateVideoId } from "@/lib/innertube/alternate-source";
+import { trackArtistIds, trackArtistNames } from "@/lib/track-meta";
 import { lookupITunesCover, cacheCoverToDisk } from "@/lib/cover-art";
 import type { QueueTrack, RepeatMode } from "@/lib/store/playback";
 
@@ -139,9 +141,17 @@ export function SourceToggle({ track }: { track: QueueTrack }) {
     }
     setBusy(target);
     try {
-      const artistsLine = track.artists?.map((a) => a.name).join(" ") ?? "";
-      const query = `${track.title} ${artistsLine}`.trim();
-      const altId = await findAlternateVideoId(query, track.videoId, target);
+      const artistNames = trackArtistNames(track);
+      const query = `${track.title} ${artistNames.join(" ")}`.trim();
+      const altId = await findAlternateVideoId(
+        query,
+        track.videoId,
+        target,
+        artistNames,
+        track.title,
+        trackArtistIds(track),
+        track.duration,
+      );
       if (!altId) {
         toast.error(
           target === "video"
@@ -298,7 +308,32 @@ export function ProgressSlider({
           seek(v);
           setScrub(null);
         }}
+        marks={<SponsorMarks duration={duration} />}
       />
+    </div>
+  );
+}
+
+/**
+ * SponsorBlock's own colour for a music_offtopic stretch. Handed to the
+ * slider as `marks` so the played fill and the thumb still paint over it.
+ */
+function SponsorMarks({ duration }: { duration: number }) {
+  const segments = useSponsorSegments((s) => s.segments);
+  if (duration <= 0 || segments.length === 0) return null;
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0">
+      {segments.map((seg) => {
+        const from = Math.max(0, Math.min(100, (seg.start / duration) * 100));
+        const to = Math.max(0, Math.min(100, (seg.end / duration) * 100));
+        return (
+          <div
+            key={`${seg.start}-${seg.end}`}
+            className="absolute inset-y-0 rounded-full bg-[#ff9900]"
+            style={{ left: `${from}%`, width: `${Math.max(0.5, to - from)}%` }}
+          />
+        );
+      })}
     </div>
   );
 }

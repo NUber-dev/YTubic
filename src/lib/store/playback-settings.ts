@@ -6,6 +6,8 @@ export type EqPreset = "flat" | "bass" | "vocal" | "treble" | "late" | "custom";
 
 export type BackButtonMode = "previous" | "restart" | "smart";
 
+export type VideoQualityChoice = "auto" | "hi" | "lo";
+
 /** Centre frequencies of the nine bands, in Hz. */
 export const EQ_BANDS = [62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 
@@ -42,6 +44,20 @@ type State = {
    *  The queue and track already survive a restart; the position does
    *  not, and this is the switch for it. */
   resumePlayback: boolean;
+  /** Ceiling for the music-video backdrop. "auto" probes what the GPU can
+   *  decode smoothly and steps down if frames start dropping; an explicit
+   *  choice is left alone. */
+  videoQuality: VideoQualityChoice;
+  /** Carry a switch to Video onto the tracks that follow it. Each new
+   *  track costs a search and a round of yt-dlp verification. */
+  followVideoMode: boolean;
+  /** Fetch the next track's video while the current one plays. Removes
+   *  the wait at the cost of a whole video file per track. */
+  warmNextVideo: boolean;
+  /** Jump past the intros, outros and talking in a music video, using
+   *  SponsorBlock's music_offtopic segments. Off by default: it queries a
+   *  third party, albeit only with a hash prefix of the video id. */
+  skipNonMusic: boolean;
   setCrossfadeSec: (v: number) => void;
   setNormalizeVolume: (v: boolean) => void;
   setEqEnabled: (v: boolean) => void;
@@ -52,6 +68,10 @@ type State = {
   setBackButton: (v: BackButtonMode) => void;
   setSmartBackSeconds: (v: number) => void;
   setResumePlayback: (v: boolean) => void;
+  setVideoQuality: (v: VideoQualityChoice) => void;
+  setFollowVideoMode: (v: boolean) => void;
+  setWarmNextVideo: (v: boolean) => void;
+  setSkipNonMusic: (v: boolean) => void;
 };
 
 /** The gains currently in force, whichever way they were chosen. */
@@ -87,6 +107,10 @@ export const usePlaybackSettings = create<State>()(
       backButton: "smart",
       smartBackSeconds: 3,
       resumePlayback: true,
+      videoQuality: "auto",
+      followVideoMode: true,
+      warmNextVideo: true,
+      skipNonMusic: false,
       setCrossfadeSec: (crossfadeSec) =>
         set({
           crossfadeSec: Math.min(12, Math.max(0, Math.round(crossfadeSec))),
@@ -109,6 +133,10 @@ export const usePlaybackSettings = create<State>()(
       setBackButton: (backButton) => set({ backButton }),
       setSmartBackSeconds: (smartBackSeconds) => set({ smartBackSeconds }),
       setResumePlayback: (resumePlayback) => set({ resumePlayback }),
+      setVideoQuality: (videoQuality) => set({ videoQuality }),
+      setFollowVideoMode: (followVideoMode) => set({ followVideoMode }),
+      setWarmNextVideo: (warmNextVideo) => set({ warmNextVideo }),
+      setSkipNonMusic: (skipNonMusic) => set({ skipNonMusic }),
     }),
     {
       name: "ytm-playback-settings",
