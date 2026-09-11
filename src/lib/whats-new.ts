@@ -58,17 +58,17 @@ export const WHATS_NEW: WhatsNewEntry[] = [
   {
     version: "0.5.1",
     date: "September 11, 2026",
-    summary: "Your sign-in survives the night",
+    summary: "Login fixes",
     changes: [
       {
         type: "fixed",
-        title: "Signed out after a night",
-        text: "The app now renews its session before it shows anything, so opening it after hours closed no longer flashes a sign-in button or an empty library while the session comes back.",
+        title: "Session drop",
+        text: "Fixed the app opening signed out after being closed for a while.",
       },
       {
         type: "fixed",
-        title: "Empty likes after a reload",
-        text: "Nothing fetched while the session was being renewed is cached any more, so the hearts and the library are right the first time.",
+        title: "Empty library",
+        text: "Fixed the library and likes loading empty when the session came back.",
       },
     ],
   },
