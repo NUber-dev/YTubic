@@ -864,11 +864,12 @@ export function useAudioEngine() {
   // Auto-extend the queue with radio tracks when we're near the end, so
   // playback continues past the explicit queue.
   const autoRadio = usePlaybackStore((s) => s.autoRadio);
-  const { qLen, qIndex, seedVideoId } = usePlaybackStore(
+  const { qLen, qIndex, seedVideoId, radioEpoch } = usePlaybackStore(
     useShallow((s) => ({
       qLen: s.queue.length,
       qIndex: s.index,
       seedVideoId: s.index >= 0 ? s.queue[s.index]?.videoId : undefined,
+      radioEpoch: s.radioEpoch,
     })),
   );
 
@@ -919,8 +920,11 @@ export function useAudioEngine() {
     if (qIndex < 0 || !seedVideoId) return;
     // Only fire when the current track is the last queued one.
     if (qIndex < qLen - 1) return;
-    if (radioFetchedForRef.current === seedVideoId) return;
-    radioFetchedForRef.current = seedVideoId;
+    // One fetch per seed, unless the queue was cleared since: then the
+    // same track is the tail again and gets a fresh batch.
+    const seedKey = `${seedVideoId}#${radioEpoch}`;
+    if (radioFetchedForRef.current === seedKey) return;
+    radioFetchedForRef.current = seedKey;
     fetchRadio(seedVideoId)
       .then((tracks) => {
         // Guard against a stale fetch: the user may have replaced the queue
@@ -936,7 +940,7 @@ export function useAudioEngine() {
         // Allow a retry on transient failure.
         radioFetchedForRef.current = undefined;
       });
-  }, [autoRadio, queueContinuation, qIndex, qLen, seedVideoId]);
+  }, [autoRadio, queueContinuation, qIndex, qLen, seedVideoId, radioEpoch]);
 
   // Push metadata + playback state to the OS media controls. Native backends
   // interpolate the scrubber between pushes while the state is

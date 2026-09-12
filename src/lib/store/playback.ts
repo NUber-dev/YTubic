@@ -55,6 +55,13 @@ export type PlaybackState = {
 
   /** When true, auto-append radio tracks to the queue when the last one ends. */
   autoRadio: boolean;
+  /**
+   * Bumped by clearQueue. The audio engine fetches radio once per seed
+   * track; after a clear the same track is the tail again and must be
+   * allowed to seed a fresh batch, so the engine keys its guard on
+   * seed + epoch rather than the seed alone.
+   */
+  radioEpoch: number;
 
   /**
    * Pending /next continuation for the current queue's source — set when
@@ -73,7 +80,10 @@ export type PlaybackState = {
   appendToQueue: (tracks: (QueueTrack | ShelfItem)[]) => void;
   removeAt: (index: number) => void;
   moveTrack: (from: number, to: number) => void;
+  /** Drop everything after the current track; it keeps playing. */
   clearQueue: () => void;
+  /** Empty the queue and stop audio outright (account switch). */
+  stopPlayback: () => void;
   setAutoRadio: (on: boolean) => void;
   setQueueContinuation: (token?: string) => void;
 
@@ -175,6 +185,7 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   shuffle: false,
   repeat: "off",
   autoRadio: false,
+  radioEpoch: 0,
   queueContinuation: undefined,
 
   status: "idle",
@@ -335,6 +346,18 @@ const playbackStateCreator: StateCreator<PlaybackState> = (set, get) => ({
   },
 
   clearQueue: () => {
+    // The queue panel's trash button. What's playing stays put, and so
+    // does the history behind it: the button empties "Up next", it is
+    // not a stop button. The shuffle continuation goes with the tail it
+    // was feeding; auto-radio, if on, refills from the current track.
+    set((s) => ({
+      queue: s.index >= 0 ? s.queue.slice(0, s.index + 1) : [],
+      queueContinuation: undefined,
+      radioEpoch: s.radioEpoch + 1,
+    }));
+  },
+
+  stopPlayback: () => {
     set({
       queue: [],
       index: -1,

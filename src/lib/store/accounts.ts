@@ -207,9 +207,9 @@ export function useAccountsChangedListener(): void {
       }
 
       // 2. Stop audio so the previous account's track doesn't keep
-      //    playing while everything else churns. `clearQueue` sets
+      //    playing while everything else churns. `stopPlayback` sets
       //    index = -1 which strips the audio element's src.
-      usePlaybackStore.getState().clearQueue();
+      usePlaybackStore.getState().stopPlayback();
 
       // 3. Other per-account local state: typed search history,
       //    per-track Song↔Video preferences, cached Premium status.

@@ -42,6 +42,44 @@ function setup(partial: Partial<PlaybackState>): void {
   });
 }
 
+describe("clearQueue", () => {
+  beforeEach(() => setup({}));
+
+  it("keeps the current track playing and drops what's after it", () => {
+    setup({ queue: [track("a"), track("b"), track("c")], index: 1 });
+    usePlaybackStore.getState().clearQueue();
+    const s = usePlaybackStore.getState();
+    expect(s.queue.map((t) => t.videoId)).toEqual(["a", "b"]);
+    expect(s.index).toBe(1);
+    expect(s.playing).toBe(true);
+    expect(s.status).toBe("ready");
+    expect(s.streamUrl).toBe("blob:prev");
+    expect(s.position).toBe(42);
+  });
+
+  it("bumps radioEpoch so auto-radio can re-seed from the same track", () => {
+    setup({ queue: [track("a"), track("b")], index: 0, radioEpoch: 3 });
+    usePlaybackStore.getState().clearQueue();
+    expect(usePlaybackStore.getState().radioEpoch).toBe(4);
+  });
+
+  it("empties an idle queue", () => {
+    setup({ queue: [track("a"), track("b")], index: -1, playing: false });
+    usePlaybackStore.getState().clearQueue();
+    expect(usePlaybackStore.getState().queue).toEqual([]);
+  });
+
+  it("stopPlayback empties everything and stops", () => {
+    setup({ queue: [track("a"), track("b")], index: 0 });
+    usePlaybackStore.getState().stopPlayback();
+    const s = usePlaybackStore.getState();
+    expect(s.queue).toEqual([]);
+    expect(s.index).toBe(-1);
+    expect(s.playing).toBe(false);
+    expect(s.status).toBe("idle");
+  });
+});
+
 describe("playback next()", () => {
   beforeEach(() => setup({}));
 
@@ -142,6 +180,12 @@ describe("queueContinuation lifecycle", () => {
   it("is cleared by clearQueue", () => {
     setup({ queue: [track("a")], index: 0, queueContinuation: "tok1" });
     usePlaybackStore.getState().clearQueue();
+    expect(usePlaybackStore.getState().queueContinuation).toBeUndefined();
+  });
+
+  it("is cleared by stopPlayback", () => {
+    setup({ queue: [track("a")], index: 0, queueContinuation: "tok1" });
+    usePlaybackStore.getState().stopPlayback();
     expect(usePlaybackStore.getState().queueContinuation).toBeUndefined();
   });
 

@@ -147,7 +147,7 @@ export function QueueBody({ onClose }: { onClose?: () => void }) {
                 variant="ghost"
                 size="icon"
                 aria-label="Clear queue"
-                disabled={queue.length === 0}
+                disabled={upcoming.length === 0}
                 onClick={clearQueue}
                 className={playerIconButton}
               >
