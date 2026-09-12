@@ -1,13 +1,12 @@
 import {
   IconAlertTriangle,
   IconArrowDown,
-  IconDownload,
   IconRefresh,
   type IconProps,
 } from "@tabler/icons-react";
 import type { ComponentType } from "react";
 import { useUpdateStore } from "@/lib/store/update";
-import { beginUpdateInstall, restartToUpdate } from "@/lib/updater";
+import { restartToUpdate, retryUpdateDownload } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 
 type CardConfig = {
@@ -21,13 +20,11 @@ type CardConfig = {
 
 /**
  * Sits in the sidebar footer, just above Settings, and is the one
- * persistent surface for an available update. Rendered only while an
- * update is somewhere in the flow (phase !== "idle"); it mirrors the
- * shared update store so it can never disagree with the progress
- * toasts.
- *
- * available -> click downloads + installs; ready -> click restarts;
- * while downloading it is inert and shows a progress ring instead.
+ * persistent surface for an update. The download itself runs quietly
+ * in the background (see updater.ts), so the card stays hidden until
+ * there is something to act on: ready -> click restarts into the new
+ * version; error -> click retries the download. The brief installing
+ * moment after the click is inert and shows a full progress ring.
  *
  * Deliberately carries no accent at rest: the card reads as a normal
  * sidebar row one step lighter than the panel, and the only accent in
@@ -38,48 +35,37 @@ type CardConfig = {
 export function UpdateBanner() {
   const phase = useUpdateStore((s) => s.phase);
   const version = useUpdateStore((s) => s.version);
-  const progress = useUpdateStore((s) => s.progress);
 
-  if (phase === "idle") return null;
+  // Nothing to show before the package has landed: the download is
+  // deliberately silent.
+  if (phase === "idle" || phase === "downloading") return null;
 
-  const busy = phase === "downloading" || phase === "installing";
-  // `installing` has no progress of its own — it's the tail of the same
-  // download, so it keeps the ring and pins it full.
-  const pct = phase === "installing" ? 100 : (progress ?? 0);
+  const busy = phase === "installing";
+  // `installing` has no progress of its own, it's the moment between
+  // the click and the process handing over to the installer, so it
+  // keeps the ring and pins it full.
+  const pct = 100;
 
   const cfg: CardConfig = {
-    available: {
-      icon: IconDownload,
-      iconClass: "size-[15px]",
-      title: "Update available",
-      sub: version ? `Version ${version}` : undefined,
-      onClick: () => void beginUpdateInstall(),
-    },
-    downloading: {
-      icon: IconArrowDown,
-      iconClass: "size-[13px]",
-      title: "Downloading update",
-      sub: progress != null ? `${progress}%` : "Starting…",
-    },
     installing: {
       icon: IconArrowDown,
       iconClass: "size-[13px]",
       title: "Installing update",
-      sub: "Almost done…",
+      sub: "Restarting…",
     },
     ready: {
       icon: IconRefresh,
       iconClass: "size-[15px]",
       title: "Restart to update",
       sub: version ? `Version ${version} ready` : "Ready to install",
-      onClick: () => restartToUpdate(),
+      onClick: () => void restartToUpdate(),
     },
     error: {
       icon: IconAlertTriangle,
       iconClass: "size-[15px]",
       title: "Update failed",
       sub: "Click to retry",
-      onClick: () => void beginUpdateInstall(),
+      onClick: () => void retryUpdateDownload(),
     },
   }[phase];
 
@@ -138,11 +124,11 @@ export function UpdateBanner() {
             "grid size-[26px] place-items-center rounded-md bg-w070 text-t3 shadow-[inset_0_0_0_1px_var(--w080)]",
             "transition-[width,height,border-radius,background-color,color] duration-[220ms] ease-[cubic-bezier(.32,.72,0,1)]",
             // The ring is round, so the tile under it goes round too
-            // while the download runs.
+            // while the ring is up.
             busy && "rounded-full",
             // On the rail the tile takes a nav row's footprint exactly,
             // so hovering it lights the same shape as hovering any row
-            // above it. While the download runs it pulls back to a square
+            // above it. While the ring is up it pulls back to a square
             // for the ring to circle — the size is transitioned, so that
             // is a glide, and it only happens while progress is showing.
             "group-data-[collapsible=icon]:h-7 group-data-[collapsible=icon]:w-9",

@@ -112,9 +112,13 @@ export function SettingsDialog() {
               {version ? `YTubic v${version}` : "YTubic"}
             </span>
             <span className="text-[11.5px] text-t10">
-              {phase === "idle" || phase === "error"
-                ? "Up to date"
-                : "Update available"}
+              {phase === "ready"
+                ? "Restart to update"
+                : phase === "error"
+                  ? "Update failed"
+                  : phase === "idle"
+                    ? "Up to date"
+                    : "Downloading update"}
             </span>
           </div>
         </aside>
@@ -145,10 +149,7 @@ export function SettingsDialog() {
               homes so the pin swap doesn't visibly shift. A pin always
               implies overflow, so the scrollbar is always there while
               this slot is in use. */}
-          <div
-            data-settings-pinned-slot
-            className="shrink-0 pl-5 pr-7"
-          />
+          <div data-settings-pinned-slot className="shrink-0 pl-5 pr-7" />
           {/* scrollbar-gutter stable: the scrollbar's column is reserved
               even while the tab is short, so a tab growing past the
               viewport (opening the equaliser) doesn't shift every row

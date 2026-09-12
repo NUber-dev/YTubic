@@ -16,11 +16,19 @@ import {
   frostedDialogOverlay,
   frostedDialogPanel,
 } from "@/components/ui/dialog";
-import { checkForUpdates, beginUpdateInstall } from "@/lib/updater";
+import {
+  checkForUpdates,
+  restartToUpdate,
+  retryUpdateDownload,
+} from "@/lib/updater";
 import { useUpdateStore } from "@/lib/store/update";
 import { IS_BETA_PLATFORM, IS_MAC } from "@/lib/platform";
 import { openWhatsNew } from "@/lib/store/whats-new";
-import { DiscordIcon, GithubIcon, XIcon } from "@/components/shared/brand-icons";
+import {
+  DiscordIcon,
+  GithubIcon,
+  XIcon,
+} from "@/components/shared/brand-icons";
 import { cn } from "@/lib/utils";
 
 const REPO_URL = "https://github.com/NUber-dev/YTubic";
@@ -97,7 +105,30 @@ export function AboutDialog({
     void openUrl(url);
   };
 
-  const updateReady = phase !== "idle" && phase !== "error";
+  // The download runs quietly, so the footer narrates it rather than
+  // asking for it: a version is coming, it's ready, or it failed.
+  const updateLine =
+    phase === "ready"
+      ? {
+          text: nextVersion ? `Version ${nextVersion} ready` : "Update ready",
+          action: "Restart",
+          onClick: () => void restartToUpdate(),
+        }
+      : phase === "error"
+        ? {
+            text: "Update failed",
+            action: "Retry",
+            onClick: () => void retryUpdateDownload(),
+          }
+        : phase === "installing"
+          ? { text: "Restarting to update…" }
+          : phase === "downloading"
+            ? {
+                text: nextVersion
+                  ? `Downloading version ${nextVersion}…`
+                  : "Downloading update…",
+              }
+            : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -169,8 +200,8 @@ export function AboutDialog({
           {IS_BETA_PLATFORM && (
             <p className="text-[13.5px] leading-[1.55] text-t4 text-pretty">
               The {IS_MAC ? "macOS" : "Linux"} build is in beta. If something
-              breaks, please report it via the window menu (⋯ → Report an
-              issue) or on{" "}
+              breaks, please report it via the window menu (⋯ → Report an issue)
+              or on{" "}
               <button
                 type="button"
                 onClick={link(`${REPO_URL}/issues`)}
@@ -232,7 +263,7 @@ export function AboutDialog({
                   Checking for updates…
                 </span>
               </>
-            ) : updateReady ? (
+            ) : updateLine ? (
               <>
                 {/* The ring is a box-shadow, not a border, so the dot
                     keeps its 7px size and the glow sits outside it. */}
@@ -240,16 +271,16 @@ export function AboutDialog({
                   aria-hidden
                   className="size-[7px] shrink-0 rounded-full bg-acc1 shadow-[0_0_0_4px_rgba(var(--acc1rgb),0.18)]"
                 />
-                <span className="text-[12.5px] text-t2">
-                  {nextVersion ? `Version ${nextVersion} available` : "Update available"}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void beginUpdateInstall()}
-                  className="cursor-pointer text-[12.5px] font-semibold text-acc1 underline-offset-2 hover:underline"
-                >
-                  Update
-                </button>
+                <span className="text-[12.5px] text-t2">{updateLine.text}</span>
+                {updateLine.action ? (
+                  <button
+                    type="button"
+                    onClick={updateLine.onClick}
+                    className="cursor-pointer text-[12.5px] font-semibold text-acc1 underline-offset-2 hover:underline"
+                  >
+                    {updateLine.action}
+                  </button>
+                ) : null}
               </>
             ) : (
               <>
