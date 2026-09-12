@@ -8,9 +8,12 @@ import type { Update } from "@tauri-apps/plugin-updater";
  *
  * A found update is downloaded straight away, in the background, with
  * no surface asking for it; the first thing the user sees is "ready".
+ * With automatic updates switched off in Settings it parks in
+ * "available" instead, and the download waits for a click in About.
  */
 export type UpdatePhase =
   | "idle" // nothing to install
+  | "available" // found, auto-update off: waiting for the user to ask
   | "downloading" // found, fetching the package quietly
   | "installing" // restart pressed, installer being handed the package
   | "ready" // downloaded, waiting for a restart
@@ -29,6 +32,7 @@ type State = {
    */
   handle: Update | null;
 
+  setAvailable: (version: string, handle: Update | null) => void;
   setDownloading: (version: string, handle: Update | null) => void;
   setProgress: (progress: number | null) => void;
   setInstalling: () => void;
@@ -43,6 +47,8 @@ export const useUpdateStore = create<State>()((set) => ({
   progress: null,
   error: null,
   handle: null,
+  setAvailable: (version, handle) =>
+    set({ phase: "available", version, handle, progress: null, error: null }),
   setDownloading: (version, handle) =>
     set({ phase: "downloading", version, handle, progress: null, error: null }),
   setProgress: (progress) => set({ phase: "downloading", progress }),
@@ -63,6 +69,7 @@ export const useUpdateStore = create<State>()((set) => ({
 // flow needs a published release, and the dev fallback only plays a
 // simulated download. In the browser console:
 //
+//   __updateStore.getState().setAvailable("0.5.1", null)
 //   __updateStore.getState().setDownloading("0.5.1", null)
 //   __updateStore.getState().setProgress(37)
 //   __updateStore.getState().setReady()

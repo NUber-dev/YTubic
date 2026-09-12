@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "sonner";
+import { useSettingsStore } from "@/lib/store/settings";
 import { useUpdateStore } from "@/lib/store/update";
 
 const TOAST_ID = "app-update";
@@ -21,6 +22,11 @@ let downloading = false;
  * when the check fails (offline, rate-limit). The manual menu path
  * reports those outcomes.
  *
+ * With automatic updates off (Settings > General) the found version is
+ * only reported: the store parks in "available" and About offers a
+ * Download link. Turning the setting back on picks that parked update
+ * up without another round trip.
+ *
  * While an update is already downloading or ready, a repeat check is a
  * no-op: the About dialog runs one on every open and must not restart
  * the download. An errored download is retried by the next check.
@@ -35,6 +41,7 @@ export async function checkForUpdates({
   silent: boolean;
 }): Promise<void> {
   const store = useUpdateStore.getState();
+  const auto = useSettingsStore.getState().autoUpdate;
   if (
     store.phase === "downloading" ||
     store.phase === "installing" ||
@@ -42,9 +49,16 @@ export async function checkForUpdates({
   ) {
     return;
   }
+  if (store.phase === "available") {
+    if (auto) void downloadUpdate(store.version ?? "", store.handle);
+    return;
+  }
 
   if (import.meta.env.DEV) {
-    if (!silent) void downloadUpdate("9.9.9", null);
+    if (!silent) {
+      if (auto) void downloadUpdate("9.9.9", null);
+      else store.setAvailable("9.9.9", null);
+    }
     return;
   }
   if (checking) return;
@@ -69,6 +83,10 @@ export async function checkForUpdates({
       return;
     }
 
+    if (!auto) {
+      store.setAvailable(update.version, update);
+      return;
+    }
     // Detached on purpose: the caller (About's "Checking…" spinner)
     // only waits for the check, the download runs on its own.
     void downloadUpdate(update.version, update);
@@ -78,13 +96,14 @@ export async function checkForUpdates({
 }
 
 /**
- * Retry the download after a failure (the banner's and About's click
- * in the error phase). Reuses the handle the failed attempt left in
+ * Download the update the store already knows about: About's Download
+ * link while auto-update is off ("available"), or the retry click in
+ * the banner and About after a failure ("error"). Reuses the handle in
  * the store; a null handle is the dev preview and replays the mock.
  */
-export async function retryUpdateDownload(): Promise<void> {
+export async function downloadAvailableUpdate(): Promise<void> {
   const { phase, version, handle } = useUpdateStore.getState();
-  if (phase !== "error") return;
+  if (phase !== "available" && phase !== "error") return;
   await downloadUpdate(version ?? "", handle);
 }
 
@@ -188,10 +207,12 @@ async function runMockDownload(version: string): Promise<void> {
 /**
  * Mount once in AppShell: quiet update check shortly after launch.
  * Delayed a few seconds so it never competes with first paint, feed
- * loading, or the yt-dlp bootstrap for attention/bandwidth.
+ * loading, or the yt-dlp bootstrap for attention/bandwidth. Skipped
+ * entirely with automatic updates off; About still checks on open.
  */
 export function useUpdateStartupCheck(): void {
   useEffect(() => {
+    if (!useSettingsStore.getState().autoUpdate) return;
     const t = window.setTimeout(() => {
       void checkForUpdates({ silent: true });
     }, 5000);

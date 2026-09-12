@@ -36,6 +36,11 @@ type State = {
   /** System toast on track change while the app is in the background
    *  (see `lib/playback-notifications.ts`). */
   playbackNotifications: boolean;
+  /** Check GitHub Releases at launch and download a newer version in
+   *  the background, leaving only the restart to the user (see
+   *  `lib/updater.ts`). Off: no check at launch, and a check run from
+   *  About only reports the version, downloading waits for a click. */
+  autoUpdate: boolean;
   /** Broadcast the current track to Discord as a Rich Presence status
    *  ("Listening to YTubic"). Off by default — opt-in for privacy.
    *  The IPC worker lives in `src-tauri/src/discord.rs`. */
@@ -66,6 +71,7 @@ type State = {
   setRatingButtons: (v: RatingButtons) => void;
   setFullscreenLayout: (v: FullscreenLayout) => void;
   setPlaybackNotifications: (v: boolean) => void;
+  setAutoUpdate: (v: boolean) => void;
   setDiscordRichPresence: (v: boolean) => void;
   setLastfmEnabled: (v: boolean) => void;
   setLastfmLoveSync: (v: boolean) => void;
@@ -93,6 +99,7 @@ export const useSettingsStore = create<State>()(
       ratingButtons: "heart",
       fullscreenLayout: "cover",
       playbackNotifications: false,
+      autoUpdate: true,
       discordRichPresence: false,
       lastfmEnabled: false,
       lastfmSessionKey: null,
@@ -108,6 +115,7 @@ export const useSettingsStore = create<State>()(
       setFullscreenLayout: (fullscreenLayout) => set({ fullscreenLayout }),
       setPlaybackNotifications: (playbackNotifications) =>
         set({ playbackNotifications }),
+      setAutoUpdate: (autoUpdate) => set({ autoUpdate }),
       setDiscordRichPresence: (discordRichPresence) =>
         set({ discordRichPresence }),
       setLastfmEnabled: (lastfmEnabled) => set({ lastfmEnabled }),

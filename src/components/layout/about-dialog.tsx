@@ -18,8 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import {
   checkForUpdates,
+  downloadAvailableUpdate,
   restartToUpdate,
-  retryUpdateDownload,
 } from "@/lib/updater";
 import { useUpdateStore } from "@/lib/store/update";
 import { IS_BETA_PLATFORM, IS_MAC } from "@/lib/platform";
@@ -114,21 +114,29 @@ export function AboutDialog({
           action: "Restart",
           onClick: () => void restartToUpdate(),
         }
-      : phase === "error"
+      : phase === "available"
         ? {
-            text: "Update failed",
-            action: "Retry",
-            onClick: () => void retryUpdateDownload(),
+            text: nextVersion
+              ? `Version ${nextVersion} available`
+              : "Update available",
+            action: "Download",
+            onClick: () => void downloadAvailableUpdate(),
           }
-        : phase === "installing"
-          ? { text: "Restarting to update…" }
-          : phase === "downloading"
-            ? {
-                text: nextVersion
-                  ? `Downloading version ${nextVersion}…`
-                  : "Downloading update…",
-              }
-            : null;
+        : phase === "error"
+          ? {
+              text: "Update failed",
+              action: "Retry",
+              onClick: () => void downloadAvailableUpdate(),
+            }
+          : phase === "installing"
+            ? { text: "Restarting to update…" }
+            : phase === "downloading"
+              ? {
+                  text: nextVersion
+                    ? `Downloading version ${nextVersion}…`
+                    : "Downloading update…",
+                }
+              : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

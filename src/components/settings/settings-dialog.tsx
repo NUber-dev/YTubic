@@ -114,11 +114,13 @@ export function SettingsDialog() {
             <span className="text-[11.5px] text-t10">
               {phase === "ready"
                 ? "Restart to update"
-                : phase === "error"
-                  ? "Update failed"
-                  : phase === "idle"
-                    ? "Up to date"
-                    : "Downloading update"}
+                : phase === "available"
+                  ? "Update available"
+                  : phase === "error"
+                    ? "Update failed"
+                    : phase === "idle"
+                      ? "Up to date"
+                      : "Downloading update"}
             </span>
           </div>
         </aside>

@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   IconBellFilled,
   IconBoltFilled,
+  IconCircleArrowDownFilled,
   IconLoader2,
   IconLogin,
   IconSquareXFilled,
@@ -20,6 +21,7 @@ import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
 import { IS_MAC } from "@/lib/platform";
 import { authLoggedInQuery } from "@/lib/store/auth-queries";
 import { useSettingsStore } from "@/lib/store/settings";
+import { checkForUpdates } from "@/lib/updater";
 
 export function GeneralTab() {
   return (
@@ -97,7 +99,11 @@ function AccountGroup() {
           </span>
         </div>
         <Button size="sm" onClick={signIn} disabled={signingIn}>
-          {signingIn ? <IconLoader2 className="animate-spin" /> : <IconLogin stroke={2.3} />}
+          {signingIn ? (
+            <IconLoader2 className="animate-spin" />
+          ) : (
+            <IconLogin stroke={2.3} />
+          )}
           Sign in with Google
         </Button>
       </div>
@@ -118,6 +124,16 @@ function BehaviorGroup() {
   const setPlaybackNotifications = useSettingsStore(
     (s) => s.setPlaybackNotifications,
   );
+  const autoUpdate = useSettingsStore((s) => s.autoUpdate);
+  const setAutoUpdate = useSettingsStore((s) => s.setAutoUpdate);
+
+  const toggleAutoUpdate = (enabled: boolean) => {
+    setAutoUpdate(enabled);
+    // Switching it on runs the check the launch skipped, so a version
+    // found while it was off (or never looked for) starts downloading
+    // now rather than after the next restart.
+    if (enabled) void checkForUpdates({ silent: true });
+  };
 
   const qc = useQueryClient();
   const autostart = useQuery({
@@ -178,6 +194,18 @@ function BehaviorGroup() {
             checked={closeAction === "tray"}
             onCheckedChange={(v) => setCloseAction(v ? "tray" : "quit")}
             aria-label={IS_MAC ? "Close to menu bar" : "Close to tray"}
+          />
+        }
+      />
+      <SettingRow
+        icon={IconCircleArrowDownFilled}
+        title="Automatic Updates"
+        description="Download updates quietly and install them on your next restart."
+        control={
+          <Switch
+            checked={autoUpdate}
+            onCheckedChange={toggleAutoUpdate}
+            aria-label="Automatic Updates"
           />
         }
       />

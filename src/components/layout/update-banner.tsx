@@ -6,7 +6,7 @@ import {
 } from "@tabler/icons-react";
 import type { ComponentType } from "react";
 import { useUpdateStore } from "@/lib/store/update";
-import { restartToUpdate, retryUpdateDownload } from "@/lib/updater";
+import { downloadAvailableUpdate, restartToUpdate } from "@/lib/updater";
 import { cn } from "@/lib/utils";
 
 type CardConfig = {
@@ -37,8 +37,11 @@ export function UpdateBanner() {
   const version = useUpdateStore((s) => s.version);
 
   // Nothing to show before the package has landed: the download is
-  // deliberately silent.
-  if (phase === "idle" || phase === "downloading") return null;
+  // deliberately silent, and with auto-update off the found version is
+  // About's business, not a sidebar nag.
+  if (phase === "idle" || phase === "available" || phase === "downloading") {
+    return null;
+  }
 
   const busy = phase === "installing";
   // `installing` has no progress of its own, it's the moment between
@@ -65,7 +68,7 @@ export function UpdateBanner() {
       iconClass: "size-[15px]",
       title: "Update failed",
       sub: "Click to retry",
-      onClick: () => void retryUpdateDownload(),
+      onClick: () => void downloadAvailableUpdate(),
     },
   }[phase];
 
