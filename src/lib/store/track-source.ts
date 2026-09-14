@@ -23,6 +23,12 @@ type State = {
    * pair stays consistent.
    */
   byVideoId: Record<string, TrackSources>;
+  /**
+   * The kind the user last chose by hand, carried to tracks they haven't
+   * touched. Picking Video is a mode, not a one-off: without this every
+   * new track silently reverts to the song.
+   */
+  preferred: SourceKind;
   /** Cache an alternate id we resolved. `kind` is the kind of `altId`. */
   setAlternate: (knownId: string, kind: SourceKind, altId: string) => void;
   /** Flip the active source for a track. */
@@ -53,6 +59,7 @@ export const useTrackSourceStore = create<State>()(
   persist(
     (set) => ({
       byVideoId: {},
+      preferred: "song",
       setAlternate: (knownId, kind, altId) =>
         set((s) => {
           const existing = s.byVideoId[knownId];
@@ -79,12 +86,15 @@ export const useTrackSourceStore = create<State>()(
             // No record yet — synthesize a stub so the choice is sticky
             // even before we've resolved the alternate.
             const fresh: TrackSources = { song: id, selected };
-            return { byVideoId: capByVideoId({ ...s.byVideoId, [id]: fresh }) };
+            return {
+              preferred: selected,
+              byVideoId: capByVideoId({ ...s.byVideoId, [id]: fresh }),
+            };
           }
           const updated = { ...existing, selected };
           const next = { ...s.byVideoId, [existing.song]: updated };
           if (existing.video) next[existing.video] = updated;
-          return { byVideoId: next };
+          return { preferred: selected, byVideoId: next };
         }),
     }),
     {

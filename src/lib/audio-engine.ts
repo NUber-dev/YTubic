@@ -9,7 +9,14 @@ import type { ShelfItem } from "@/lib/innertube/types";
 import { getLikedIdsSet } from "@/components/shared/like-buttons";
 import { toggleLiked } from "@/lib/like-actions";
 import { fetchRadio, fetchWatchQueueContinuation } from "@/lib/innertube/radio";
-import { prefetchStream, saveTrackMeta, streamUrlFor } from "@/lib/stream";
+import {
+  prefetchStream,
+  prefetchVideo,
+  saveTrackMeta,
+  streamUrlFor,
+} from "@/lib/stream";
+import { resolveVideoFor } from "@/lib/source-follow";
+import { getVideoQualityTier } from "@/lib/video-quality";
 import { AudioGraph, canSelectOutputDevice } from "@/lib/audio-graph";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 import { eqGains, usePlaybackSettings } from "@/lib/store/playback-settings";
@@ -17,6 +24,14 @@ import { usePremiumStore } from "@/lib/store/premium";
 import { useSettingsStore } from "@/lib/store/settings";
 import { openPremiumGate } from "@/lib/store/premium-gate";
 import { resolveStreamId, useTrackSourceStore } from "@/lib/store/track-source";
+import { useVideoGateStore } from "@/lib/store/video-gate";
+import { setAudioClockSource } from "@/lib/audio-clock";
+import {
+  fetchNonMusicSegments,
+  segmentAt,
+  segmentKey,
+} from "@/lib/sponsorblock";
+import { useSponsorSegments } from "@/lib/store/sponsor-segments";
 import { pickThumbnail } from "@/components/shared/thumbnail";
 import { IS_MAC } from "@/lib/platform";
 
@@ -90,6 +105,8 @@ export function useAudioEngine() {
   } | null>(null);
   // Guard against stale stream resolutions when the user skips mid-fetch.
   const resolveTokenRef = useRef(0);
+  // Skipped once, or scrubbed back into on purpose. Never jumped again.
+  const sparedSegmentsRef = useRef<Set<string>>(new Set());
   // Counts how many tracks have failed in a row without a successful
   // play in between. Reset to 0 on `playing`. Used to short-circuit
   // auto-skip after a few consecutive failures so we don't burn through
@@ -122,6 +139,7 @@ export function useAudioEngine() {
     const a = make();
     const b = make();
     audioRef.current = a;
+    setAudioClockSource(a);
     standbyRef.current = b;
     {
       const s = usePlaybackStore.getState();
@@ -144,6 +162,7 @@ export function useAudioEngine() {
         el.src = "";
       }
       audioRef.current = null;
+      setAudioClockSource(null);
       standbyRef.current = null;
     };
   }, []);
@@ -278,6 +297,7 @@ export function useAudioEngine() {
       // the active one, then tell the store, whose track change the
       // resolve effect below recognises via adoptRef and leaves alone.
       audioRef.current = to;
+      setAudioClockSource(to);
       standbyRef.current = from;
       adoptRef.current = {
         index: next.index,
@@ -304,6 +324,16 @@ export function useAudioEngine() {
     const onTimeUpdate = (e: Event) => {
       if (!isActive(e)) return;
       const el = e.currentTarget as HTMLAudioElement;
+      const segments = useSponsorSegments.getState().segments;
+      const seg = segments.length ? segmentAt(el.currentTime, segments) : null;
+      // Seeking a trailing stretch would race the crossfade.
+      const endsTrack = el.duration > 0 && seg && seg.end >= el.duration - 1;
+      if (seg && !endsTrack && !sparedSegmentsRef.current.has(segmentKey(seg))) {
+        sparedSegmentsRef.current.add(segmentKey(seg));
+        el.currentTime = seg.end;
+        store().setPosition(seg.end);
+        return;
+      }
       store().setPosition(el.currentTime);
       maybeCrossfade(el);
     };
@@ -398,12 +428,20 @@ export function useAudioEngine() {
       retriedTrackRef.current = null;
       store().setStatus("ready");
     };
+    // The auto-skip lands outside a segment, so landing inside one is deliberate.
+    const onSeeked = (e: Event) => {
+      if (!isActive(e)) return;
+      const el = e.currentTarget as HTMLAudioElement;
+      const seg = segmentAt(el.currentTime, useSponsorSegments.getState().segments);
+      if (seg) sparedSegmentsRef.current.add(segmentKey(seg));
+    };
     const onWaiting = () => {
       // buffering — keep status as ready; don't flip to loading on every gap.
     };
 
     for (const el of [a, b]) {
       el.addEventListener("timeupdate", onTimeUpdate);
+      el.addEventListener("seeked", onSeeked);
       el.addEventListener("durationchange", onDurationChange);
       el.addEventListener("ended", onEnded);
       el.addEventListener("error", onError);
@@ -413,6 +451,7 @@ export function useAudioEngine() {
     return () => {
       for (const el of [a, b]) {
         el.removeEventListener("timeupdate", onTimeUpdate);
+        el.removeEventListener("seeked", onSeeked);
         el.removeEventListener("durationchange", onDurationChange);
         el.removeEventListener("ended", onEnded);
         el.removeEventListener("error", onError);
@@ -437,6 +476,25 @@ export function useAudioEngine() {
   const streamVideoId = useTrackSourceStore((s) =>
     videoId ? resolveStreamId(videoId, s.byVideoId) : undefined,
   );
+
+  const skipNonMusic = usePlaybackSettings((s) => s.skipNonMusic);
+  const onVideoSource = useTrackSourceStore(
+    (s) => !!videoId && s.byVideoId[videoId]?.selected === "video",
+  );
+  useEffect(() => {
+    const publish = useSponsorSegments.getState().setSegments;
+    publish([]);
+    sparedSegmentsRef.current = new Set();
+    if (!skipNonMusic || !onVideoSource || !streamVideoId) return;
+    let cancelled = false;
+    void fetchNonMusicSegments(streamVideoId).then((segments) => {
+      if (!cancelled) publish(segments);
+    });
+    return () => {
+      cancelled = true;
+      publish([]);
+    };
+  }, [skipNonMusic, onVideoSource, streamVideoId]);
 
   // Reactive Premium check for the gate below. Subscribing (rather than
   // calling isPremium() inside the effect) makes the resolve effect
@@ -590,6 +648,7 @@ export function useAudioEngine() {
 
   // Play / pause follow store.
   const playing = usePlaybackStore((s) => s.playing);
+  const videoGated = useVideoGateStore((s) => s.waiting);
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
@@ -603,6 +662,11 @@ export function useAudioEngine() {
     }
     if (!el.src) return;
     if (playing) {
+      if (videoGated) {
+        cancelFade();
+        el.pause();
+        return;
+      }
       graphRef.current?.resume();
       void el.play().catch((e) => {
         if (e?.name === "AbortError") return;
@@ -614,7 +678,7 @@ export function useAudioEngine() {
       cancelFade();
       el.pause();
     }
-  }, [playing, premiumOk]);
+  }, [playing, premiumOk, videoGated]);
 
   // Volume / mute follow store.
   const volume = usePlaybackStore((s) => s.volume);
@@ -860,6 +924,56 @@ export function useAudioEngine() {
         : undefined,
     );
   }, [status, nextStreamVideoId]);
+
+  // Both gated on Video being chosen: a resolve costs a search, a file costs MBs.
+  const followVideoMode = usePlaybackSettings((s) => s.followVideoMode);
+  const warmNextVideo = usePlaybackSettings((s) => s.warmNextVideo);
+  const preferVideo =
+    useTrackSourceStore((s) => s.preferred === "video") && followVideoMode;
+  const currentVideoId = usePlaybackStore((s) =>
+    s.index >= 0 ? s.queue[s.index]?.videoId : undefined,
+  );
+  useEffect(() => {
+    if (!preferVideo || !currentVideoId) return;
+    let cancelled = false;
+    void (async () => {
+      const st = usePlaybackStore.getState();
+      const track = st.index >= 0 ? st.queue[st.index] : undefined;
+      if (!track || track.videoId !== currentVideoId) return;
+      const rec = useTrackSourceStore.getState().byVideoId[currentVideoId];
+      if (rec?.selected === "video") return;
+      const altId = await resolveVideoFor(track);
+      if (cancelled || !altId) return;
+      const live = usePlaybackStore.getState();
+      if (live.queue[live.index]?.videoId !== currentVideoId) return;
+      useTrackSourceStore.getState().setSelected(currentVideoId, "video");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [preferVideo, currentVideoId]);
+
+  useEffect(() => {
+    if (!preferVideo || status !== "ready" || !nextVideoId) return;
+    let cancelled = false;
+    void (async () => {
+      const st = usePlaybackStore.getState();
+      const upcoming =
+        st.index >= 0 && st.index + 1 < st.queue.length
+          ? st.queue[st.index + 1]
+          : undefined;
+      if (!upcoming || upcoming.videoId !== nextVideoId) return;
+      const altId = await resolveVideoFor(upcoming);
+      if (cancelled || !altId) return;
+      // Flipping mid-track would swap the source out and restart the song.
+      useTrackSourceStore.getState().setSelected(nextVideoId, "video");
+      if (!warmNextVideo) return;
+      await prefetchVideo(altId, await getVideoQualityTier());
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [preferVideo, warmNextVideo, status, nextVideoId]);
 
   // Auto-extend the queue with radio tracks when we're near the end, so
   // playback continues past the explicit queue.

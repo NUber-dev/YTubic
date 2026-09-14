@@ -8,6 +8,9 @@ import {
   IconHeadphonesFilled,
   IconPlayerPlayFilled,
   IconTransitionRightFilled,
+  IconVideoFilled,
+  IconMovie,
+  IconPlayerTrackNextFilled,
 } from "@tabler/icons-react";
 import {
   DropdownMenu,
@@ -26,6 +29,7 @@ import {
   EQ_RANGE,
   type BackButtonMode,
   type EqPreset,
+  type VideoQualityChoice,
 } from "@/lib/store/playback-settings";
 import { canSelectOutputDevice } from "@/lib/audio-graph";
 import { cn } from "@/lib/utils";
@@ -49,10 +53,94 @@ export function PlaybackTab() {
         {canSelectOutputDevice() ? <OutputDeviceRow /> : null}
       </Group>
       <BackButtonGroup />
+      <VideoGroup />
       <Group>
         <ResumeRow />
       </Group>
     </TabPane>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Music video                                                         */
+/* ------------------------------------------------------------------ */
+
+const VIDEO_QUALITY_OPTIONS: { value: VideoQualityChoice; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "hi", label: "4K" },
+  { value: "lo", label: "1080p" },
+];
+
+function VideoGroup() {
+  const quality = usePlaybackSettings((s) => s.videoQuality);
+  const setQuality = usePlaybackSettings((s) => s.setVideoQuality);
+  const follow = usePlaybackSettings((s) => s.followVideoMode);
+  const setFollow = usePlaybackSettings((s) => s.setFollowVideoMode);
+  const warm = usePlaybackSettings((s) => s.warmNextVideo);
+  const setWarm = usePlaybackSettings((s) => s.setWarmNextVideo);
+  const skip = usePlaybackSettings((s) => s.skipNonMusic);
+  const setSkip = usePlaybackSettings((s) => s.setSkipNonMusic);
+
+  return (
+    <Group>
+      <SettingRow
+        icon={IconMovie}
+        title="Video Quality"
+        description="Use the best video quality available for your system."
+        control={
+          <SegmentedControl
+            value={quality}
+            onChange={setQuality}
+            options={VIDEO_QUALITY_OPTIONS}
+          />
+        }
+      />
+      <div className="flex flex-col">
+        <SettingRow
+          icon={IconVideoFilled}
+          title="Stay in Video Mode"
+          description="Keep playing music videos on the tracks that follow, instead of reverting to the song."
+          control={
+            <Switch
+              checked={follow}
+              onCheckedChange={setFollow}
+              aria-label="Stay in Video Mode"
+            />
+          }
+        />
+        {follow ? (
+          <div className="flex flex-col gap-4 pb-4 pl-12">
+            <div className="flex items-center gap-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                <span className="text-sm font-semibold leading-none text-t2">
+                  Pre-load the next video
+                </span>
+                <span className="text-[12.5px] leading-snug text-t7">
+                  Fetches next track before previous song ends.
+                </span>
+              </div>
+              <Switch
+                checked={warm}
+                onCheckedChange={setWarm}
+                aria-label="Pre-load the Next Video"
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <SettingRow
+        icon={IconPlayerTrackNextFilled}
+        title="Skip Non-Music Sections"
+        description="Jump past intros, outros and dialogue in music videos, using SponsorBlock."
+        control={
+          <Switch
+            checked={skip}
+            onCheckedChange={setSkip}
+            aria-label="Skip Non-Music Sections"
+          />
+        }
+      />
+    </Group>
   );
 }
 
