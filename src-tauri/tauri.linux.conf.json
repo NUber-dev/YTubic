@@ -6,6 +6,7 @@
     "linux": {
       "deb": {
         "depends": [
+          "libatomic1",
           "libwebkit2gtk-4.1-0",
           "libgtk-3-0",
           "gstreamer1.0-plugins-base",
@@ -15,6 +16,7 @@
       },
       "rpm": {
         "depends": [
+          "libatomic",
           "webkit2gtk4.1",
           "gtk3",
           "gstreamer1-plugins-base",

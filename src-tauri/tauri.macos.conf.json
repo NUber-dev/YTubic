@@ -22,7 +22,7 @@
     "targets": ["app", "dmg"],
     "category": "Music",
     "macOS": {
-      "minimumSystemVersion": "10.15",
+      "minimumSystemVersion": "13.5",
       "signingIdentity": "-"
     }
   }
