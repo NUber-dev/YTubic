@@ -1,4 +1,4 @@
-//! yt-dlp playback commands. Node runs the player challenges; session cookies
+//! yt-dlp playback commands. Deno runs the player challenges; session cookies
 //! are supplied only for the caller's authenticated retry.
 
 use std::path::Path;
@@ -11,13 +11,13 @@ use tokio::process::Command;
 const FORMAT: &str = "bestaudio[ext=webm][protocol^=http]/bestaudio[protocol^=http]/bestaudio";
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
-pub fn command(yt_dlp: &Path, node: &Path, cookies: Option<&Path>) -> Command {
+pub fn command(yt_dlp: &Path, deno: &Path, cookies: Option<&Path>) -> Command {
     let mut cmd = Command::new(yt_dlp);
-    // App-owned configuration: explicitly select Node, including paths with
-    // spaces, instead of relying on yt-dlp's Deno-only default or the PATH.
+    // App-owned configuration: explicitly select Deno, including paths with
+    // spaces, so playback always uses the managed runtime.
     cmd.args(["--ignore-config", "--no-js-runtimes", "--js-runtimes"]);
-    let mut runtime = std::ffi::OsString::from("node:");
-    runtime.push(node);
+    let mut runtime = std::ffi::OsString::from("deno:");
+    runtime.push(deno);
     cmd.arg(runtime);
     cmd.args(["--no-playlist", "--no-warnings", "--socket-timeout", "15"]);
     if let Some(path) = cookies {
@@ -67,12 +67,12 @@ async fn read_stderr(mut stderr: tokio::process::ChildStderr) -> String {
 
 pub async fn download(
     yt_dlp: &Path,
-    node: &Path,
+    deno: &Path,
     video_id: &str,
     destination: &Path,
     cookies: Option<&Path>,
 ) -> Result<(), String> {
-    let mut cmd = command(yt_dlp, node, cookies);
+    let mut cmd = command(yt_dlp, deno, cookies);
     cmd.args([
         "-f",
         FORMAT,
@@ -140,13 +140,13 @@ pub async fn download(
 
 pub async fn resolve(
     yt_dlp: &Path,
-    node: &Path,
+    deno: &Path,
     video_id: &str,
     cookies: Option<&Path>,
 ) -> Result<String, String> {
     let output = tokio::time::timeout(
         READ_TIMEOUT,
-        command(yt_dlp, node, cookies)
+        command(yt_dlp, deno, cookies)
             .args(["-j", "-f", FORMAT])
             .arg(format!("https://www.youtube.com/watch?v={video_id}"))
             .output(),
@@ -194,14 +194,14 @@ mod tests {
         assert!(needs_login("ERROR: Sign in to confirm you're not a bot."));
         assert!(!needs_login("HTTP Error 403: Forbidden"));
         assert!(!needs_login("Video unavailable"));
-        assert!(!needs_login("node executable not found"));
+        assert!(!needs_login("deno executable not found"));
     }
 
     #[test]
     fn runtime_and_cookie_paths_with_spaces_are_single_arguments() {
         let cmd = command(
             Path::new("yt-dlp"),
-            Path::new("path with spaces/node"),
+            Path::new("path with spaces/deno"),
             Some(Path::new("session with spaces.txt")),
         );
         let args: Vec<_> = cmd
@@ -211,31 +211,31 @@ mod tests {
             .collect();
         assert!(args
             .windows(2)
-            .any(|a| a == ["--js-runtimes", "node:path with spaces/node"]));
+            .any(|a| a == ["--js-runtimes", "deno:path with spaces/deno"]));
         assert!(args
             .windows(2)
             .any(|a| a == ["--cookies", "session with spaces.txt"]));
         assert!(args.contains(&"--no-js-runtimes".to_string()));
-        assert!(!command(Path::new("yt-dlp"), Path::new("node"), None)
+        assert!(!command(Path::new("yt-dlp"), Path::new("deno"), None)
             .as_std()
             .get_args()
             .any(|a| a == "--cookies"));
     }
 
     #[test]
-    #[ignore = "requires YTUBIC_TEST_YTDLP, YTUBIC_TEST_NODE, YTUBIC_TEST_VIDEO_ID and YouTube access; optional YTUBIC_TEST_COOKIES"]
+    #[ignore = "requires YTUBIC_TEST_YTDLP, YTUBIC_TEST_DENO, YTUBIC_TEST_VIDEO_ID and YouTube access; optional YTUBIC_TEST_COOKIES"]
     fn real_ytdlp_playback() {
         let yt_dlp =
             std::path::PathBuf::from(std::env::var_os("YTUBIC_TEST_YTDLP").expect("yt-dlp path"));
-        let node =
-            std::path::PathBuf::from(std::env::var_os("YTUBIC_TEST_NODE").expect("Node path"));
+        let deno =
+            std::path::PathBuf::from(std::env::var_os("YTUBIC_TEST_DENO").expect("Deno path"));
         let video_id = std::env::var("YTUBIC_TEST_VIDEO_ID").expect("video id");
         let root = tempfile::tempdir().unwrap();
         let audio = root.path().join("audio.webm");
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            crate::node::ensure(&node).await.unwrap();
-            let result = download(&yt_dlp, &node, &video_id, &audio, None).await;
+            crate::deno::ensure(&deno).await.unwrap();
+            let result = download(&yt_dlp, &deno, &video_id, &audio, None).await;
             match result {
                 Err(error) if needs_login(&error) => {
                     println!("YouTube requested sign-in; retrying with the saved session");
@@ -246,10 +246,10 @@ mod tests {
                     .unwrap();
                     let cookies = session_file(&jar).unwrap();
                     let path = cookies.path().to_path_buf();
-                    download(&yt_dlp, &node, &video_id, &audio, Some(&path))
+                    download(&yt_dlp, &deno, &video_id, &audio, Some(&path))
                         .await
                         .unwrap();
-                    let metadata = resolve(&yt_dlp, &node, &video_id, Some(&path))
+                    let metadata = resolve(&yt_dlp, &deno, &video_id, Some(&path))
                         .await
                         .unwrap();
                     let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();

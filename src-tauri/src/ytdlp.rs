@@ -101,8 +101,8 @@ fn install_root(managed: &Path) -> &Path {
     root
 }
 
-pub fn node_path(app: &tauri::AppHandle) -> PathBuf {
-    crate::node::managed_path(install_root(&managed_path(app)))
+pub fn deno_path(app: &tauri::AppHandle) -> PathBuf {
+    crate::deno::managed_path(install_root(&managed_path(app)))
 }
 
 /// Program to spawn: the managed copy when present, otherwise bare
@@ -135,10 +135,10 @@ pub async fn ensure(app: tauri::AppHandle) {
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = LOCK.lock().await;
 
-    let node = node_path(&app);
-    if !crate::node::installed(&node).await {
+    let deno = deno_path(&app);
+    if !crate::deno::installed(&deno).await {
         emit_state(&app, "downloading", None);
-        if let Err(error) = crate::node::ensure(&node).await {
+        if let Err(error) = crate::deno::ensure(&deno).await {
             emit_state(&app, "error", Some(error));
             return;
         }

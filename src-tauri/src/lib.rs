@@ -23,11 +23,11 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
 mod appid;
+mod deno;
 mod discord;
 mod downloader;
 mod lastfm;
 mod media;
-mod node;
 mod power;
 // Taskbar thumbnail toolbar (prev / play-pause / next under the taskbar
 // preview). Windows-only shell surface; see src/thumbbar.rs.
@@ -3142,7 +3142,7 @@ async fn set_cache_meta(
     Ok(())
 }
 
-/// Make the managed yt-dlp and Node binaries available (download on first
+/// Make the managed yt-dlp and Deno binaries available (download on first
 /// run, throttled yt-dlp self-update after). Invoked by the frontend on mount so
 /// the `ytdlp-state` event listener is guaranteed to exist before any
 /// state event fires; also serves as the retry path after a failed
@@ -3158,13 +3158,13 @@ async fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result
     if !sanitize_video_id(&video_id) {
         return Err(format!("invalid videoId: {video_id}"));
     }
-    let node = ytdlp::node_path(&app);
-    node::ensure(&node).await?;
+    let deno = ytdlp::deno_path(&app);
+    deno::ensure(&deno).await?;
     let yt_dlp = ytdlp::program(&ytdlp::managed_path(&app));
-    let result = downloader::resolve(&yt_dlp, &node, &video_id, None).await;
+    let result = downloader::resolve(&yt_dlp, &deno, &video_id, None).await;
     if let Err(error) = &result {
         if let Some(cookies) = playback_session_file(&app, error).await? {
-            return downloader::resolve(&yt_dlp, &node, &video_id, Some(cookies.path())).await;
+            return downloader::resolve(&yt_dlp, &deno, &video_id, Some(cookies.path())).await;
         }
     }
     result
@@ -3197,7 +3197,7 @@ struct DownloadState {
 type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 
 // Start anonymously. If YouTube requires sign-in, retry once with a temporary
-// copy of the active account's cookies and Node for the player challenges.
+// copy of the active account's cookies and Deno for the player challenges.
 // Missing JavaScript support can strip formats from authenticated requests;
 // it does not mean authenticated playback is intrinsically unsupported.
 //
@@ -3227,7 +3227,7 @@ struct StreamServer {
     /// `ytdlp::program` so a mid-session download takes effect
     /// immediately.
     ytdlp_bin: PathBuf,
-    node_bin: PathBuf,
+    deno_bin: PathBuf,
 }
 
 /// Read the `ephemeral` query flag from a stream/prefetch request.
@@ -3545,15 +3545,15 @@ fn spawn_downloader(
             tokio::fs::create_dir_all(&target_dir)
                 .await
                 .map_err(|e| format!("create audio cache: {e}"))?;
-            node::ensure(&srv.node_bin).await?;
+            deno::ensure(&srv.deno_bin).await?;
             let yt_dlp = ytdlp::program(&srv.ytdlp_bin);
             let result =
-                downloader::download(&yt_dlp, &srv.node_bin, &video_id, &part_path, None).await;
+                downloader::download(&yt_dlp, &srv.deno_bin, &video_id, &part_path, None).await;
             if let Err(error) = &result {
                 if let Some(cookies) = playback_session_file(&srv.app, error).await? {
                     return downloader::download(
                         &yt_dlp,
-                        &srv.node_bin,
+                        &srv.deno_bin,
                         &video_id,
                         &part_path,
                         Some(cookies.path()),
@@ -3926,7 +3926,7 @@ async fn start_stream_server(
 
     let server = StreamServer {
         ytdlp_bin: ytdlp::managed_path(&app),
-        node_bin: ytdlp::node_path(&app),
+        deno_bin: ytdlp::deno_path(&app),
         app,
         cache_dir,
         ephemeral_dir,

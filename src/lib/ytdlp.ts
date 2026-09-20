@@ -12,7 +12,7 @@ const TOAST_ID = "ytdlp-setup";
 
 /**
  * Mount once in AppShell. Kicks off `ensure_ytdlp` on the Rust side
- * (managed yt-dlp and Node setup + throttled yt-dlp self-update)
+ * (managed yt-dlp and Deno setup + throttled yt-dlp self-update)
  * and mirrors its `ytdlp-state` events into toasts.
  *
  * The listener is registered BEFORE the invoke so the very first

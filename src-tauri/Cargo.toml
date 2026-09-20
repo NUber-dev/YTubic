@@ -68,9 +68,10 @@ discord-rich-presence = "0.2"
 # MD5 for Last.fm request signing (api_sig = md5 of sorted params + secret).
 # Tiny, single-purpose crate. See src/lastfm.rs.
 md5 = "0.7"
-# Verify the managed Node download and give yt-dlp disposable cookie files.
+# Verify and unpack Deno, and give yt-dlp disposable cookie files.
 sha2 = "0.10"
 tempfile = "3"
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
