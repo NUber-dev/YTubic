@@ -48,8 +48,8 @@ Download the latest installer from the [Releases](../../releases) page and run i
 
 - **Windows 10/11:** run the `.exe` NSIS installer. Pick the `x64` build, or
   the `arm64` one on a Windows on ARM device.
-- macOS 13.5+ (beta): open the universal `.dmg`; the same build supports Apple Silicon and Intel. The managed Node playback runtime requires macOS 13.5 or later. Login cookies are encrypted with a Keychain-backed key.
-- Linux (beta): install the `.deb` or `.rpm`, or run the `.AppImage`. Playback requires WebKitGTK 4.1, GTK 3, the GStreamer base, good and libav plugins, and `libatomic` for the managed Node runtime. The `.deb` and `.rpm` install those dependencies; AppImage users need to install them through their distribution. Signing in also requires a desktop Secret Service provider such as GNOME Keyring or a compatible KWallet setup.
+- macOS 11+ (beta): open the universal `.dmg`; the same build supports Apple Silicon and Intel. The managed Node playback runtime requires macOS 11 or later. Login cookies are encrypted with a Keychain-backed key.
+- Linux (beta): install the `.deb` or `.rpm`, or run the `.AppImage`. Playback requires WebKitGTK 4.1, GTK 3 and the GStreamer base, good and libav plugins. The `.deb` and `.rpm` install those dependencies; AppImage users need to install them through their distribution. Signing in also requires a desktop Secret Service provider such as GNOME Keyring or a compatible KWallet setup.
 - On first launch the app downloads its own copies of yt-dlp and Node into its data folder. It verifies the Node download against the official release checksum. yt-dlp updates automatically; the Node version is maintained with app releases.
 - Browse without signing in, or sign in to get your library, likes, and playlists. Playback starts anonymously; if YouTube requires sign-in, the app retries using the selected account's saved session.
 

@@ -9,7 +9,8 @@ use tokio::io::AsyncWriteExt;
 
 // Keep the version and hashes together. Node is updated with the app; yt-dlp
 // continues to update independently when YouTube changes its extractors.
-const VERSION: &str = "v26.9.0";
+// Node 22 keeps the macOS deployment target at 11.0.
+const VERSION: &str = "v22.23.2";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub fn managed_path(bin_dir: &Path) -> PathBuf {
@@ -21,32 +22,32 @@ fn release_asset(os: &str, arch: &str) -> Result<(String, &'static str), String>
         ("windows", "x86_64") => (
             "win",
             "x64",
-            "8490398f5e0082772dfb0ae5a6ebdff98a97696a20cb9778b4f82eec79b6d0a1",
+            "0d0f5e39f9f3d9587bc19f73eab3c2c9c4903fd02d6dbf9c853dd81b3d95fad4",
         ),
         ("windows", "aarch64") => (
             "win",
             "arm64",
-            "be0af07f8b8dd179a38625451168111d1b0c52df2b8956bbc8e7c5c4d59a4752",
+            "97cce5301a815d2dce07ac5bfd1e6039eae88185ec1d10ae4f8cb712f1732878",
         ),
         ("linux", "x86_64") => (
             "linux",
             "x64",
-            "03d9104fc4f19652e74480fed11c023d75981464b7292f21a601c3f95ce7d90d",
+            "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
         ),
         ("linux", "aarch64") => (
             "linux",
             "arm64",
-            "d5077591aa38b48d90bf9b3ac10da8d2f40dce289b20294913c58c19f153eb12",
+            "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
         ),
         ("macos", "x86_64") => (
             "darwin",
             "x64",
-            "06b2e742ed9025dc84adc830243b3f731956eac9c321bccd0ede384209af02a8",
+            "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026",
         ),
         ("macos", "aarch64") => (
             "darwin",
             "arm64",
-            "6f3de7ed853ee283b4bf24b6e426618f1d357401ce5815db1866eb85eb4b05d9",
+            "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
         ),
         _ => {
             return Err(format!(
