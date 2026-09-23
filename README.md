@@ -48,10 +48,19 @@ Download the latest installer from the [Releases](../../releases) page and run i
 
 - **Windows 10/11:** run the `.exe` NSIS installer. Pick the `x64` build, or
   the `arm64` one on a Windows on ARM device.
-- macOS 10.15+ (beta): open the universal `.dmg`; the same build supports Intel and Apple Silicon (macOS 11+). Login cookies are encrypted with a Keychain-backed key.
-- Linux (beta): install the `.deb` or `.rpm`, or run the `.AppImage`. Playback requires WebKitGTK 4.1, GTK 3 and the GStreamer base, good and libav plugins. The `.deb` and `.rpm` install those dependencies; AppImage users need to install them through their distribution. Signing in also requires a desktop Secret Service provider such as GNOME Keyring or a compatible KWallet setup.
-- On first launch the app downloads its own copies of yt-dlp and Deno into its data folder. It verifies the Deno download against the official release checksum. yt-dlp updates automatically; the Deno version is maintained with app releases.
-- Browse without signing in, or sign in to get your library, likes, and playlists. Playback starts anonymously; if YouTube requires sign-in, the app retries using the selected account's saved session.
+- **macOS 10.15+ (beta):** open the universal `.dmg`; the same build supports
+  Apple Silicon and Intel. Login cookies are encrypted with a Keychain-backed
+  key.
+- **Linux (beta):** install the `.deb` or `.rpm`, or run the `.AppImage`.
+  Playback requires WebKitGTK 4.1, GTK 3 and the GStreamer base, good and
+  libav plugins. Signing in also requires a desktop Secret Service provider
+  such as GNOME Keyring or a compatible KWallet setup.
+- On first launch the app downloads its own copies of yt-dlp (~12 MB) and
+  Deno (~40 MB, which yt-dlp needs for YouTube's player checks) into its data
+  folder. yt-dlp updates itself automatically; Deno is verified against the
+  official release checksum and updated with app releases.
+- Signing in is optional: browse and playback work anonymously; sign in to get
+  your library, likes, and playlists.
 
 > **Linux and macOS builds are in beta.** They are compiled and unit-tested in
 > CI, but get far less real-world testing than the Windows build. If something
@@ -82,7 +91,10 @@ false-positive on. The binary is downloaded directly from yt-dlp's official
 GitHub releases.
 
 **Will Google ban my account for using this?**
-Playback starts anonymously, but a retry after YouTube requests sign-in uses your selected account. Those requests are tied to that account. There is no guarantee against account restrictions; see the disclaimer above. The retry uses a temporary cookie file that is removed afterward, while the saved account cookies remain encrypted.
+Browsing/search/library requests look identical to the official web app, and
+audio streaming is fully anonymous (never tied to your account). There are no
+known cases of accounts being banned for third-party players — but no
+guarantees; see the disclaimer above.
 
 **Playback suddenly stopped working.**
 YouTube periodically changes its streaming internals. yt-dlp usually ships a

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -74,12 +75,29 @@ pub async fn installed(path: &Path) -> bool {
     }
 }
 
-/// Serialize setup and playback callers so a first song cannot execute a
-/// partly downloaded runtime. Staging lives on the install filesystem.
+/// Set once the managed runtime has been seen working, so playback does not
+/// spawn `deno --version` before every track.
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// The runtime playback should hand to yt-dlp, or `None` while it is missing.
+/// Never downloads: that is setup's job, and a 40 MB fetch must not sit in
+/// front of a song. The install is an atomic rename, so a runtime that is
+/// still downloading is simply absent here.
+pub async fn available(path: &Path) -> Option<&Path> {
+    if READY.load(Ordering::Acquire) || installed(path).await {
+        READY.store(true, Ordering::Release);
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// Serialize setup callers. Staging lives on the install filesystem.
 pub async fn ensure(path: &Path) -> Result<(), String> {
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = LOCK.lock().await;
     if installed(path).await {
+        READY.store(true, Ordering::Release);
         return Ok(());
     }
     let root = path.parent().ok_or("Deno install path has no parent")?;
@@ -140,7 +158,9 @@ async fn download(staging: &Path, destination: &Path) -> Result<(), String> {
     // extraction leaves the previously installed executable untouched.
     tokio::fs::rename(&executable, destination)
         .await
-        .map_err(|e| format!("install Deno: {e}"))
+        .map_err(|e| format!("install Deno: {e}"))?;
+    READY.store(true, Ordering::Release);
+    Ok(())
 }
 
 fn extract(payload: PathBuf, executable: PathBuf) -> zip::result::ZipResult<PathBuf> {

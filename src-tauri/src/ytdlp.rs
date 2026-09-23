@@ -135,12 +135,13 @@ pub async fn ensure(app: tauri::AppHandle) {
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = LOCK.lock().await;
 
+    // Not fatal: without Deno, playback still runs yt-dlp on its own
+    // runtime discovery, and the next launch tries the download again.
     let deno = deno_path(&app);
     if !crate::deno::installed(&deno).await {
         emit_state(&app, "downloading", None);
         if let Err(error) = crate::deno::ensure(&deno).await {
-            emit_state(&app, "error", Some(error));
-            return;
+            eprintln!("[ytdlp] Deno setup failed: {error}");
         }
     }
 

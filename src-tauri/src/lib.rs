@@ -3159,30 +3159,8 @@ async fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result
         return Err(format!("invalid videoId: {video_id}"));
     }
     let deno = ytdlp::deno_path(&app);
-    deno::ensure(&deno).await?;
     let yt_dlp = ytdlp::program(&ytdlp::managed_path(&app));
-    let result = downloader::resolve(&yt_dlp, &deno, &video_id, None).await;
-    if let Err(error) = &result {
-        if let Some(cookies) = playback_session_file(&app, error).await? {
-            return downloader::resolve(&yt_dlp, &deno, &video_id, Some(cookies.path())).await;
-        }
-    }
-    result
-}
-
-/// Read the current account only when YouTube rejects anonymous playback.
-/// The temporary file stays alive until the retry exits, then removes itself.
-async fn playback_session_file(
-    app: &tauri::AppHandle,
-    error: &str,
-) -> Result<Option<tempfile::NamedTempFile>, String> {
-    if !downloader::needs_login(error) {
-        return Ok(None);
-    }
-    read_cookies_plain(app)
-        .await
-        .map(|jar| downloader::session_file(&jar))
-        .transpose()
+    downloader::resolve(&yt_dlp, deno::available(&deno).await, &video_id).await
 }
 
 /// Lifecycle of a single track's yt-dlp download. yt-dlp writes
@@ -3196,10 +3174,13 @@ struct DownloadState {
 
 type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 
-// Start anonymously. If YouTube requires sign-in, retry once with a temporary
-// copy of the active account's cookies and Deno for the player challenges.
-// Missing JavaScript support can strip formats from authenticated requests;
-// it does not mean authenticated playback is intrinsically unsupported.
+// NB: `cookies.enc` is read only by the InnerTube pipeline (library,
+// search, liked songs). We deliberately do NOT forward cookies to
+// yt-dlp: it would receive Google's rotated session cookies and throw
+// them away with its copy of the jar, leaving the app replaying the
+// pre-rotation values (the pattern that got sessions revoked in
+// v0.2.0), and it would tie every download to the user's account.
+// Deno solves the player challenges, so anonymous playback works.
 //
 // Nor do we pin `--extractor-args youtube:player_client=...` any more.
 // YouTube keeps taking clients away (as of 2026-08 `tv` is SABR-only and
@@ -3210,7 +3191,6 @@ type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 // only opts us out of those fixes.
 #[derive(Clone)]
 struct StreamServer {
-    app: tauri::AppHandle,
     /// Persistent cache. Tracks land here for Premium-authenticated
     /// users and stay across app restarts.
     cache_dir: PathBuf,
@@ -3227,6 +3207,8 @@ struct StreamServer {
     /// `ytdlp::program` so a mid-session download takes effect
     /// immediately.
     ytdlp_bin: PathBuf,
+    /// Managed Deno for yt-dlp's player challenges; checked per spawn
+    /// via `deno::available` for the same reason.
     deno_bin: PathBuf,
 }
 
@@ -3525,8 +3507,7 @@ async fn get_stream_base_url(state: tauri::State<'_, StreamServerState>) -> Resu
 }
 
 /// Download a track into a temporary file, then publish the complete cache
-/// entry before notifying waiting stream handlers. Retry sign-in rejections
-/// once with the active account's saved session.
+/// entry before notifying waiting stream handlers.
 ///
 /// `target_dir` selects the persistent or ephemeral cache; `map_key` keeps
 /// in-flight requests for those pools independent.
@@ -3545,23 +3526,9 @@ fn spawn_downloader(
             tokio::fs::create_dir_all(&target_dir)
                 .await
                 .map_err(|e| format!("create audio cache: {e}"))?;
-            deno::ensure(&srv.deno_bin).await?;
             let yt_dlp = ytdlp::program(&srv.ytdlp_bin);
-            let result =
-                downloader::download(&yt_dlp, &srv.deno_bin, &video_id, &part_path, None).await;
-            if let Err(error) = &result {
-                if let Some(cookies) = playback_session_file(&srv.app, error).await? {
-                    return downloader::download(
-                        &yt_dlp,
-                        &srv.deno_bin,
-                        &video_id,
-                        &part_path,
-                        Some(cookies.path()),
-                    )
-                    .await;
-                }
-            }
-            result
+            let deno = deno::available(&srv.deno_bin).await;
+            downloader::download(&yt_dlp, deno, &video_id, &part_path).await
         }
         .await;
         let mut success = result.is_ok();
@@ -3927,7 +3894,6 @@ async fn start_stream_server(
     let server = StreamServer {
         ytdlp_bin: ytdlp::managed_path(&app),
         deno_bin: ytdlp::deno_path(&app),
-        app,
         cache_dir,
         ephemeral_dir,
         cover_dir,
