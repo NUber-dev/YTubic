@@ -89,7 +89,10 @@ export function shouldPersistQuery(queryKey: readonly unknown[]): boolean {
     // `staleTime: ONE_HOUR` in `useLyricsSources` still triggers a
     // background revalidate so newly-added LRCLIB entries surface
     // within an hour of the next play.
-    head === "lyrics"
+    head === "lyrics" ||
+    // Chapter lists are tiny and change rarely; persisting them makes
+    // the Chapters tab appear instantly on a repeat play of an OST.
+    head === "chapters"
   );
 }
 
