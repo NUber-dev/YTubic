@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command as TokioCommand;
 use tokio::sync::{Mutex, Notify};
 
 use axum::{
@@ -25,7 +23,9 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeFile;
 
 mod appid;
+mod deno;
 mod discord;
+mod downloader;
 mod lastfm;
 mod media;
 mod power;
@@ -3142,8 +3142,8 @@ async fn set_cache_meta(
     Ok(())
 }
 
-/// Make the managed yt-dlp binary available (download on first run,
-/// throttled self-update after). Invoked by the frontend on mount so
+/// Make the managed yt-dlp and Deno binaries available (download on first
+/// run, throttled yt-dlp self-update after). Invoked by the frontend on mount so
 /// the `ytdlp-state` event listener is guaranteed to exist before any
 /// state event fires; also serves as the retry path after a failed
 /// download. Idempotent — see `ytdlp::ensure`.
@@ -3154,41 +3154,13 @@ async fn ensure_ytdlp(app: tauri::AppHandle) {
 
 /// Run yt-dlp to resolve a videoId into metadata JSON.
 #[tauri::command]
-fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
+async fn resolve_stream_ytdlp(app: tauri::AppHandle, video_id: String) -> Result<String, String> {
     if !sanitize_video_id(&video_id) {
         return Err(format!("invalid videoId: {video_id}"));
     }
-    let url = format!("https://www.youtube.com/watch?v={video_id}");
-    let mut command = std::process::Command::new(ytdlp::program(&ytdlp::managed_path(&app)));
-    command.args([
-        "-j",
-        // Progressive only: the resolved URL is handed straight to an
-        // <audio> element, which can't play the m3u8 formats some
-        // clients now advertise (and we ship no ffmpeg to remux them).
-        "-f",
-        "bestaudio[protocol^=http]/bestaudio",
-        "--no-playlist",
-        "--no-warnings",
-        &url,
-    ]);
-    // Windows: a console-less GUI process spawning the console-subsystem
-    // yt-dlp.exe with default flags makes Windows flash a console window
-    // on every resolve. CREATE_NO_WINDOW suppresses it.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    let output = command.output().map_err(|e| format!("spawn yt-dlp: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "yt-dlp exit {}: {}",
-            output.status,
-            stderr.chars().take(400).collect::<String>()
-        ));
-    }
-    String::from_utf8(output.stdout).map_err(|e| format!("stdout not utf8: {e}"))
+    let deno = ytdlp::deno_path(&app);
+    let yt_dlp = ytdlp::program(&ytdlp::managed_path(&app));
+    downloader::resolve(&yt_dlp, deno::available(&deno).await, &video_id).await
 }
 
 /// Lifecycle of a single track's yt-dlp download. yt-dlp writes
@@ -3204,10 +3176,11 @@ type DownloadMap = Arc<Mutex<HashMap<String, Arc<DownloadState>>>>;
 
 // NB: `cookies.enc` is read only by the InnerTube pipeline (library,
 // search, liked songs). We deliberately do NOT forward cookies to
-// yt-dlp: YouTube's bot-detection treats any authenticated yt-dlp
-// request as a bot and strips every real audio format, leaving only
-// storyboard thumbnails, so anonymous streaming actually works
-// better than authenticated streaming.
+// yt-dlp: it would receive Google's rotated session cookies and throw
+// them away with its copy of the jar, leaving the app replaying the
+// pre-rotation values (the pattern that got sessions revoked in
+// v0.2.0), and it would tie every download to the user's account.
+// Deno solves the player challenges, so anonymous playback works.
 //
 // Nor do we pin `--extractor-args youtube:player_client=...` any more.
 // YouTube keeps taking clients away (as of 2026-08 `tv` is SABR-only and
@@ -3234,6 +3207,9 @@ struct StreamServer {
     /// `ytdlp::program` so a mid-session download takes effect
     /// immediately.
     ytdlp_bin: PathBuf,
+    /// Managed Deno for yt-dlp's player challenges; checked per spawn
+    /// via `deno::available` for the same reason.
+    deno_bin: PathBuf,
 }
 
 /// Read the `ephemeral` query flag from a stream/prefetch request.
@@ -3530,14 +3506,11 @@ async fn get_stream_base_url(state: tauri::State<'_, StreamServerState>) -> Resu
     }
 }
 
-/// Spawn a yt-dlp downloader that writes into the shared memory buffer
-/// AND to a `<videoId>.part` file on disk. On successful exit, renames
-/// .part → .webm. Updates `state.complete` + pings `notify` on every
-/// new chunk.
+/// Download a track into a temporary file, then publish the complete cache
+/// entry before notifying waiting stream handlers.
 ///
-/// `target_dir` selects which on-disk pool to write to (persistent or
-/// ephemeral). `map_key` is the prefixed key in `srv.downloads` so a
-/// single videoId can be in-flight independently for both pools.
+/// `target_dir` selects the persistent or ephemeral cache; `map_key` keeps
+/// in-flight requests for those pools independent.
 fn spawn_downloader(
     video_id: String,
     target_dir: PathBuf,
@@ -3547,96 +3520,21 @@ fn spawn_downloader(
 ) {
     let downloads = srv.downloads.clone();
     tokio::spawn(async move {
-        let url = format!("https://www.youtube.com/watch?v={video_id}");
         let part_path = target_dir.join(format!("{video_id}.part"));
         let final_path = target_dir.join(format!("{video_id}.webm"));
-        let _ = tokio::fs::create_dir_all(&target_dir).await;
-        let _ = tokio::fs::remove_file(&part_path).await; // clean stale
-
-        let mut cmd = TokioCommand::new(ytdlp::program(&srv.ytdlp_bin));
-        cmd.args([
-            "-f",
-            "bestaudio[ext=webm][protocol^=http]/bestaudio[protocol^=http]/bestaudio",
-            "--no-playlist",
-            "--no-warnings",
-            "--no-part",
-            "-q",
-            // YouTube regularly hands out a signed media URL that then 403s
-            // on the very first byte-range request (token/pot desync or
-            // per-URL throttling). Left alone this surfaces as a one-off
-            // "download failed" that a manual re-click fixes. Retrying the
-            // data download and the extractor a few times clears the vast
-            // majority of these inside a single spawn, before the handler
-            // ever returns 502 to the audio element.
-            "--retries",
-            "5",
-            "--extractor-retries",
-            "3",
-            "--socket-timeout",
-            "15",
-            "-o",
-            "-",
-        ]);
-        cmd.arg(&url);
-        // Windows: suppress the console window for the child yt-dlp.exe
-        // (see resolve_stream_ytdlp for rationale).
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[stream] spawn {video_id}: {e}");
-                state.complete.store(true, Ordering::Release);
-                state.notify.notify_waiters();
-                downloads.lock().await.remove(&map_key);
-                return;
-            }
-        };
-
-        let mut stdout = child.stdout.take().unwrap();
-        let mut file = tokio::fs::File::create(&part_path).await.ok();
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut ok = true;
-        // Per-read timeout so a wedged yt-dlp (stalled TCP / hung extractor)
-        // can't keep this task and the child process alive forever with
-        // `complete` stuck false — otherwise every later request for the id
-        // attaches to the dead entry and blocks 120s then 504.
-        const READ_TIMEOUT: Duration = Duration::from_secs(60);
-        loop {
-            match tokio::time::timeout(READ_TIMEOUT, stdout.read(&mut buf)).await {
-                Err(_) => {
-                    eprintln!("[stream] read timeout for {video_id}; killing yt-dlp");
-                    let _ = child.start_kill();
-                    ok = false;
-                    break;
-                }
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => {
-                    let chunk = &buf[..n];
-                    if let Some(ref mut f) = file {
-                        if let Err(e) = f.write_all(chunk).await {
-                            eprintln!("[stream] write .part: {e}");
-                            file = None;
-                            // A truncated prefix must NOT be renamed to .webm
-                            // and cached — mark the whole download failed.
-                            ok = false;
-                        }
-                    }
-                    state.notify.notify_waiters();
-                }
-                Ok(Err(e)) => {
-                    eprintln!("[stream] read stdout: {e}");
-                    ok = false;
-                    break;
-                }
-            }
+        let result = async {
+            tokio::fs::create_dir_all(&target_dir)
+                .await
+                .map_err(|e| format!("create audio cache: {e}"))?;
+            let yt_dlp = ytdlp::program(&srv.ytdlp_bin);
+            let deno = deno::available(&srv.deno_bin).await;
+            downloader::download(&yt_dlp, deno, &video_id, &part_path).await
         }
-        if let Some(mut f) = file.take() {
-            let _ = f.flush().await;
-            drop(f);
+        .await;
+        let mut success = result.is_ok();
+        if let Err(error) = result {
+            eprintln!("[stream] download {video_id}: {error}");
         }
-        let status = child.wait().await;
-        let success = ok && status.map(|s| s.success()).unwrap_or(false);
 
         // Finish all file operations BEFORE signalling completion.
         // Otherwise handlers waiting on `state.complete` can race and
@@ -3656,6 +3554,7 @@ fn spawn_downloader(
         if success && part_size >= MIN_AUDIO_BYTES {
             if let Err(e) = tokio::fs::rename(&part_path, &final_path).await {
                 eprintln!("[stream] rename: {e}");
+                success = false;
                 let _ = tokio::fs::remove_file(&part_path).await;
             } else {
                 eprintln!("[stream] cached {video_id} ({part_size} bytes)");
@@ -3668,6 +3567,7 @@ fn spawn_downloader(
             } else {
                 eprintln!("[stream] download failed {video_id}");
             }
+            success = false;
             let _ = tokio::fs::remove_file(&part_path).await;
         }
 
@@ -3960,7 +3860,7 @@ async fn start_stream_server(
     cache_dir: PathBuf,
     ephemeral_dir: PathBuf,
     cover_dir: PathBuf,
-    ytdlp_bin: PathBuf,
+    app: tauri::AppHandle,
 ) {
     if let Err(e) = tokio::fs::create_dir_all(&cache_dir).await {
         eprintln!("[stream-server] mkdir {cache_dir:?}: {e}");
@@ -3992,11 +3892,12 @@ async fn start_stream_server(
     }
 
     let server = StreamServer {
+        ytdlp_bin: ytdlp::managed_path(&app),
+        deno_bin: ytdlp::deno_path(&app),
         cache_dir,
         ephemeral_dir,
         cover_dir,
         downloads: Arc::new(Mutex::new(HashMap::new())),
-        ytdlp_bin,
     };
 
     // Per-launch token as an unguessable path prefix. Baked into the base
@@ -4300,7 +4201,6 @@ pub fn run() {
             eprintln!("[stream-server] cache dir: {cache_dir:?}");
             eprintln!("[stream-server] ephemeral dir: {ephemeral_dir:?}");
             eprintln!("[stream-server] cover dir: {cover_dir:?}");
-            let ytdlp_bin = ytdlp::managed_path(&handle);
             tauri::async_runtime::spawn(async move {
                 migrate_plaintext_cookies(&handle).await;
                 migrate_to_accounts_layout(&handle).await;
@@ -4308,8 +4208,7 @@ pub fn run() {
                 // email-based dedup before the UI reads the list.
                 dedup_accounts_by_identity(&handle).await;
                 cleanup_login_artifacts(&handle).await;
-                start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, ytdlp_bin)
-                    .await;
+                start_stream_server(port, token, cache_dir, ephemeral_dir, cover_dir, handle).await;
             });
             // Subscribe to resume-from-sleep before the loop starts, so a
             // machine that wakes during startup is not missed.

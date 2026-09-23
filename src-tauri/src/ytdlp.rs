@@ -101,6 +101,10 @@ fn install_root(managed: &Path) -> &Path {
     root
 }
 
+pub fn deno_path(app: &tauri::AppHandle) -> PathBuf {
+    crate::deno::managed_path(install_root(&managed_path(app)))
+}
+
 /// Program to spawn: the managed copy when present, otherwise bare
 /// `yt-dlp` so PATH still works on dev machines. Resolved at every
 /// spawn (not cached) so a download finishing mid-session takes effect
@@ -130,6 +134,16 @@ pub async fn ensure(app: tauri::AppHandle) {
     // Serialize concurrent calls (StrictMode double-mount, retry spam).
     static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _guard = LOCK.lock().await;
+
+    // Not fatal: without Deno, playback still runs yt-dlp on its own
+    // runtime discovery, and the next launch tries the download again.
+    let deno = deno_path(&app);
+    if !crate::deno::installed(&deno).await {
+        emit_state(&app, "downloading", None);
+        if let Err(error) = crate::deno::ensure(&deno).await {
+            eprintln!("[ytdlp] Deno setup failed: {error}");
+        }
+    }
 
     let managed = managed_path(&app);
 

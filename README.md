@@ -55,8 +55,10 @@ Download the latest installer from the [Releases](../../releases) page and run i
   Playback requires WebKitGTK 4.1, GTK 3 and the GStreamer base, good and
   libav plugins. Signing in also requires a desktop Secret Service provider
   such as GNOME Keyring or a compatible KWallet setup.
-- On first launch the app downloads its own copy of yt-dlp (~12 MB) into its
-  data folder and keeps it updated automatically.
+- On first launch the app downloads its own copies of yt-dlp (~12 MB) and
+  Deno (~40 MB, which yt-dlp needs for YouTube's player checks) into its data
+  folder. yt-dlp updates itself automatically; Deno is verified against the
+  official release checksum and updated with app releases.
 - Signing in is optional: browse and playback work anonymously; sign in to get
   your library, likes, and playlists.
 

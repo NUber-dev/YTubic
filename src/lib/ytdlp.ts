@@ -12,8 +12,8 @@ const TOAST_ID = "ytdlp-setup";
 
 /**
  * Mount once in AppShell. Kicks off `ensure_ytdlp` on the Rust side
- * (first-run download of the managed yt-dlp binary + throttled
- * self-update) and mirrors its `ytdlp-state` events into toasts.
+ * (managed yt-dlp and Deno setup + throttled yt-dlp self-update)
+ * and mirrors its `ytdlp-state` events into toasts.
  *
  * The listener is registered BEFORE the invoke so the very first
  * "downloading" event can't be missed. On the common path (binary
@@ -33,7 +33,7 @@ export function useYtdlpSetup(): void {
       const { phase, message } = e.payload;
       if (phase === "downloading") {
         sawDownloadRef.current = true;
-        toast.loading("Setting up the audio engine (downloading yt-dlp)…", {
+        toast.loading("Setting up the audio engine…", {
           id: TOAST_ID,
           duration: Infinity,
         });
@@ -44,7 +44,7 @@ export function useYtdlpSetup(): void {
         }
       } else if (phase === "error") {
         sawDownloadRef.current = false;
-        toast.error("Couldn't download yt-dlp — playback won't work", {
+        toast.error("Couldn't set up the audio engine", {
           id: TOAST_ID,
           duration: Infinity,
           description: message ?? undefined,
