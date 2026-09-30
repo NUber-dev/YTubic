@@ -29,6 +29,8 @@ import { PERSIST_MAX_AGE, persister, queryClient } from "@/lib/query-client";
 initFloatingPlaybackBridge();
 initFloatingTrackSourceBridge();
 
+const FLOATING_DIMMED_OPACITY = 0.35;
+
 /**
  * Frontend entrypoint when the same bundle is loaded in the standalone
  * player window (`?floating-player=1`). We deliberately skip
@@ -42,6 +44,26 @@ export default function FloatingPlayerApp() {
   // cross-window `storage` listener in the settings store keeps it
   // live when toggled over there.
   const background = useSettingsStore((s) => s.background);
+  const fadeWhenUnfocused = useSettingsStore((s) => s.floatingFadeWhenUnfocused);
+  // Hover wins over focus, so the card is readable before the click lands.
+  const [windowFocused, setWindowFocused] = useState(true);
+  const [pointerOver, setPointerOver] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload }) => setWindowFocused(payload))
+      .then((off) => {
+        if (cancelled) off();
+        else unlisten = off;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+  const dimmed = fadeWhenUnfocused && !windowFocused && !pointerOver;
   // Read the main window's persisted query cache once, so the liked
   // list (7+ continuation round-trips when fetched cold) is there
   // before the heart first renders. Restore only: subscribing would
@@ -78,7 +100,15 @@ export default function FloatingPlayerApp() {
           is hydrated from disk once above, read-only. */}
       <QueryClientProvider client={queryClient}>
         <TooltipProvider delayDuration={800} skipDelayDuration={0}>
-          <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-background">
+          <div
+            className={cn(
+              "relative flex h-screen w-screen flex-col overflow-hidden bg-background",
+              "transition-opacity duration-500 ease-out",
+            )}
+            style={{ opacity: dimmed ? FLOATING_DIMMED_OPACITY : 1 }}
+            onMouseEnter={() => setPointerOver(true)}
+            onMouseLeave={() => setPointerOver(false)}
+          >
             {background === "ambient" && <FloatingBackgroundCover />}
             <FloatingPlayerSyncReceiver />
             <FloatingTitleBar />

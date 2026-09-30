@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isPremium } from "@/lib/store/premium";
 import type { QueueTrack } from "@/lib/store/playback";
+import type { VideoQualityTier } from "@/lib/video-quality";
 
 /**
  * The Rust side runs a tiny axum server on a random localhost port that
@@ -46,6 +47,36 @@ function ephemeralSuffix(): string {
 export async function streamUrlFor(videoId: string): Promise<string> {
   const base = await getStreamBaseUrl();
   return `${base}/stream/${encodeURIComponent(videoId)}${ephemeralSuffix()}`;
+}
+
+export async function videoStreamUrlFor(
+  videoId: string,
+  tier: VideoQualityTier,
+): Promise<string> {
+  const base = await getStreamBaseUrl();
+  return `${base}/video/${encodeURIComponent(videoId)}?q=${tier}`;
+}
+
+const prefetchedVideos = new Set<string>();
+
+// One byte: the server still downloads it all, the page carries none of it.
+export async function prefetchVideo(
+  videoId: string,
+  tier: VideoQualityTier,
+): Promise<void> {
+  const key = `${videoId}:${tier}`;
+  if (prefetchedVideos.has(key)) return;
+  prefetchedVideos.add(key);
+  try {
+    const base = await getStreamBaseUrl();
+    const res = await fetch(
+      `${base}/video/${encodeURIComponent(videoId)}?q=${tier}`,
+      { headers: { Range: "bytes=0-0" } },
+    );
+    if (!res.ok && res.status !== 206) prefetchedVideos.delete(key);
+  } catch {
+    prefetchedVideos.delete(key);
+  }
 }
 
 const prefetched = new Set<string>();
@@ -118,5 +149,6 @@ export async function saveTrackMeta(
  */
 export function clearPrefetchMemo(): void {
   prefetched.clear();
+  prefetchedVideos.clear();
   metaWritten.clear();
 }

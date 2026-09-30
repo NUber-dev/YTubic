@@ -33,6 +33,11 @@ type State = {
   /** Body of the full-screen player: cover centred, cover with the
    *  lyrics beside it, or the art itself behind the title. */
   fullscreenLayout: FullscreenLayout;
+  /** Let the full-screen controls recede once the mouse settles. */
+  fullscreenIdleFade: boolean;
+  /** Dim the floating player while it sits in the background, so it
+   *  stays out of the way of whatever is in front of it. */
+  floatingFadeWhenUnfocused: boolean;
   /** System toast on track change while the app is in the background
    *  (see `lib/playback-notifications.ts`). */
   playbackNotifications: boolean;
@@ -70,6 +75,8 @@ type State = {
   setInterfaceFont: (v: InterfaceFont) => void;
   setRatingButtons: (v: RatingButtons) => void;
   setFullscreenLayout: (v: FullscreenLayout) => void;
+  setFullscreenIdleFade: (v: boolean) => void;
+  setFloatingFadeWhenUnfocused: (v: boolean) => void;
   setPlaybackNotifications: (v: boolean) => void;
   setAutoUpdate: (v: boolean) => void;
   setDiscordRichPresence: (v: boolean) => void;
@@ -98,6 +105,8 @@ export const useSettingsStore = create<State>()(
       interfaceFont: "system",
       ratingButtons: "heart",
       fullscreenLayout: "cover",
+      fullscreenIdleFade: true,
+      floatingFadeWhenUnfocused: false,
       playbackNotifications: false,
       autoUpdate: true,
       discordRichPresence: false,
@@ -113,6 +122,9 @@ export const useSettingsStore = create<State>()(
       setInterfaceFont: (interfaceFont) => set({ interfaceFont }),
       setRatingButtons: (ratingButtons) => set({ ratingButtons }),
       setFullscreenLayout: (fullscreenLayout) => set({ fullscreenLayout }),
+      setFullscreenIdleFade: (fullscreenIdleFade) => set({ fullscreenIdleFade }),
+      setFloatingFadeWhenUnfocused: (floatingFadeWhenUnfocused) =>
+        set({ floatingFadeWhenUnfocused }),
       setPlaybackNotifications: (playbackNotifications) =>
         set({ playbackNotifications }),
       setAutoUpdate: (autoUpdate) => set({ autoUpdate }),

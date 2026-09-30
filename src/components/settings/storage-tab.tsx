@@ -26,6 +26,7 @@ import {
   IconPhotoFilled,
   IconSortDescending,
   IconTrashFilled,
+  IconVideoFilled,
 } from "@tabler/icons-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -49,6 +50,7 @@ import {
   useSettingsStore,
   type CacheAutoCleanPeriod,
 } from "@/lib/store/settings";
+import { useTrackSourceStore } from "@/lib/store/track-source";
 import type { ShelfItem } from "@/lib/innertube/types";
 import { authLoggedInQuery } from "@/lib/store/auth-queries";
 import { ArtworkOutline } from "@/components/shared/artwork-outline";
@@ -73,6 +75,7 @@ export function StorageTab() {
           <AutoCleanRow loggedIn={!!loggedIn.data} />
         </Group>
         <CoverCacheGroup />
+        <TrackSourceCacheGroup />
         {/* The track list is intentionally the last block on the tab. */}
         <CacheGroupGate loggedIn={!!loggedIn.data} />
       </TabPane>
@@ -821,6 +824,43 @@ function CoverCacheGroup() {
             disabled={busy || !stats.data?.count}
           >
             {busy ? <IconLoader2 className="animate-spin" /> : <IconTrashFilled />}
+            Clear
+          </Button>
+        }
+      />
+    </Group>
+  );
+}
+
+function TrackSourceCacheGroup() {
+  const count = useTrackSourceStore((s) => Object.keys(s.byVideoId).length);
+
+  const clear = () => {
+    if (!count) return;
+    if (
+      !confirm(
+        "Clear cached song/video picks? Any track stuck on the wrong video or audio version will re-resolve next time it plays.",
+      )
+    )
+      return;
+    useTrackSourceStore.setState({ byVideoId: {} });
+    toast.success("Song/video pick cache cleared");
+  };
+
+  return (
+    <Group>
+      <SettingRow
+        icon={IconVideoFilled}
+        title="Song/Video Pick Cache"
+        description="Remembers which video or audio version each track resolved to. Clear this if a track is stuck playing the wrong version."
+        control={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={clear}
+            disabled={!count}
+          >
+            <IconTrashFilled />
             Clear
           </Button>
         }
