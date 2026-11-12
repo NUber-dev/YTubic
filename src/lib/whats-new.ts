@@ -56,6 +56,28 @@ export type WhatsNewEntry = {
  */
 export const WHATS_NEW: WhatsNewEntry[] = [
   {
+    version: "0.5.2",
+    date: "November 12, 2026",
+    summary: "Background updates and a lyrics source change",
+    changes: [
+      {
+        type: "improved",
+        title: "Updates",
+        text: "Updates download in the background and install on restart, with an Automatic Updates toggle in Settings.",
+      },
+      {
+        type: "improved",
+        title: "Lyrics",
+        text: "Musixmatch is no longer a lyrics source. Lyrics come from YouTube Music, LRCLIB and Genius.",
+      },
+      {
+        type: "fixed",
+        title: "Fixes",
+        text: "Fixed Clear queue stopping the current track, and yt-dlp not updating while the app sits in the tray.",
+      },
+    ],
+  },
+  {
     version: "0.5.1",
     date: "September 11, 2026",
     summary: "Login fixes",
