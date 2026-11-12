@@ -60,3 +60,5 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libdbus-1-dev patchelf
       - name: cargo test
         run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+      - name: Managed Deno install smoke test
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml deno::tests::installs_official_deno_and_reuses_it -- --ignored --exact
