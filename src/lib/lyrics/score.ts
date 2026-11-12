@@ -60,23 +60,21 @@ export type Verdict = {
 
 export type ScoreOptions = {
   /**
-   * The provider cannot report candidate durations (Musixmatch search,
-   * Genius). Duration stops discriminating instead of pretending to.
+   * The provider cannot report candidate durations (Genius). Duration stops discriminating instead of pretending to.
    */
   durationBlind?: boolean;
   /** Minimum score to accept. Higher when a provider has fewer signals. */
   floor?: number;
   /**
    * The body has not been fetched yet, so its presence cannot be checked.
-   * Musixmatch and Genius decide which track to fetch from search metadata
-   * alone; only LRCLIB returns the lyrics inline with the candidates.
+   * Genius decides which track to fetch from search metadata alone; only LRCLIB returns the lyrics inline with the candidates.
    */
   bodyUnknown?: boolean;
 };
 
 /** Below this, return no match rather than the best of a bad set. */
 export const DEFAULT_FLOOR = 0.55;
-/** Musixmatch and Genius have no duration, so one fewer axis can veto. */
+/** Genius has no duration, so one fewer axis can veto. */
 export const DURATION_BLIND_FLOOR = 0.7;
 
 const IDENTITY_FLOOR = 0.85;

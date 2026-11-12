@@ -297,7 +297,7 @@ describe("cross-script", () => {
 
 describe("providers with fewer signals", () => {
   it("scores on title and artist alone when the body is not fetched yet", () => {
-    // Musixmatch and Genius decide which track to fetch from search
+    // Genius decides which track to fetch from search
     // metadata; only LRCLIB returns bodies inline.
     const q: ScoreQuery = { title: "Blinding Lights", artist: "The Weeknd" };
     const best = selectBest(

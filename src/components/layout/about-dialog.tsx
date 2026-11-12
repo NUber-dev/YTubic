@@ -57,7 +57,6 @@ const CREDITS: { name: string; role: string; url: string }[] = [
     url: "https://music.youtube.com",
   },
   { name: "Genius", role: "lyrics", url: "https://genius.com" },
-  { name: "Musixmatch", role: "lyrics", url: "https://www.musixmatch.com" },
 ];
 
 // Footer icon button — 38px, 10px radius, on the design's `--w060` fill.

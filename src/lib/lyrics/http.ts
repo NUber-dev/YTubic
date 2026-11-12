@@ -6,7 +6,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
  * intact all the way up to React Query.
  *
  * That distinction used to be lost. Every provider wrapped its requests in
- * `catch { return null }`, so a DNS blip, a Musixmatch captcha gate and a
+ * `catch { return null }`, so a DNS blip, a provider captcha gate and a
  * Genius 403 all arrived as the same `null` that a genuinely lyric-less
  * track produces. React Query stores `null` as a *success*, `App.tsx:49`
  * dehydrates successes to IndexedDB, and `query-client.ts:9` keeps them for
@@ -25,8 +25,8 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 /**
  * Wall-clock budget for one provider's entire lookup, not one request.
- * Musixmatch alone can chain four calls (token, search, subtitle, lyrics),
- * so a per-request timeout would let it run four times longer than the
+ * A provider can chain several calls (search, then the lyrics page), so a
+ * per-request timeout would let it run several times longer than the
  * others. Every provider gets one deadline and threads it through.
  */
 export const PROVIDER_TIMEOUT_MS = 8_000;
@@ -42,9 +42,8 @@ export class LyricsTimeoutError extends Error {
 
 /**
  * Raised when a provider refuses to serve us for now, as opposed to
- * failing. Musixmatch gates hard (roughly 20 requests per IP per two
- * minutes, and the lyrics panel fires on every track change whether or not
- * anyone is looking at it), so this is the common failure in practice.
+ * failing. The lyrics panel fires on every track change whether or not
+ * anyone is looking at it, so a burst of skipping can trip a rate limit.
  *
  * Kept separate from the others for one reason: an immediate retry is the
  * exact wrong response to being told "too often". `sources.ts` skips the

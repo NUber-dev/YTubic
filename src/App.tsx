@@ -3,6 +3,7 @@ import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client
 import { ThemeProvider } from "next-themes";
 import {
   PERSIST_MAX_AGE,
+  dropRetiredLyrics,
   fitsInPersistBudget,
   persister,
   queryClient,
@@ -41,6 +42,7 @@ export default function App() {
     >
       <PersistQueryClientProvider
         client={queryClient}
+        onSuccess={dropRetiredLyrics}
         persistOptions={{
           persister,
           maxAge: PERSIST_MAX_AGE,

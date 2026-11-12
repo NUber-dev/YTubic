@@ -58,6 +58,33 @@ if (typeof window !== "undefined") {
   }
 }
 
+/**
+ * One lyrics provider was removed from the app. Drop what it left behind
+ * on this machine: its session token, a source preference pinned to it,
+ * and (via `dropRetiredLyrics`, once the disk cache has been restored)
+ * every lyrics entry it had cached.
+ */
+const RETIRED_LYRICS_SOURCE = "musixmatch";
+
+if (typeof window !== "undefined") {
+  try {
+    window.localStorage.removeItem(`${RETIRED_LYRICS_SOURCE}-user-token`);
+    if (
+      window.localStorage.getItem("ytm:lyrics-source") === RETIRED_LYRICS_SOURCE
+    ) {
+      window.localStorage.removeItem("ytm:lyrics-source");
+    }
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+/** Call after the persisted cache is restored; the next persist pass then
+ *  writes the cache back to disk without the removed entries. */
+export function dropRetiredLyrics(): void {
+  queryClient.removeQueries({ queryKey: ["lyrics", RETIRED_LYRICS_SOURCE] });
+}
+
 export const PERSIST_MAX_AGE = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 /** Which query keys are worth persisting across launches. */

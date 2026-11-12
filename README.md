@@ -30,7 +30,7 @@ Built as a reaction to the sluggish webview-wrapper experience — YTubic talks 
 - **Fast and responsive UI** — instant navigation with prefetch and aggressive caching; no page reloads, no spinners on every click
 - **Flexible player layouts** — dock the player at the bottom or as a right-side panel
 - **Floating player widget** — pop the player out into a compact always-on-top window
-- **Synced lyrics** — line-by-line synced lyrics from multiple providers (LRCLIB, Musixmatch, Genius)
+- **Synced lyrics** — line-by-line synced lyrics from multiple providers (YouTube Music, LRCLIB, Genius)
 - **Hi-res cover art** — upgrades album covers to high-resolution studio art when available
 - **Full library support** — your playlists, likes, albums and artists; search with filters; radio/autoplay queues
 - **Desktop integration** — media keys and system media controls, tray/menu-bar icon, single instance
@@ -144,7 +144,7 @@ src/
 │   └── shared/          # Track list/rows, cards, shelves, context menus
 ├── lib/
 │   ├── innertube/        # Raw InnerTube client + parsers
-│   ├── lyrics/          # LRCLIB / Musixmatch / Genius sources + LRC parser
+│   ├── lyrics/          # LRCLIB / Genius sources + LRC parser
 │   ├── store/           # Zustand stores
 │   ├── audio-engine.ts  # Playback engine
 │   ├── stream.ts        # Stream URL resolver (localhost proxy)
@@ -157,7 +157,7 @@ src-tauri/               # Rust backend (axum stream proxy, cookies, tray)
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — audio streaming
 - [LRCLIB](https://lrclib.net) — synced lyrics
-- Musixmatch and Genius — lyrics sources
+- Genius — lyrics source
 - [Tauri](https://tauri.app), [shadcn/ui](https://ui.shadcn.com),
   [TanStack](https://tanstack.com), and the rest of the stack above
 

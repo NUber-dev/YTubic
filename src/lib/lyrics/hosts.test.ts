@@ -108,7 +108,6 @@ describe("lyrics provider network access", () => {
   it("resolves the expected host for every provider that makes requests", () => {
     const expected: Record<string, string> = {
       "lrclib.ts": "lrclib.net",
-      "musixmatch.ts": "apic-desktop.musixmatch.com",
       "genius.ts": "genius.com",
       "ytmusic.ts": "music.youtube.com",
     };

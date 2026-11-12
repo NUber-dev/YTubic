@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchLrclibLyrics } from "@/lib/lyrics/lrclib";
-import { fetchMusixmatchLyrics } from "@/lib/lyrics/musixmatch";
 import { fetchGeniusLyrics } from "@/lib/lyrics/genius";
 import { fetchYtMusicLyrics } from "@/lib/lyrics/ytmusic";
 import { shouldRetryLyricsQuery } from "@/lib/lyrics/http";
@@ -9,7 +8,7 @@ import { cleanTrackTitle, lyricsArtist } from "@/lib/track-meta";
 import type { Lyrics } from "@/lib/lyrics/types";
 import { usePlaybackStore, type QueueTrack } from "@/lib/store/playback";
 
-export type LyricsSource = "ytmusic" | "lrclib" | "musixmatch" | "genius";
+export type LyricsSource = "ytmusic" | "lrclib" | "genius";
 
 /**
  * Preference order. YouTube Music leads because it is the only source
@@ -19,14 +18,12 @@ export type LyricsSource = "ytmusic" | "lrclib" | "musixmatch" | "genius";
 export const SOURCE_ORDER: LyricsSource[] = [
   "ytmusic",
   "lrclib",
-  "musixmatch",
   "genius",
 ];
 
 export const SOURCE_LABELS: Record<LyricsSource, string> = {
   ytmusic: "YouTube Music",
   lrclib: "LRCLIB",
-  musixmatch: "Musixmatch",
   genius: "Genius",
 };
 
@@ -43,8 +40,8 @@ const LOOKUP_VERSION = "v3";
 /**
  * Fire both lyric queries in parallel, plus a derived "best" selection.
  * Auto-pick rule: first source (in `SOURCE_ORDER`) that has any lyrics,
- * with timed lyrics ALWAYS winning over plain — i.e. if LRCLIB has plain
- * text but Musixmatch has synced LRC, Musixmatch wins.
+ * with timed lyrics ALWAYS winning over plain — i.e. if YouTube Music has
+ * plain text but LRCLIB has synced LRC, LRCLIB wins.
  */
 export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean) {
   // YTM's display strings are not lookup strings. See track-meta.ts for the
@@ -79,8 +76,7 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   // which is exactly when there is nothing to show anyway.
   //
   // The rate-limit exemption matters more. These queries run on every track
-  // change whether or not the panel is open, and Musixmatch gates at
-  // roughly 20 requests per IP per two minutes. Retrying a refusal doubles
+  // change whether or not the panel is open. Retrying a refusal doubles
   // the pressure on the one provider that is already saying stop, and would
   // turn a brief gate into a lasting one. Those get the Try again button
   // instead, which is a human deciding enough time has passed.
@@ -119,21 +115,6 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
     retry: shouldRetryLyricsQuery,
   });
 
-  const musixmatch = useQuery({
-    queryKey: ["lyrics", "musixmatch", LOOKUP_VERSION, trackTitle, artistName],
-    queryFn: ({ signal }) =>
-      fetchMusixmatchLyrics(
-        {
-          title: trackTitle!,
-          artist: artistName,
-        },
-        signal,
-      ),
-    enabled: !!track && enabled,
-    staleTime: ONE_HOUR,
-    retry: shouldRetryLyricsQuery,
-  });
-
   const genius = useQuery({
     queryKey: ["lyrics", "genius", LOOKUP_VERSION, trackTitle, artistName],
     queryFn: ({ signal }) =>
@@ -152,7 +133,6 @@ export function useLyricsSources(track: QueueTrack | undefined, enabled: boolean
   const queries: Record<LyricsSource, UseQueryResult<Lyrics | null>> = {
     ytmusic,
     lrclib,
-    musixmatch,
     genius,
   };
 

@@ -15,7 +15,7 @@ import {
  * LRCLIB (https://lrclib.net) — free, open lyrics database with synced
  * LRC-format lyrics.
  *
- * Tauri's HTTP plugin is required, same as Musixmatch and Genius. LRCLIB
+ * Tauri's HTTP plugin is required, same as Genius. LRCLIB
  * itself does send permissive CORS headers, so a webview `fetch()` looks
  * like it should work, and it does in `tauri dev`, which is exactly why
  * this shipped broken. CORS is not the binding constraint: our own

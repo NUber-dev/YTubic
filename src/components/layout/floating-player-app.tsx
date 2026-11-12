@@ -20,7 +20,12 @@ import { initFloatingTrackSourceBridge } from "@/lib/store/track-source";
 import { useLayoutStore } from "@/lib/store/layout";
 import { useSettingsStore } from "@/lib/store/settings";
 import { cn } from "@/lib/utils";
-import { PERSIST_MAX_AGE, persister, queryClient } from "@/lib/query-client";
+import {
+  PERSIST_MAX_AGE,
+  dropRetiredLyrics,
+  persister,
+  queryClient,
+} from "@/lib/query-client";
 
 // Wire the store's user-facing actions to emit Tauri events instead of
 // mutating local state directly — only the main window's audio engine
@@ -56,6 +61,7 @@ export default function FloatingPlayerApp() {
     })
       .catch(() => {})
       .finally(() => {
+        dropRetiredLyrics();
         if (!cancelled) setRestored(true);
       });
     return () => {

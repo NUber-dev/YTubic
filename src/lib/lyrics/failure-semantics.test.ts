@@ -37,11 +37,7 @@ function html(body: string, status = 200): Response {
   });
 }
 
-/**
- * Fresh module graph per test. Musixmatch caches its user token in a
- * module-level variable for nine minutes, so without this a token saved by
- * one test silently satisfies the next one and the assertions drift.
- */
+/** Fresh module graph per test, so no module-level state leaks between them. */
 async function setup(route: Route) {
   vi.resetModules();
   const http = await import("@tauri-apps/plugin-http");
@@ -54,7 +50,6 @@ async function setup(route: Route) {
     fetchMock,
     lrclib: (await import("./lrclib")).fetchLrclibLyrics,
     genius: (await import("./genius")).fetchGeniusLyrics,
-    musixmatch: (await import("./musixmatch")).fetchMusixmatchLyrics,
   };
 }
 
@@ -125,62 +120,6 @@ describe("Genius failure semantics", () => {
       url.includes("/api/search") ? json(hit) : html("nope", 403),
     );
     await expect(genius(TRACK)).rejects.toThrow(/Genius page 403/);
-  });
-});
-
-describe("Musixmatch failure semantics", () => {
-  // A factory, not a value: a Response body can only be read once, and
-  // these routes are hit repeatedly within a single test.
-  const goodToken = () =>
-    json({ message: { body: { user_token: "tok123" } } });
-
-  it("throws when the token endpoint hands back the rate-limit sentinel", async () => {
-    const { musixmatch } = await setup(() =>
-      json({ message: { body: { user_token: "UpgradeOnlyUpgradeOnly" } } }),
-    );
-    const { LyricsRateLimitError } = await import("./http");
-    await expect(musixmatch(TRACK)).rejects.toBeInstanceOf(
-      LyricsRateLimitError,
-    );
-  });
-
-  it("returns null when the search genuinely finds nothing", async () => {
-    const { musixmatch } = await setup((url) =>
-      url.includes("token.get")
-        ? goodToken()
-        : json({ message: { header: { status_code: 404 }, body: {} } }),
-    );
-    await expect(musixmatch(TRACK)).resolves.toBeNull();
-  });
-
-  it("throws when the search endpoint is failing", async () => {
-    const { musixmatch } = await setup((url) =>
-      url.includes("token.get") ? goodToken() : json({}, 503),
-    );
-    await expect(musixmatch(TRACK)).rejects.toThrow(/track\.search 503/);
-  });
-
-  it("throws when the token is rejected even after being reissued", async () => {
-    const { musixmatch, fetchMock } = await setup((url) =>
-      url.includes("token.get") ? goodToken() : json({}, 401),
-    );
-    const { LyricsRateLimitError } = await import("./http");
-    await expect(musixmatch(TRACK)).rejects.toBeInstanceOf(
-      LyricsRateLimitError,
-    );
-    // Proves the invalidate-and-retry path ran rather than giving up: two
-    // token fetches, two searches.
-    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
-    expect(urls.filter((u) => u.includes("token.get"))).toHaveLength(2);
-  });
-
-  it("surfaces an envelope-level 500 rather than treating it as no lyrics", async () => {
-    const { musixmatch } = await setup((url) =>
-      url.includes("token.get")
-        ? goodToken()
-        : json({ message: { header: { status_code: 500 } } }),
-    );
-    await expect(musixmatch(TRACK)).rejects.toThrow(/envelope 500/);
   });
 });
 
@@ -272,7 +211,7 @@ describe("retry policy", () => {
   it("never retries a rate-limit refusal", async () => {
     const { shouldRetryLyricsQuery, LyricsRateLimitError } =
       await import("./http");
-    // Retrying here is what turns a two-minute Musixmatch gate into a
+    // Retrying here is what turns a brief provider gate into a
     // self-sustaining one, since the panel already fires on every track.
     expect(
       shouldRetryLyricsQuery(0, new LyricsRateLimitError("gated")),
