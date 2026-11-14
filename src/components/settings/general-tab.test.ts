@@ -23,6 +23,7 @@ let client: QueryClient;
 let autostart: boolean;
 let minimized: boolean;
 let rejectSave: boolean;
+let rejectAutostartSave: boolean;
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -30,6 +31,7 @@ beforeEach(() => {
   autostart = true;
   minimized = false;
   rejectSave = false;
+  rejectAutostartSave = false;
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "autostart_is_enabled") return autostart;
     if (command === "get_start_minimized") return minimized;
@@ -38,6 +40,7 @@ beforeEach(() => {
       minimized = (args as { enabled: boolean }).enabled;
     }
     if (command === "autostart_set") {
+      if (rejectAutostartSave) throw new Error("Cannot change startup registration");
       autostart = (args as { enabled: boolean }).enabled;
     }
   });
@@ -85,6 +88,39 @@ it("only offers Start Minimized while Launch at Startup is enabled", async () =>
   expect(toggle("Start Minimized")).not.toBeNull();
   await act(async () => toggle("Launch at Startup")!.click());
   await settle();
+  expect(toggle("Start Minimized")).toBeNull();
+});
+
+it("remembers Start Minimized when Launch at Startup is turned off and on", async () => {
+  minimized = true;
+  await render();
+  expect(toggle("Start Minimized")!.getAttribute("aria-checked")).toBe("true");
+
+  await act(async () => toggle("Launch at Startup")!.click());
+  await settle();
+  expect(toggle("Start Minimized")).toBeNull();
+
+  await act(async () => toggle("Launch at Startup")!.click());
+  await settle();
+  expect(toggle("Start Minimized")!.getAttribute("aria-checked")).toBe("true");
+  expect(invoke).not.toHaveBeenCalledWith("set_start_minimized", {
+    enabled: false,
+  });
+});
+
+it("restores Launch at Startup after a registration failure", async () => {
+  autostart = false;
+  rejectAutostartSave = true;
+  await render();
+
+  await act(async () => toggle("Launch at Startup")!.click());
+  await settle();
+
+  expect(invoke).toHaveBeenCalledWith("autostart_set", { enabled: true });
+  expect(toast.error).toHaveBeenCalledWith(
+    "Error: Cannot change startup registration",
+  );
+  expect(toggle("Launch at Startup")!.getAttribute("aria-checked")).toBe("false");
   expect(toggle("Start Minimized")).toBeNull();
 });
 

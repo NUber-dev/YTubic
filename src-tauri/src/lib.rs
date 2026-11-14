@@ -2224,6 +2224,9 @@ fn set_close_behavior(state: tauri::State<'_, CloseBehavior>, quit_on_close: boo
 /// needs no extra capability grants.
 #[tauri::command]
 fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if cfg!(debug_assertions) && enabled {
+        return Err("Launch at startup is only available in the installed production app.".into());
+    }
     use tauri_plugin_autostart::ManagerExt;
     let autolaunch = app.autolaunch();
     let currently = autolaunch.is_enabled().unwrap_or(false);
@@ -2287,33 +2290,70 @@ fn set_start_minimized(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum StartupWindowDisposition {
+    Visible,
+    Hidden,
+    Minimized,
+}
+
+fn startup_window_disposition(
+    automatic_launch: bool,
+    autostart_enabled: bool,
+    start_minimized: bool,
+    tray_available: bool,
+    windows: bool,
+) -> StartupWindowDisposition {
+    if !(automatic_launch && autostart_enabled && start_minimized) {
+        StartupWindowDisposition::Visible
+    } else if windows {
+        StartupWindowDisposition::Minimized
+    } else if tray_available {
+        StartupWindowDisposition::Hidden
+    } else {
+        StartupWindowDisposition::Visible
+    }
+}
+
+fn startup_restore_flags(
+    disposition: &StartupWindowDisposition,
+) -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+
+    let mut flags = StateFlags::all() & !(StateFlags::VISIBLE | StateFlags::DECORATIONS);
+    if disposition != &StartupWindowDisposition::Visible {
+        // Restoring fullscreen/maximized can expose an otherwise hidden window.
+        flags &= !(StateFlags::MAXIMIZED | StateFlags::FULLSCREEN);
+    }
+    flags
+}
+
 fn restore_startup_window(app: &tauri::AppHandle, tray_available: bool) -> tauri::Result<()> {
-    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    use tauri_plugin_window_state::WindowExt;
 
     // Turning off Launch at Startup also suspends Start Minimized, while
     // remembering the preference for when autostart is enabled again.
-    let minimized = is_autostart_launch(std::env::args_os())
-        && autostart_is_enabled(app.clone()).unwrap_or(false)
-        && get_start_minimized(app.clone()).unwrap_or(false);
+    let disposition = startup_window_disposition(
+        is_autostart_launch(std::env::args_os()),
+        autostart_is_enabled(app.clone()).unwrap_or(false),
+        get_start_minimized(app.clone()).unwrap_or(false),
+        tray_available,
+        cfg!(windows),
+    );
     if let Some(window) = app.get_webview_window("main") {
-        let mut flags = StateFlags::all() & !(StateFlags::VISIBLE | StateFlags::DECORATIONS);
-        if minimized {
-            // Restoring fullscreen/maximized can expose an otherwise hidden
-            // window on some window managers.
-            flags &= !(StateFlags::MAXIMIZED | StateFlags::FULLSCREEN);
-        }
-        if let Err(e) = window.restore_state(flags) {
+        if let Err(e) = window.restore_state(startup_restore_flags(&disposition)) {
             eprintln!("[window-state] restore failed: {e}");
         }
-        #[cfg(windows)]
-        if minimized {
-            window.minimize()?;
-            return window.show();
-        }
-        // A missing tray must never strand the app without a way to open it.
-        if !minimized || !tray_available {
-            window.show()?;
-            window.set_focus()?;
+        match disposition {
+            StartupWindowDisposition::Visible => {
+                window.show()?;
+                window.set_focus()?;
+            }
+            StartupWindowDisposition::Minimized => {
+                window.minimize()?;
+                window.show()?;
+            }
+            StartupWindowDisposition::Hidden => {}
         }
     }
     Ok(())
@@ -4261,9 +4301,16 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
+            // Separate OS startup entries: a development run must never
+            // overwrite or remove the installed application's registration.
             // The builder defaults to LaunchAgent on macOS.
             tauri_plugin_autostart::Builder::new()
                 .arg(AUTOSTART_ARG)
+                .app_name(if cfg!(debug_assertions) {
+                    "YTubic Development"
+                } else {
+                    "YTubic"
+                })
                 .build(),
         )
         .manage(state)
@@ -4499,10 +4546,14 @@ pub fn run() {
 mod tests {
     use super::generate_stream_token;
     use super::is_autostart_launch;
+    use super::startup_restore_flags;
+    use super::startup_window_disposition;
+    use super::StartupWindowDisposition;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
     use axum::Router;
+    use tauri_plugin_window_state::StateFlags;
     use tower::ServiceExt;
 
     #[test]
@@ -4521,6 +4572,74 @@ mod tests {
                 std::ffi::OsString::from_vec(vec![0xff]),
                 std::ffi::OsString::from("--autostart"),
             ]));
+        }
+    }
+
+    #[test]
+    fn startup_window_requires_automatic_launch_registration_and_preference() {
+        for windows in [false, true] {
+            for tray_available in [false, true] {
+                for (automatic, registered, preference) in [
+                    (false, false, false),
+                    (false, false, true),
+                    (false, true, false),
+                    (false, true, true),
+                    (true, false, false),
+                    (true, false, true),
+                    (true, true, false),
+                ] {
+                    assert_eq!(
+                        startup_window_disposition(
+                            automatic,
+                            registered,
+                            preference,
+                            tray_available,
+                            windows,
+                        ),
+                        StartupWindowDisposition::Visible,
+                        "automatic={automatic}, registered={registered}, preference={preference}, tray={tray_available}, windows={windows}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn startup_window_uses_taskbar_on_windows_and_tray_elsewhere() {
+        for tray_available in [false, true] {
+            assert_eq!(
+                startup_window_disposition(true, true, true, tray_available, true),
+                StartupWindowDisposition::Minimized,
+            );
+        }
+        assert_eq!(
+            startup_window_disposition(true, true, true, true, false),
+            StartupWindowDisposition::Hidden,
+        );
+        assert_eq!(
+            startup_window_disposition(true, true, true, false, false),
+            StartupWindowDisposition::Visible,
+            "a missing tray must leave the window accessible",
+        );
+    }
+
+    #[test]
+    fn startup_restore_never_replays_saved_visibility_or_decorations() {
+        for disposition in [
+            StartupWindowDisposition::Visible,
+            StartupWindowDisposition::Hidden,
+            StartupWindowDisposition::Minimized,
+        ] {
+            let flags = startup_restore_flags(&disposition);
+            assert!(!flags.contains(StateFlags::VISIBLE));
+            assert!(!flags.contains(StateFlags::DECORATIONS));
+            if disposition == StartupWindowDisposition::Visible {
+                assert!(flags.contains(StateFlags::MAXIMIZED));
+                assert!(flags.contains(StateFlags::FULLSCREEN));
+            } else {
+                assert!(!flags.contains(StateFlags::MAXIMIZED));
+                assert!(!flags.contains(StateFlags::FULLSCREEN));
+            }
         }
     }
 
