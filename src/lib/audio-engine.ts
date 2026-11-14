@@ -47,6 +47,10 @@ import { IS_MAC } from "@/lib/platform";
 const CROSSFADE_PRELOAD_LEAD_SEC = 8;
 /** Fade ramp resolution. */
 const CROSSFADE_TICK_MS = 40;
+/** WebKit occasionally reaches the last frame without dispatching `ended`. */
+const END_WATCHDOG_TICK_MS = 500;
+const END_WATCHDOG_NEAR_SEC = 1;
+const END_WATCHDOG_STALLED_MS = 2000;
 
 /** The next track, loading or loaded on the standby element. */
 type PendingNext = {
@@ -198,6 +202,19 @@ export function useAudioEngine() {
     const store = usePlaybackStore.getState;
     const isActive = (e: Event) => e.currentTarget === audioRef.current;
 
+    const replayCurrent = (el: HTMLAudioElement) => {
+      if (el !== audioRef.current || !store().playing) return;
+      // Seek and resume the actual element. A store-only pendingSeek can
+      // race WebKit's end-of-media pause and leave the UI showing Play.
+      el.currentTime = 0;
+      store().setPosition(0);
+      graphRef.current?.resume();
+      void el.play().catch((e) => {
+        if (e?.name === "AbortError") return;
+        store().setStatus("error", e?.message ?? String(e));
+      });
+    };
+
     /**
      * Crossfade driver, run on every timeupdate of the active element.
      * Two thresholds: preload the next track on the standby element a
@@ -209,7 +226,7 @@ export function useAudioEngine() {
       const s = store();
       const nextIndex = s.index + 1;
       // Only a plain step to the next queued track is crossfaded; repeat
-      // wraps and single-track loops go through `ended` as before.
+      // wraps and single-track loops use the normal repeat path.
       if (!s.playing || s.repeat === "one" || nextIndex >= s.queue.length) {
         return;
       }
@@ -318,6 +335,10 @@ export function useAudioEngine() {
       // The outgoing half of a crossfade ends on its own; the store has
       // already moved on.
       if (!isActive(e)) return;
+      if (store().repeat === "one") {
+        replayCurrent(e.currentTarget as HTMLAudioElement);
+        return;
+      }
       store().next();
     };
     const onError = (e: Event) => {
@@ -410,7 +431,44 @@ export function useAudioEngine() {
       el.addEventListener("playing", onPlaying);
       el.addEventListener("waiting", onWaiting);
     }
+    let watchedEl: HTMLAudioElement | null = null;
+    let watchedSrc = "";
+    let lastPosition = 0;
+    let lastProgressAt = performance.now();
+    const endWatchdog = window.setInterval(() => {
+      const el = audioRef.current;
+      const s = store();
+      if (!el || s.repeat !== "one" || !s.playing || !el.src) {
+        watchedEl = null;
+        return;
+      }
+      const now = performance.now();
+      const position = el.currentTime;
+      if (
+        el !== watchedEl ||
+        el.src !== watchedSrc ||
+        position < lastPosition - 0.01 ||
+        position > lastPosition + 0.01
+      ) {
+        watchedEl = el;
+        watchedSrc = el.src;
+        lastPosition = position;
+        lastProgressAt = now;
+      }
+      const duration = el.duration;
+      if (
+        Number.isFinite(duration) &&
+        duration > 0 &&
+        position >= duration - END_WATCHDOG_NEAR_SEC &&
+        now - lastProgressAt >= END_WATCHDOG_STALLED_MS
+      ) {
+        replayCurrent(el);
+        lastPosition = 0;
+        lastProgressAt = now;
+      }
+    }, END_WATCHDOG_TICK_MS);
     return () => {
+      window.clearInterval(endWatchdog);
       for (const el of [a, b]) {
         el.removeEventListener("timeupdate", onTimeUpdate);
         el.removeEventListener("durationchange", onDurationChange);
