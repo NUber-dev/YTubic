@@ -10,6 +10,7 @@ import {
   IconCircleArrowDownFilled,
   IconLoader2,
   IconLogin,
+  IconWindowMinimize,
   IconSquareXFilled,
   IconUserFilled,
 } from "@tabler/icons-react";
@@ -18,7 +19,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Group, SettingRow, TabPane } from "@/components/settings/primitives";
-import { IS_MAC } from "@/lib/platform";
+import { IS_LINUX, IS_MAC } from "@/lib/platform";
 import { authLoggedInQuery } from "@/lib/store/auth-queries";
 import { useSettingsStore } from "@/lib/store/settings";
 import { checkForUpdates } from "@/lib/updater";
@@ -142,8 +143,16 @@ function BehaviorGroup() {
     staleTime: 60_000,
     retry: false,
   });
+  const startMinimized = useQuery({
+    queryKey: ["start-minimized"],
+    queryFn: () => invoke<boolean>("get_start_minimized"),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const [savingStartup, setSavingStartup] = useState(false);
 
   const toggleAutostart = async (enabled: boolean) => {
+    setSavingStartup(true);
     try {
       await invoke("autostart_set", { enabled });
     } catch (e) {
@@ -152,6 +161,18 @@ function BehaviorGroup() {
     // Re-read the OS registration either way — it's the source of
     // truth, and the failed path needs the switch snapped back.
     await qc.invalidateQueries({ queryKey: ["autostart"] });
+    setSavingStartup(false);
+  };
+
+  const toggleStartMinimized = async (enabled: boolean) => {
+    setSavingStartup(true);
+    try {
+      await invoke("set_start_minimized", { enabled });
+    } catch (e) {
+      toast.error(String(e));
+    }
+    await qc.invalidateQueries({ queryKey: ["start-minimized"] });
+    setSavingStartup(false);
   };
 
   return (
@@ -164,11 +185,36 @@ function BehaviorGroup() {
           <Switch
             checked={!!autostart.data}
             onCheckedChange={(v) => void toggleAutostart(v)}
-            disabled={autostart.isLoading}
+            disabled={autostart.isLoading || savingStartup}
             aria-label="Launch at Startup"
           />
         }
       />
+      {autostart.data && (
+        <SettingRow
+          icon={IconWindowMinimize}
+          title="Start Minimized"
+          description={
+            IS_MAC
+              ? "Start without a window. Open YTubic from the menu bar or Dock."
+              : IS_LINUX
+                ? "Start without a window. Open YTubic from the tray."
+                : "Start with the window minimized to the taskbar."
+          }
+          control={
+            <Switch
+              checked={!!startMinimized.data}
+              onCheckedChange={(v) => void toggleStartMinimized(v)}
+              disabled={
+                startMinimized.isLoading ||
+                startMinimized.isError ||
+                savingStartup
+              }
+              aria-label="Start Minimized"
+            />
+          }
+        />
+      )}
       <SettingRow
         icon={IconBellFilled}
         title="Playback Notifications"

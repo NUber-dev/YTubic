@@ -2224,6 +2224,9 @@ fn set_close_behavior(state: tauri::State<'_, CloseBehavior>, quit_on_close: boo
 /// needs no extra capability grants.
 #[tauri::command]
 fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    if cfg!(debug_assertions) && enabled {
+        return Err("Launch at startup is only available in the installed production app.".into());
+    }
     use tauri_plugin_autostart::ManagerExt;
     let autolaunch = app.autolaunch();
     let currently = autolaunch.is_enabled().unwrap_or(false);
@@ -2241,6 +2244,119 @@ fn autostart_set(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
 fn autostart_is_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+// Keep this preference in the native store: startup must decide whether to
+// show a window before the webview (and its localStorage) is ready.
+const START_MINIMIZED_KEY: &str = "startMinimized";
+const AUTOSTART_ARG: &str = "--autostart";
+
+fn is_autostart_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    args.into_iter()
+        .skip(1)
+        .any(|arg| arg.as_ref() == std::ffi::OsStr::new(AUTOSTART_ARG))
+}
+
+#[tauri::command]
+fn get_start_minimized(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store(SETTINGS_STORE_FILE).map_err(|e| e.to_string())?;
+    Ok(store
+        .get(START_MINIMIZED_KEY)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+fn set_start_minimized(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_store::StoreExt;
+    let store = app.store(SETTINGS_STORE_FILE).map_err(|e| e.to_string())?;
+    let previous = store.get(START_MINIMIZED_KEY);
+    store.set(START_MINIMIZED_KEY, serde_json::json!(enabled));
+    if let Err(e) = store.save() {
+        // The store is cached in memory. Keep subsequent reads consistent
+        // with the saved preference when a disk write fails.
+        if let Some(value) = previous {
+            store.set(START_MINIMIZED_KEY, value);
+        } else {
+            store.delete(START_MINIMIZED_KEY);
+        }
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum StartupWindowDisposition {
+    Visible,
+    Hidden,
+    Minimized,
+}
+
+fn startup_window_disposition(
+    automatic_launch: bool,
+    autostart_enabled: bool,
+    start_minimized: bool,
+    tray_available: bool,
+    windows: bool,
+) -> StartupWindowDisposition {
+    if !(automatic_launch && autostart_enabled && start_minimized) {
+        StartupWindowDisposition::Visible
+    } else if windows {
+        StartupWindowDisposition::Minimized
+    } else if tray_available {
+        StartupWindowDisposition::Hidden
+    } else {
+        StartupWindowDisposition::Visible
+    }
+}
+
+fn startup_restore_flags(
+    disposition: &StartupWindowDisposition,
+) -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+
+    let mut flags = StateFlags::all() & !(StateFlags::VISIBLE | StateFlags::DECORATIONS);
+    if disposition != &StartupWindowDisposition::Visible {
+        // Restoring fullscreen/maximized can expose an otherwise hidden window.
+        flags &= !(StateFlags::MAXIMIZED | StateFlags::FULLSCREEN);
+    }
+    flags
+}
+
+fn restore_startup_window(app: &tauri::AppHandle, tray_available: bool) -> tauri::Result<()> {
+    use tauri_plugin_window_state::WindowExt;
+
+    // Turning off Launch at Startup also suspends Start Minimized, while
+    // remembering the preference for when autostart is enabled again.
+    let disposition = startup_window_disposition(
+        is_autostart_launch(std::env::args_os()),
+        autostart_is_enabled(app.clone()).unwrap_or(false),
+        get_start_minimized(app.clone()).unwrap_or(false),
+        tray_available,
+        cfg!(windows),
+    );
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.restore_state(startup_restore_flags(&disposition)) {
+            eprintln!("[window-state] restore failed: {e}");
+        }
+        match disposition {
+            StartupWindowDisposition::Visible => {
+                window.show()?;
+                window.set_focus()?;
+            }
+            StartupWindowDisposition::Minimized => {
+                window.minimize()?;
+                window.show()?;
+            }
+            StartupWindowDisposition::Hidden => {}
+        }
+    }
+    Ok(())
 }
 
 /// Track-change toast (Settings → General → Playback notifications).
@@ -2849,11 +2965,11 @@ fn changed_cookie_names(before: &str, after: &str) -> Vec<String> {
     out
 }
 
-/// File (under the store plugin's default dir) + key holding the
-/// user-chosen cache root. Written by `set_cache_dir`, read once at
-/// startup — the stream server captures its directories when it
-/// spawns, so a change only applies on the next launch.
+/// Native preferences needed before the webview is ready, stored under
+/// the store plugin's default directory.
 const SETTINGS_STORE_FILE: &str = "settings.json";
+/// User-chosen cache root. Read once at startup — the stream server
+/// captures its directories when it spawns, so changes apply on relaunch.
 const CACHE_DIR_KEY: &str = "cacheDir";
 
 /// The cache root this process actually started with (managed state,
@@ -4147,8 +4263,12 @@ pub fn run() {
         // The `deep-link` feature forwards the second instance's argv
         // (a `ytubic://` URL) to the deep-link plugin, so the running app
         // receives it as a `deep-link://new-url` event.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            show_main_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // An automatic launch must not surface an already running app.
+            // A manual second launch still brings its window to the front.
+            if !is_autostart_launch(argv) {
+                show_main_window(app);
+            }
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(
@@ -4156,6 +4276,9 @@ pub fn run() {
             // override our `decorations: false` from tauri.conf.json
             // every time the saved state is restored. Exclude it.
             tauri_plugin_window_state::Builder::default()
+                // Main starts hidden; restore it ourselves after reading the
+                // native startup preference, so saved visibility cannot flash it.
+                .skip_initial_state("main")
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::all()
                         & !tauri_plugin_window_state::StateFlags::DECORATIONS,
@@ -4177,10 +4300,19 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
+        .plugin(
+            // Separate OS startup entries: a development run must never
+            // overwrite or remove the installed application's registration.
+            // The builder defaults to LaunchAgent on macOS.
+            tauri_plugin_autostart::Builder::new()
+                .arg(AUTOSTART_ARG)
+                .app_name(if cfg!(debug_assertions) {
+                    "YTubic Development"
+                } else {
+                    "YTubic"
+                })
+                .build(),
+        )
         .manage(state)
         .manage(CloseBehavior::default())
         .manage(JarWriteLock::default())
@@ -4220,6 +4352,8 @@ pub fn run() {
             set_close_behavior,
             autostart_set,
             autostart_is_enabled,
+            get_start_minimized,
+            set_start_minimized,
             notify_track,
             get_cache_dir,
             set_cache_dir,
@@ -4277,6 +4411,18 @@ pub fn run() {
                 app.package_info().version,
                 cfg!(debug_assertions)
             );
+            // Refresh enabled registrations so existing installs receive the
+            // new argument without toggling Launch at Startup off and on.
+            // Never enable autostart for a user who has it switched off.
+            #[cfg(not(debug_assertions))]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if app.autolaunch().is_enabled().unwrap_or(false) {
+                    if let Err(e) = app.autolaunch().enable() {
+                        eprintln!("[autostart] registration refresh failed: {e}");
+                    }
+                }
+            }
             // The NSIS installer registers `ytubic://` for release builds;
             // dev runs and Linux need the runtime registration.
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
@@ -4352,7 +4498,8 @@ pub fn run() {
             // main-thread-only (COM + a subclass on the main window's HWND).
             #[cfg(windows)]
             thumbbar::init(app.handle());
-            if let Err(e) = build_tray(app.handle()) {
+            let tray_result = build_tray(app.handle());
+            if let Err(ref e) = tray_result {
                 eprintln!("[tray] build failed: {e}");
             }
 
@@ -4379,6 +4526,7 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_icon(runtime_icon(app.handle()));
             }
+            restore_startup_window(app.handle(), tray_result.is_ok())?;
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -4397,11 +4545,103 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::generate_stream_token;
+    use super::is_autostart_launch;
+    use super::startup_restore_flags;
+    use super::startup_window_disposition;
+    use super::StartupWindowDisposition;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
     use axum::Router;
+    use tauri_plugin_window_state::StateFlags;
     use tower::ServiceExt;
+
+    #[test]
+    fn distinguishes_automatic_from_manual_and_deep_link_launches() {
+        assert!(!is_autostart_launch(["ytubic"]));
+        assert!(!is_autostart_launch(["ytubic", "ytubic://playlist/123"]));
+        assert!(!is_autostart_launch(["ytubic", "--autostart=false"]));
+        assert!(!is_autostart_launch(["--autostart"]));
+        assert!(is_autostart_launch(["ytubic", "--autostart"]));
+        assert!(is_autostart_launch(["ytubic", "--other", "--autostart"]));
+        // args_os also accepts executable paths that are not valid UTF-8.
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            assert!(is_autostart_launch([
+                std::ffi::OsString::from_vec(vec![0xff]),
+                std::ffi::OsString::from("--autostart"),
+            ]));
+        }
+    }
+
+    #[test]
+    fn startup_window_requires_automatic_launch_registration_and_preference() {
+        for windows in [false, true] {
+            for tray_available in [false, true] {
+                for (automatic, registered, preference) in [
+                    (false, false, false),
+                    (false, false, true),
+                    (false, true, false),
+                    (false, true, true),
+                    (true, false, false),
+                    (true, false, true),
+                    (true, true, false),
+                ] {
+                    assert_eq!(
+                        startup_window_disposition(
+                            automatic,
+                            registered,
+                            preference,
+                            tray_available,
+                            windows,
+                        ),
+                        StartupWindowDisposition::Visible,
+                        "automatic={automatic}, registered={registered}, preference={preference}, tray={tray_available}, windows={windows}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn startup_window_uses_taskbar_on_windows_and_tray_elsewhere() {
+        for tray_available in [false, true] {
+            assert_eq!(
+                startup_window_disposition(true, true, true, tray_available, true),
+                StartupWindowDisposition::Minimized,
+            );
+        }
+        assert_eq!(
+            startup_window_disposition(true, true, true, true, false),
+            StartupWindowDisposition::Hidden,
+        );
+        assert_eq!(
+            startup_window_disposition(true, true, true, false, false),
+            StartupWindowDisposition::Visible,
+            "a missing tray must leave the window accessible",
+        );
+    }
+
+    #[test]
+    fn startup_restore_never_replays_saved_visibility_or_decorations() {
+        for disposition in [
+            StartupWindowDisposition::Visible,
+            StartupWindowDisposition::Hidden,
+            StartupWindowDisposition::Minimized,
+        ] {
+            let flags = startup_restore_flags(&disposition);
+            assert!(!flags.contains(StateFlags::VISIBLE));
+            assert!(!flags.contains(StateFlags::DECORATIONS));
+            if disposition == StartupWindowDisposition::Visible {
+                assert!(flags.contains(StateFlags::MAXIMIZED));
+                assert!(flags.contains(StateFlags::FULLSCREEN));
+            } else {
+                assert!(!flags.contains(StateFlags::MAXIMIZED));
+                assert!(!flags.contains(StateFlags::FULLSCREEN));
+            }
+        }
+    }
 
     #[test]
     fn stream_token_is_nonempty_hex_and_varies() {
