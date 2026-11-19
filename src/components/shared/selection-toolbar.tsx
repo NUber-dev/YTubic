@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { XIcon } from "lucide-react";
+import { ArrowLeftRightIcon, ListChecksIcon, XIcon } from "lucide-react";
 import {
   IconLoader2,
   IconPlaylist,
@@ -39,6 +39,8 @@ type Props = {
   /** The selected rows, in list order. Nothing renders while empty. */
   tracks: ShelfItem[];
   onClear: () => void;
+  onSelectAll: () => void;
+  onInvertSelection: () => void;
 };
 
 /**
@@ -48,7 +50,12 @@ type Props = {
  * backdrop-filter reason): centred in the visible content, lifted over
  * the bottom player bar when there is one.
  */
-export function SelectionToolbar({ tracks, onClear }: Props) {
+export function SelectionToolbar({
+  tracks,
+  onClear,
+  onSelectAll,
+  onInvertSelection,
+}: Props) {
   const { state } = useSidebar();
   const mode = useLayoutStore((s) => s.mode);
   const qc = useQueryClient();
@@ -187,7 +194,10 @@ export function SelectionToolbar({ tracks, onClear }: Props) {
           role="toolbar"
           aria-label="Selected tracks"
           data-selection-ui
-          className="pointer-events-auto flex w-fit max-w-full items-center gap-1 rounded-full border border-sidebar-border p-1.5 text-sidebar-foreground shadow-lg animate-in fade-in-0 slide-in-from-bottom-2"
+          className={cn(
+            "pointer-events-auto flex w-max shrink-0 items-center gap-1 rounded-full border border-sidebar-border p-1.5 text-sidebar-foreground shadow-lg animate-in fade-in-0 slide-in-from-bottom-2",
+            compact && "max-w-full flex-wrap justify-center",
+          )}
           style={{
             backgroundColor: "var(--surface)",
             backdropFilter: "blur(8px)",
@@ -211,6 +221,10 @@ export function SelectionToolbar({ tracks, onClear }: Props) {
           >
             {count} selected
           </span>
+          {action("Select All", <ListChecksIcon />, { onClick: onSelectAll })}
+          {action("Invert Selection", <ArrowLeftRightIcon />, {
+            onClick: onInvertSelection,
+          })}
           <DropdownMenu open={saveOpen} onOpenChange={setSaveOpen}>
             {action(
               "Save to playlist",
