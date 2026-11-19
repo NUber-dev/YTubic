@@ -133,6 +133,18 @@ export function TrackList({
   const clearSelection = useCallback(() => {
     setSelected((prev) => (prev.size === 0 ? prev : new Set()));
   }, []);
+  const selectAll = () => {
+    setSelected(new Set(tracks.keys()));
+  };
+  const invertSelection = () => {
+    setSelected((prev) => {
+      const next = new Set<number>();
+      for (const index of tracks.keys()) {
+        if (!prev.has(index)) next.add(index);
+      }
+      return next;
+    });
+  };
   const onPlainClick = clearSelection;
 
   // A sweep starts on a modifier pointerdown over a row and ends on the
@@ -283,7 +295,12 @@ export function TrackList({
   }
 
   const toolbar = (
-    <SelectionToolbar tracks={selectedTracks} onClear={clearSelection} />
+    <SelectionToolbar
+      tracks={selectedTracks}
+      onClear={clearSelection}
+      onSelectAll={selectAll}
+      onInvertSelection={invertSelection}
+    />
   );
 
   if (!virtualize) {
